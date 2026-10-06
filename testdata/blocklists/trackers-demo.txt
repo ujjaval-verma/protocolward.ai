@@ -1,0 +1,87 @@
+# Protocol Ward — demo tracker blocklist.
+#
+# This is a HAND-CURATED demonstration list of ~40 well-known ad, analytics,
+# and tracker hostnames. It exists so the README gif and local testing have
+# recognizable adversaries to block — not as a production blocklist.
+#
+# For production use, point ward at a maintained public list:
+#
+#   wget https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts \
+#        -O blocklists/stevenblack.hosts
+#   # then add to ward.yaml:
+#   #   blocklists:
+#   #     - id: "stevenblack"
+#   #       path: "./blocklists/stevenblack.hosts"
+#
+# Other widely-used sources:
+#   - Pi-hole's default lists: https://github.com/pi-hole/pi-hole/blob/master/automated%20install/listsofadlists.txt
+#   - OISD: https://oisd.nl/
+#   - The Block List Project: https://github.com/blocklistproject
+#
+# Format is /etc/hosts ("0.0.0.0 <hostname>"). internal/hostlist/parser.go
+# also accepts the AdAway short form ("0 <hostname>") and the AdGuard bare
+# form ("||hostname^") — see the parser docstring for the full grammar.
+#
+# Entries below are alphabetized within category for ease of audit.
+
+# --- Google ad/analytics stack ---
+0.0.0.0 doubleclick.net
+0.0.0.0 google-analytics.com
+0.0.0.0 googleadservices.com
+0.0.0.0 googlesyndication.com
+0.0.0.0 googletagmanager.com
+0.0.0.0 googletagservices.com
+0.0.0.0 pagead2.googlesyndication.com
+0.0.0.0 stats.g.doubleclick.net
+0.0.0.0 www.googleadservices.com
+
+# --- Meta / Facebook pixels ---
+0.0.0.0 connect.facebook.net
+0.0.0.0 pixel.facebook.com
+
+# --- Amazon ad stack ---
+0.0.0.0 adsystem.amazon.com
+0.0.0.0 amazon-adsystem.com
+0.0.0.0 aax.amazon-adsystem.com
+
+# --- Microsoft / LinkedIn ---
+0.0.0.0 px.ads.linkedin.com
+0.0.0.0 snap.licdn.com
+
+# --- TikTok / Bytedance analytics ---
+0.0.0.0 analytics.tiktok.com
+0.0.0.0 business-api.tiktok.com
+
+# --- News-site recirculation / content trackers ---
+0.0.0.0 outbrain.com
+0.0.0.0 widgets.outbrain.com
+0.0.0.0 taboola.com
+0.0.0.0 cdn.taboola.com
+
+# --- Programmatic ad networks ---
+0.0.0.0 criteo.com
+0.0.0.0 static.criteo.net
+0.0.0.0 adform.net
+0.0.0.0 ads.pubmatic.com
+0.0.0.0 openx.net
+0.0.0.0 rubiconproject.com
+
+# --- Audience measurement ---
+0.0.0.0 scorecardresearch.com
+0.0.0.0 sb.scorecardresearch.com
+0.0.0.0 quantserve.com
+0.0.0.0 pixel.quantserve.com
+
+# --- Session-replay and behavioral analytics ---
+0.0.0.0 fullstory.com
+0.0.0.0 hotjar.com
+0.0.0.0 mouseflow.com
+0.0.0.0 logrocket.com
+
+# --- Product analytics (often phone-home for SaaS apps too) ---
+0.0.0.0 mixpanel.com
+0.0.0.0 api.mixpanel.com
+0.0.0.0 segment.com
+0.0.0.0 api.segment.io
+0.0.0.0 amplitude.com
+0.0.0.0 api.amplitude.com

@@ -1,0 +1,3 @@
+# DOD decoy fixture. One tripwire hostname; bullet 7 digs it and asserts a
+# policy: alert log line is emitted.
+0.0.0.0 tripwire.dod.test

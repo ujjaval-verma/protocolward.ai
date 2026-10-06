@@ -1,0 +1,86 @@
+# Hook tiering — see docs/engineering/decisions/ADR-0002-security-posture.md
+# pre-commit ≤5s; pre-push ≤20s. govulncheck on pre-push is the supply-chain enforcement point.
+
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      # testdata/update/ holds byte-stable cryptographic fixtures
+      # (cosign-signed TUF metadata + deliberately-malformed siblings).
+      # Auto-fixers corrupt the signed bytes; the json-checker correctly
+      # rejects the tampered-target fixture, which is the point.
+      - id: trailing-whitespace
+        exclude: ^testdata/update/
+      - id: end-of-file-fixer
+        exclude: ^testdata/update/
+      - id: check-yaml
+      - id: check-json
+        exclude: ^testdata/update/
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+        exclude: ^testdata/update/
+
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        # doubleclick is a real Google ad domain on our tracker blocklist;
+        # codespell wants "double-click" which is wrong for a hostname. fpr = false-positive rate.
+        args: ["--ignore-words-list=ans,iam,hda,cna,doubleclick,fpr"]
+        # Generated DGA + real-domain eval fixture: random labels, not prose.
+        exclude: ^testdata/eval/lexical-v1\.jsonl$
+
+  # --- pre-push (heavier; ≤20s budget) ---
+
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-mod-tidy
+        stages: [pre-push]
+
+  - repo: local
+    hooks:
+      # Uses the pinned .tools/ binary (same as `make lint`), built by the repo's
+      # own Go toolchain. The upstream pre-commit golang env builds with a
+      # different Go and cannot read go1.26.8 export data.
+      - id: golangci-lint
+        name: golangci-lint
+        entry: .tools/golangci-lint run ./...
+        language: system
+        types: [go]
+        pass_filenames: false
+        stages: [pre-push]
+      - id: go-vet
+        name: go vet ./...
+        entry: go vet ./...
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: go-test-short
+        name: go test -race -short
+        entry: go test -race -count=1 -short -timeout=60s ./...
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: go-mod-verify
+        name: go mod verify
+        entry: go mod verify
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: govulncheck
+        name: govulncheck
+        entry: .tools/govulncheck ./...
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

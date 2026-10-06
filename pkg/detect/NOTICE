@@ -1,0 +1,14 @@
+pkg/detect/ngrams.bin
+
+Derived from the Majestic Million (https://majestic.com/reports/majestic-million),
+(c) Majestic-12 Ltd, licensed under the Creative Commons Attribution 3.0
+Unported License (https://creativecommons.org/licenses/by/3.0/).
+
+Modifications: each listed domain was reduced to its first DNS label;
+labels from ranks 1-200,000 (excluding every 10th rank in 1-20,000, which
+is held out for evaluation) were used to estimate character-trigram
+probabilities with bigram back-off; the probabilities were quantised to
+1/8-bit negative log2 values. ngrams.bin contains no domain names.
+
+Snapshot: majestic_million.csv downloaded 2026-10-05 (UTC), SHA-256 56a9065ad41e3adf3b8bb87ef04740d59630de5c9d90470eaec09f112266ed48.
+Regenerate: make ngrams MAJESTIC=/path/to/majestic_million.csv

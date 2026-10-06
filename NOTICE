@@ -1,0 +1,18 @@
+Protocol Ward
+Copyright 2026 Ujjaval Verma
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may
+not use these files except in compliance with the License. The full text
+is in LICENSE, or at https://www.apache.org/licenses/LICENSE-2.0.
+Every Go source file starts with: // SPDX-License-Identifier: Apache-2.0
+
+Third-party data
+----------------
+pkg/detect/ngrams.bin and the benign records (label "benign-majestic") of
+testdata/eval/lexical-v1.jsonl are derived from the Majestic Million
+(https://majestic.com/reports/majestic-million), (c) Majestic-12 Ltd,
+licensed under the Creative Commons Attribution 3.0 Unported License
+(https://creativecommons.org/licenses/by/3.0/). The data was modified:
+ngrams.bin holds quantised character-trigram statistics (no domain names);
+the eval fixture is a 1-in-10 sample of ranks 1-20,000. Snapshot hash and regeneration steps: pkg/detect/NOTICE and
+testdata/eval/NOTICE.

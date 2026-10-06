@@ -1,0 +1,23 @@
+docs/superpowers/
+
+# build artifacts
+bin/
+dist/
+coverage.out
+
+# project-local pinned tools (installed via `make tools`)
+.tools/
+
+# JS/TS
+node_modules/
+.pnpm-store/
+*.log
+.DS_Store
+
+blocklists/
+!testdata/**/blocklists/
+!testdata/**/blocklists/*
+
+# personal, never committed (ADR-0007)
+CLAUDE.local.md
+.claude/settings.local.json

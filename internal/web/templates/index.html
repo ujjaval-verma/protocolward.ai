@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<title>ward — dashboard</title>
+<style>
+  :root {
+    --ward-bg: #0B0F14;
+    --ward-bg-elevated: #11161D;
+    --ward-border: #1D2530;
+    --ward-text: #E6EAF0;
+    --ward-text-muted: #8A95A5;
+    --ward-accent: #F2A23B;
+    --ward-ok: #3CB39B;
+    --ward-danger: #D9544A;
+    --ward-decoy: #A874D7;
+  }
+  body {
+    background: var(--ward-bg);
+    color: var(--ward-text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0;
+    padding: 32px;
+  }
+  h1 {
+    color: var(--ward-accent);
+    font-weight: 600;
+    font-size: 20px;
+    margin: 0 0 8px;
+    letter-spacing: 0.02em;
+  }
+  .sub { color: var(--ward-text-muted); margin-bottom: 24px; }
+  .panel {
+    background: var(--ward-bg-elevated);
+    border: 1px solid var(--ward-border);
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .dot { color: var(--ward-ok); margin-right: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--ward-border); }
+  th {
+    color: var(--ward-text-muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  td.action-block { color: var(--ward-danger); }
+  td.action-allow, td.action-forward { color: var(--ward-ok); }
+  td.action-decoy { color: var(--ward-decoy); }
+  td.qname { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .empty { color: var(--ward-text-muted); font-style: italic; }
+  h2 {
+    color: var(--ward-text-muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 8px;
+  }
+  .note { color: var(--ward-accent); margin-bottom: 12px; }
+  td.score { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <h1>ward</h1>
+  <div class="sub">read-only dashboard · refreshes every 5s</div>
+
+  <div class="panel">
+    <span class="dot">●</span> status ok · uptime {{ .UptimeSeconds }}s
+  </div>
+
+  <div class="panel" id="flags">
+    <h2>flags</h2>
+    <div class="note">flagged, not blocked — add to blocklist to enforce</div>
+    {{ if .Flags }}
+    <table>
+      <thead>
+        <tr><th>when</th><th>hostname</th><th>client</th><th>score</th><th>reasons</th></tr>
+      </thead>
+      <tbody>
+        {{ range .Flags }}
+        <tr>
+          <td>{{ .At.Format "15:04:05" }}</td>
+          <td class="qname">{{ .Qname }}</td>
+          <td>{{ .Client }}</td>
+          <td class="score">{{ printf "%.2f" .Score }}</td>
+          <td>{{ range $i, $r := .Reasons }}{{ if $i }}, {{ end }}{{ $r }}{{ end }}</td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    {{ else }}
+    <div class="empty">no flags yet — hostnames the behavioral detector flags appear here</div>
+    {{ end }}
+  </div>
+
+  <div class="panel" id="decisions">
+    {{ if .Decisions }}
+    <table>
+      <thead>
+        <tr><th>when</th><th>qname</th><th>action</th><th>matched</th></tr>
+      </thead>
+      <tbody>
+        {{ range .Decisions }}
+        <tr>
+          <td>{{ .At.Format "15:04:05" }}</td>
+          <td class="qname">{{ .Qname }}</td>
+          <td class="action-{{ .Action }}">{{ .Action }}</td>
+          <td>{{ .MatchedLabel }}</td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    {{ else }}
+    <div class="empty">no decisions yet — ward has not seen a query</div>
+    {{ end }}
+  </div>
+</body>
+</html>

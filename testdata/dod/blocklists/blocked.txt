@@ -1,0 +1,3 @@
+# DOD blocklist fixture. Hosts-file format.
+0.0.0.0 known-blocked.dod.test
+0.0.0.0 bothlisted.dod.test

@@ -1,0 +1,59 @@
+run:
+  timeout: 5m
+  go: "1.25"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofumpt
+    - revive
+    - gosec
+    - bodyclose
+    - misspell
+    - unconvert
+    - prealloc
+    - copyloopvar
+    - nilerr
+    - errorlint
+    - exhaustive
+
+linters-settings:
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+      - name: error-return
+      - name: error-naming
+      - name: indent-error-flow
+      - name: unused-parameter
+        disabled: true  # too noisy with cobra RunE signatures
+  gosec:
+    excludes:
+      - G104  # errcheck covers this; gosec duplicates noisily
+  errorlint:
+    asserts: false  # type assertions on errors are sometimes intentional
+  exhaustive:
+    default-signifies-exhaustive: false
+    check:
+      - switch
+    # Scope is implicit: exhaustive runs on all switches; with
+    # default-signifies-exhaustive=false, switches lacking a default
+    # arm that covers every variant are flagged. policy.Action,
+    # config.BlockResponseMode, and schema.Verdict are the principal
+    # targets; this also catches any prior switches that should have
+    # been exhaustive.
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck

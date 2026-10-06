@@ -1,0 +1,37 @@
+# DOD fixture config — drives `make dod` v0.1 acceptance.
+#
+# Not for production use. The upstream at 127.0.0.1:5853 is intentionally
+# unreachable from this fixture: bullets 3, 4, and 6 never complete a TLS
+# handshake (bullet 4 returns the block response before forwarding; bullet 6
+# fires the policy:allowed log before forwarding), so the SNI mismatch
+# between server_name: "127.0.0.1" and any real upstream cert is harmless.
+#
+# Bullet 5 (DNS forward path) does NOT use this fixture directly — it writes
+# a per-run override at $tmpdir/ward-bullet5.yaml that patches both
+# ca_bundle: (to the CA emitted by cmd/wardtestdot) AND
+# server_name: wardtestdot.test (matching the helper's cert DNS SAN), then
+# restarts ward against that override. See scripts/dod.sh bullet_5_*.
+
+listen: "127.0.0.1:5354"
+log_level: "info"
+
+upstreams:
+  - address: "127.0.0.1:5853"
+    server_name: "127.0.0.1"
+
+timeouts:
+  dial: "2s"
+  query: "2s"
+  shutdown: "2s"
+
+blocklists:
+  - id: "dod-blocked"
+    path: "./testdata/dod/blocklists/blocked.txt"
+
+allowlists:
+  - id: "dod-allowed"
+    path: "./testdata/dod/allowlists/allowed.txt"
+
+decoys:
+  - id: "dod-tripwires"
+    path: "./testdata/dod/decoys/tripwires.txt"

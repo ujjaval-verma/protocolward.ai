@@ -1,0 +1,54 @@
+listen: "127.0.0.1:5354"        # unprivileged dev default (5353 collides with mDNS / Bonjour on macOS); use ":53" with CAP_NET_BIND_SERVICE / launchd for prod
+log_level: "info"                # debug|info|warn|error
+
+upstreams:
+  - address: "9.9.9.9:853"
+    server_name: "dns.quad9.net"
+  - address: "1.1.1.1:853"
+    server_name: "one.one.one.one"
+
+timeouts:
+  dial: "3s"                     # TLS handshake to upstream
+  query: "2s"                    # per-query end-to-end budget
+  shutdown: "5s"                 # drain budget on SIGTERM
+
+# Behavioral detector (beta). `builtin: lexical` runs Ward's on-device lexical
+# detector in-process on forwarded hostnames. It FLAGS DGA-like names on
+# the dashboard ("Flags") and in the log ("policy: classified" with
+# enforced=false); it never blocks — add a flagged name to a blocklist to
+# enforce. Hostname-only analysis today; timing and per-device history are
+# coming soon. Alternative: `command: [...]` runs a sibling-process adapter
+# instead (set exactly one of builtin / command). Remove this stanza to run
+# fast-path-only.
+model:
+  builtin: lexical
+
+# Optional: static blocklists. Omit this section entirely to run ward as a pure
+# forwarder. Each entry's `id` is used in attribution logs and must be unique.
+# `path` is a local file containing hosts-file entries (e.g. "0.0.0.0 ads.example.com").
+# blocklists:
+#   - id: "oisd-small"
+#     path: "./blocklists/oisd-small.txt"
+
+# Optional: static allowlists. Same shape as blocklists. Hits take precedence
+# over blocklist hits — useful for "this CDN got blocked, I want it through".
+# allowlists:
+#   - id: "my-overrides"
+#     path: "./allowlists/overrides.txt"
+
+# Optional: shape of the response returned when a blocklist hits.
+# mode=address (default) — A queries return block_response.a,
+#                          AAAA return block_response.aaaa,
+#                          all other qtypes return NXDOMAIN.
+# mode=nxdomain          — ALL qtypes return NXDOMAIN. block_response.a /
+#                          block_response.aaaa must be omitted in this mode.
+#
+# NOTE: this is a DNS-layer response shaper, not an L7 sinkhole. The malware
+# tries to connect and times out / gets connection-refused. A future feature
+# will deliver the "appears to succeed" sinkhole semantic; the `sink` config
+# namespace is reserved for it.
+#
+# block_response:
+#   mode: "address"
+#   a:    "0.0.0.0"
+#   aaaa: "::"

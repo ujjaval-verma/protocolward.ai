@@ -1,0 +1,14 @@
+{
+  "name": "protocol-ward",
+  "version": "0.0.0-scaffolding",
+  "private": true,
+  "description": "Protocol Ward JS/TS workspace (reserved for a future /web dashboard).",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  }
+}

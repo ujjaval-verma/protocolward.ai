@@ -1,0 +1,9 @@
+# header comment
+0.0.0.0 good.example.com
+
+   # indented comment
+1.2.3.4 bad-ip.example.com
+0.0.0.0 GOOD-CASE.example.com
+||adguard.example.com
+0.0.0.0 also-good.example.com
+0.0.0.0 localhost

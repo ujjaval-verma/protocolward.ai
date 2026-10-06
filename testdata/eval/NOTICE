@@ -1,0 +1,19 @@
+testdata/eval/lexical-v1.jsonl
+
+Benign records (label "benign-majestic"): every 10th-ranked domain in ranks
+1-20,000 of the Majestic Million (https://majestic.com/reports/majestic-million),
+(c) Majestic-12 Ltd, licensed under the Creative Commons Attribution 3.0
+Unported License (https://creativecommons.org/licenses/by/3.0/). Selected
+and relabelled; otherwise unmodified. Snapshot 2026-10-05 (UTC), SHA-256 56a9065ad41e3adf3b8bb87ef04740d59630de5c9d90470eaec09f112266ed48.
+
+Malicious records (labels "dga-wiki", "dga-ramnit", "dga-md5"): generated
+by scripts/build-ngrams/dga.go: two public algorithms (the Wikipedia
+reference DGA and Ramnit) plus "dga-md5", a Bamital-shaped MD5-hex
+synthetic (not the published Bamital algorithm); no third-party data.
+
+Held-out benign labels: 29% of the benign first labels also occur in the
+training labels at other ranks (the ranks themselves are disjoint), so the
+benign FPR on this suite is in-distribution; the out-of-sample figure
+(ranks 200k-300k) is the honest one.
+
+The other fixtures in this directory (v0.2.jsonl) are hand-written.

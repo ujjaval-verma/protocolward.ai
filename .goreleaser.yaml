@@ -1,0 +1,78 @@
+# Protocol Ward — goreleaser config.
+# Manual smoke: `goreleaser release --snapshot --clean --skip=sign` (no tag required).
+# Real release: triggered by .github/workflows/release.yml on `push: tags: ['v*.*.*']`.
+version: 2
+
+project_name: ward
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: ward
+    main: ./cmd/ward
+    binary: ward
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: ward
+    formats: [tar.gz]
+    name_template: "ward_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+signs:
+  - id: cosign-keyless
+    cmd: cosign
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+    certificate: "${artifact}.pem"
+    signature: "${artifact}.sig"
+
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"
+      - "Merge pull request"

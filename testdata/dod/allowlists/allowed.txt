@@ -1,0 +1,9 @@
+# DOD allowlist fixture. Allow-beats-block: bothlisted.dod.test is in both
+# files; the allowlist must win (policy invariant proven in T6 of policy-allowlist
+# slice). Same hosts-file format as blocklists.
+#
+# allowed.dod.test: used by bullet 5 (DNS forward path) — name must be on
+# the allowlist so the policy engine reaches the upstream forward branch
+# instead of returning the block response.
+0.0.0.0 bothlisted.dod.test
+0.0.0.0 allowed.dod.test
