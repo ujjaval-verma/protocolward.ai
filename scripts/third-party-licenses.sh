@@ -15,20 +15,35 @@
 # Exits non-zero if any linked module has no licence file at its root.
 # Run by the goreleaser `before` hook; checked by scripts/check-third-party-licenses.sh.
 #
-# The module set is the union over the released platforms. Keep TARGETS in
-# step with goos/goarch (minus ignore) in .goreleaser.yaml.
+# <out-dir> is relative to the caller's cwd. It must be absent or a previous
+# output of this script (it holds MODULES.txt); anything else is refused, so a
+# typo cannot delete a real directory.
+#
+# The module set is the union over the released platforms in TARGETS.
+# scripts/check-third-party-licenses.sh fails if TARGETS drifts from the
+# goos/goarch matrix (minus ignore) in .goreleaser.yaml.
+#
+# Usage: scripts/third-party-licenses.sh --print-targets   prints TARGETS, one per line
 
 set -euo pipefail
 
 TARGETS="${TARGETS:-darwin/arm64 linux/amd64 linux/arm64}"
 
+if [[ "${1:-}" == "--print-targets" ]]; then
+  printf '%s\n' $TARGETS
+  exit 0
+fi
+
 out="${1:?usage: third-party-licenses.sh <out-dir> [module-dir] [main-pkg]}"
 moddir="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
 pkg="${3:-./cmd/ward}"
 
-case "$out" in
-  "" | / | . | ..) echo "third-party-licenses: refusing out-dir '$out'" >&2; exit 2 ;;
-esac
+# Resolve against the caller's cwd before the cd below.
+[[ "$out" == /* ]] || out="$PWD/$out"
+if [[ -e "$out" && ! -f "$out/MODULES.txt" ]]; then
+  echo "third-party-licenses: refusing out-dir '$out': it exists and is not a previous output (no MODULES.txt)" >&2
+  exit 2
+fi
 
 cd "$moddir"
 export LC_ALL=C CGO_ENABLED=0
@@ -73,7 +88,7 @@ while IFS='|' read -r path version dir; do
   done < <(find "$dir" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'LICENCE*' \
              -o -iname 'COPYING*' -o -iname 'NOTICE*' -o -iname 'PATENTS*' \) | sort)
   if (( found == 0 )); then
-    echo "third-party-licenses: $path${version:+@$version}: no LICENSE/LICENCE/COPYING file at $dir — remediation: replace or drop the dependency, or vendor its licence text by hand" >&2
+    echo "third-party-licenses: $path${version:+@$version}: no LICENSE/LICENCE/COPYING file at $dir — remediation: replace or drop the dependency" >&2
     missing=1
     continue
   fi
