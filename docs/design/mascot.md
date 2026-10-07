@@ -46,7 +46,7 @@ Kestrel is rendered in three sanctioned registers. The OpenClaw illustration reg
 
 ### 4.1 Flat vector illustration (README header, protocolward.ai hero, favicon)
 
-Flat-shaded layered paths traced from the reference photo (see the credit in §10). No gradients, no outlines, transparent background (hero; the favicon adds an opaque `#0B0F14` tile and thin feather strokes). The hero is `docs/assets/kestrel-hover.svg` (87 paths, 13 fills); the favicon is `docs/assets/kestrel-favicon.svg`.
+Flat-shaded layered paths traced from the reference photo (see the credit in §10). No gradients, no outlines, transparent background (hero; the favicon adds an opaque `#0B0F14` tile and thin feather strokes). The hero is `docs/assets/kestrel-flight.svg` (87 paths, 13 fills); the favicon is `docs/assets/kestrel-favicon.svg`.
 
 | Hex | Source | Use |
 |---|---|---|
@@ -98,7 +98,7 @@ Four sanctioned poses. Anything else needs a written justification before it shi
 
 1. **Hover (canonical).** Viewed from below or front: wings fully spread and slightly downward; tail fanned for stabilization; talons drawn up under the body; head tilted toward the ground. This remains the canonical pose for the motif and for any future illustration where the kestrel is the focal element. Mirrors the motif (§3).
 2. **Perched-watching.** Silhouette of a kestrel perched on a post or wire, head turned in profile. Use for empty states, 404 pages, and `ward doctor` healthy output. Conveys "stationed, alert."
-3. **Flight (dorsal).** Seen from above while gliding: wings spread, tail closed, head forward. The README header and the protocolward.ai hero use it, drawn as the §4.1 vector illustration (`docs/assets/kestrel-hover.svg`; the file name is kept for link stability). Hover stays the motif (§3).
+3. **Flight (dorsal).** Seen from above while gliding: wings spread, tail closed, head forward. The README header and the protocolward.ai hero use it, drawn as the §4.1 vector illustration (`docs/assets/kestrel-flight.svg`). Hover stays the motif (§3).
 4. **Stoop (deferred).** Wings folded, diving. Reserved for the "blocked event" surface in the dashboard once it exists. Do not produce until that surface is designed; we don't want stoop floating around as decorative art divorced from a "strike just happened" semantic.
 
 ## 6. Taglines

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/kestrel-hover.svg" alt="Kestrel, the Protocol Ward mascot, in flight" width="280"/>
+  <img src="docs/assets/kestrel-flight.svg" alt="Kestrel, the Protocol Ward mascot, in flight" width="280"/>
 
   <h1>Protocol Ward</h1>
 
