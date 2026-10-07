@@ -56,7 +56,8 @@ func requireLoopbackDashAddr(addr string) error {
 }
 
 // dashboardListenAddr is the default dashboard bind, per ADR-0001 D12.
-// Fixed today; a dashboard config option (config-file override) is planned. Loopback-only is load-bearing — see internal/web package doc.
+// Fixed today; a dashboard config option (config-file override) is planned.
+// Loopback-only is load-bearing — see internal/web package doc.
 const dashboardListenAddr = "127.0.0.1:18987"
 
 // serveError carries an exit code and a structured remediation hint so callers

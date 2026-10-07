@@ -44,7 +44,7 @@ Sign-off: date + operator name on each checked item.
 
 This repository is the development repository; there is no separate publish step. The public repository was created on 2026-10-06 from one squashed commit of the earlier private tree (ADR-0007); that was a one-time launch.
 
-1. `make ci` passes before you push (the pre-push hook runs a fast subset; `make ci` also runs the SPDX, public-content and third-party-licence gates, `scripts/check-spdx.sh`, `scripts/check-public.sh` and `scripts/check-third-party-licenses.sh`).
+1. `make ci` passes before you push (the pre-push hook runs a fast subset; `make ci` also runs the SPDX, public-content and third-party-licence gates (`scripts/check-spdx.sh`, `scripts/check-public.sh`, `scripts/check-third-party-licenses.sh`)).
 2. Every commit carries a DCO sign-off (`git commit -s`; `CONTRIBUTING.md`).
 
 ## Tagged release build

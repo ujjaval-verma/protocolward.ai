@@ -1,4 +1,4 @@
-# Protocol Ward — Product Vision (v4)
+# Protocol Ward — Product Vision (v4.1)
 
 > **Status:** Draft v4.1, revised 2026-10-06. Supersedes v3.
 > **Scope:** This is the product direction, not a description of what ships today. What ships today is in the README roadmap. In the public beta, Ward analyses each hostname that misses your lists on-device; timing and per-device history are coming soon.
@@ -55,7 +55,7 @@ Three layers, cleanly separated.
 
 A DNS resolver today, with a reverse proxy planned. Intercepts DNS, plans to inspect available metadata (SNI where visible, TLS handshake fields, DNS query patterns, flow timing, decoy endpoint hits), enforces policy decisions, and is planned to emit structured flow records to the SIEM/log sink of the operator's choice. Fast-path cache hits are designed to route in under one millisecond (design target; not yet benchmarked). Cache misses hand flow context to the intelligence layer.
 
-The fast-path cache is populated from two sources: operator-defined policy rules, and **curated public blocklists** compiled into the cache at startup and refreshed via the signed pull-only update channel. The planned default blocklist bundle covers three categories (today Ward loads any hosts-format or AdGuard-format list the operator configures):
+The fast-path cache is populated from two sources: operator-defined policy rules, and **curated public blocklists** compiled into the cache at startup and refreshed via the signed pull-only update channel. The planned default blocklist bundle covers three categories (today Ward loads hosts-format lists and AdGuard `||host^` rules the operator configures):
 
 - **Tracking and ads:** [OISD](https://oisd.nl) (big tier), [Hagezi](https://github.com/hagezi/dns-blocklists) (normal tier), EasyPrivacy — covers the long tail of ad networks, trackers, and telemetry endpoints across consumer devices and smart home hardware.
 - **Malware and C2:** [URLhaus](https://urlhaus.abuse.ch) (abuse.ch live malware distribution feed), [Feodo Tracker](https://feodotracker.abuse.ch) (botnet and banking trojan C2 infrastructure), [Emerging Threats Open](https://rules.emergingthreats.net) (Proofpoint's open C2/exploit-kit ruleset) — directly relevant to supply chain payloads phoning home.

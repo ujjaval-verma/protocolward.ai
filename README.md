@@ -36,7 +36,7 @@ Per query, decoys are matched first (a decoy is never forwarded), then allowlist
 
 ### Blocklists — fast path
 
-Names on your lists are answered with your configured block response, with the list and rule in the log. Ward reads hosts-format or AdGuard-format lists, so the hosts-format or AdGuard-format exports of public lists such as OISD, Hagezi and StevenBlack work without conversion. Bare-domain lines (a name with no address) are skipped with a warning, so a mixed file still loads, but a file with no usable entries fails to load. AdGuard exports' `[Adblock Plus]` and `!` header lines also produce warnings but the file loads. Allowlists take precedence.
+Names on your lists are answered with your configured block response, with the list and rule in the log. Ward reads hosts-format lists and AdGuard `||host^` rules, so the hosts-format or AdGuard-format exports of public lists such as OISD, Hagezi and StevenBlack work without conversion. Bare-domain lines (a name with no address) are skipped with a warning, so a mixed file still loads, but a file with no usable entries fails to load. AdGuard exports' `[Adblock Plus]` and `!` header lines also produce warnings but the file loads. Allowlists take precedence.
 
 > **Example — TanStack, May 2026 (CVE-2026-45321).** 84 malicious versions of 42 `@tanstack/*` packages sent stolen credentials out through `filev2.getsession.org` and `seed1`–`seed3.getsession.org`. The advisory names domain blocking as the only network mitigation. Put `getsession.org` on a list and that route is closed.
 
@@ -115,7 +115,7 @@ Trackers return `0.0.0.0`; everything else is forwarded. `qwkjxzpvtr.net` is a m
 ## Roadmap
 
 ### Shipped
-- Fast-path blocklists and allowlists from hosts-format or AdGuard-format lists, with attribution in every log line
+- Fast-path blocklists and allowlists from hosts-format lists and AdGuard `||host^` rules, with attribution in every log line
 - Decoy tripwire hostnames with alerts; decoy-free `ward config export`
 - DNS-over-TLS upstreams; `ward doctor` (bind and upstream checks)
 - Read-only web dashboard
