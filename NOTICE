@@ -6,6 +6,12 @@ not use these files except in compliance with the License. The full text
 is in LICENSE, or at https://www.apache.org/licenses/LICENSE-2.0.
 Every Go source file starts with: // SPDX-License-Identifier: Apache-2.0
 
+Third-party code
+----------------
+The ward binary statically links third-party Go modules and the Go standard
+library. Their licence texts, NOTICE and PATENTS files ship in the
+THIRD_PARTY_LICENSES/ directory of each binary release archive.
+
 Third-party data
 ----------------
 pkg/detect/ngrams.bin and the benign records (label "benign-majestic") of
