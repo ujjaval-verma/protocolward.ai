@@ -317,7 +317,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	dashListener, err := dashListen(dashAddr)
 	if err != nil {
 		msg := fmt.Sprintf("dashboard listen failed: %v", err)
-		rem := "verify nothing else is using " + dashAddr + "; the dashboard port is hardcoded in v0.1 (future slice: dashboard-config)"
+		rem := "verify nothing else is using " + dashAddr + "; the dashboard port is fixed today (a dashboard config option is planned)"
 		printStartupError("dashboard error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
@@ -646,6 +646,6 @@ Config file is located per the following search order:
 	}
 
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "path to ward.yaml config file")
-	cmd.Flags().StringVar(&opts.dashListenAddr, "dash-listen-addr", "", "override the dashboard bind (default 127.0.0.1:18987 — hardcoded for v0.1; future dashboard-config slice adds proper config). Must bind loopback (127.0.0.1, ::1, or localhost); non-loopback requires invariant 4 re-review (see internal/web package doc)")
+	cmd.Flags().StringVar(&opts.dashListenAddr, "dash-listen-addr", "", "override the dashboard bind (default 127.0.0.1:18987; a dashboard config option is planned). Must bind loopback (127.0.0.1, ::1, or localhost); non-loopback requires invariant 4 re-review (see internal/web package doc)")
 	return cmd
 }

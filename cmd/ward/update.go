@@ -92,11 +92,11 @@ func updateRemediation(err error) string {
 func newUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Operate on the signed update channel (verify metadata fixtures, in v0.1)",
+		Short: "Operate on the signed update channel (verify metadata fixtures today)",
 		Long: `ward update is the parent for signed-update-channel subcommands.
 
-v0.1 ships only ` + "`update verify`" + `, the metadata verifier; future
-sub-projects add ` + "`update fetch`" + ` and ` + "`update apply`" + `.
+Today only ` + "`update verify`" + ` ships, the metadata verifier;
+` + "`update fetch`" + ` and ` + "`update apply`" + ` are planned.
 
 The verifier walks a two-layer trust chain: cosign-over-TUF-root, then
 TUF root → targets, then per-target hash check. No network is contacted.`,
