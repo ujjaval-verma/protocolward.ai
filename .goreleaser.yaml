@@ -8,6 +8,9 @@ project_name: ward
 before:
   hooks:
     - go mod verify
+    # Licence texts of every module linked into ward + the Go standard library.
+    # Fails the release if a linked module has no licence file.
+    - scripts/third-party-licenses.sh THIRD_PARTY_LICENSES
 
 builds:
   - id: ward
@@ -40,6 +43,8 @@ archives:
       - LICENSE*
       - NOTICE
       - README.md
+      - THIRD_PARTY_LICENSES/MODULES.txt
+      - THIRD_PARTY_LICENSES/**/*
 
 checksum:
   name_template: "checksums.txt"

@@ -152,8 +152,12 @@ check-public: ## Fail on content that must not reach the public repo (ADR-0007)
 	$(Q)scripts/check-public-selftest.sh
 	$(Q)scripts/check-public.sh
 
+.PHONY: check-licenses
+check-licenses: ## Verify every module linked into ward ships a licence file (release archives carry them)
+	$(Q)scripts/check-third-party-licenses.sh
+
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public ## Lint + vet + test + testing-doc + spdx + public-content gate — the "is everything OK" gate
+check: lint vet test check-testing-doc check-spdx check-public check-licenses ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## What CI runs (incl. js/wasm compile + 5 MB size gate)
@@ -241,7 +245,7 @@ ngrams: ## Regenerate pkg/detect/ngrams.bin + testdata/eval/lexical-v1.jsonl (MA
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	$(Q)rm -rf $(BIN_DIR) $(DIST_DIR) $(COVER_OUT)
+	$(Q)rm -rf $(BIN_DIR) $(DIST_DIR) $(COVER_OUT) THIRD_PARTY_LICENSES
 
 .PHONY: distclean
 distclean: clean ## Remove build artifacts AND project-local tools

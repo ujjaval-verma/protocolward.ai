@@ -34,7 +34,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 ```
 make bootstrap  # one-time: pinned tools into .tools/ + pre-commit and pre-push hooks
 make help       # all targets, by section
-make check      # lint + vet + test + testing-doc + spdx + public-content gate
+make check      # lint + vet + test + testing-doc + spdx + public-content + third-party-licence gate
 make ci         # check + build + wasm compile/size gate (run before pushing; there is no PR CI)
 make test       # tests with race detector
 make lint       # golangci-lint (pinned)
