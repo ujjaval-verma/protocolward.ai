@@ -151,6 +151,7 @@ Where Kestrel appears, where it doesn't, and what's deferred.
 | Wordmark / primary lockup | **No** | Linear-style restraint. "Protocol Ward" alone. Kestrel is character, not logotype. |
 | Landing hero | Yes | Vector flight (dorsal) pose. Owns the hero composition; tagline #1 underneath. |
 | `README.md` header | Yes | Vector flight (dorsal). A small geometric-silhouette variant is acceptable next to the title. |
+| Social preview (Open Graph, GitHub) | Yes | 1280x640, `docs/assets/og.png`. Vector register on `#0B0F14` with a lifted mid-tone backdrop behind the bird. The docs site serves the same file as its `og:image`. |
 | Docs sidebar / 404 / empty states | Yes | Perched-watching pose, geometric silhouette register. One per page maximum. |
 | Dashboard chrome (`web/`) | **No** | Operator data does not compete with mascot. Mascot may appear in onboarding, empty states, and `404`/error views only. |
 | `ward serve` startup banner | **Deferred** | ASCII Kestrel + version on startup. Planned for sub-project 5 (`ward` CLI / `ward doctor` polish). Do not retrofit silently. |
