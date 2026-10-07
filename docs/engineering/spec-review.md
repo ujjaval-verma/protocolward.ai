@@ -2,7 +2,7 @@
 
 The adversarial review that fires **before** any code is written — against the spec and plan together — to catch the class of bug that survives into shipped code and only gets found by the post-code Ralph review.
 
-Sometimes called the "T0 review" because it runs as task T0 of every slice (before the tracer-bullet task T1). The post-code Ralph review at [code-review.md](code-review.md) is its mirror: same disposition format, different surface and different lens.
+Sometimes called the "T0 review" because it runs as task T0 of a slice (before the tracer-bullet task T1). The post-code Ralph review at [code-review.md](code-review.md) is its mirror: same disposition format, different surface and different lens.
 
 ## Why it exists
 
@@ -16,7 +16,7 @@ Once per slice, at task T0 — after the spec and plan are drafted, before any p
 
 T0 spec-review does **not** count against the 8-task slice budget, same exemption as the post-code Ralph review task.
 
-A slice is allowed to skip T0 only when explicitly noted in the plan with a reason (e.g. the bootstrap slice that *creates* the spec-review template can't apply it to itself). Skips are documented in the plan, not implicit.
+For maintainer slices, skipping T0 is allowed only when explicitly noted in the plan with a reason (e.g. the bootstrap slice that *creates* the spec-review template can't apply it to itself). Skips are documented in the plan, not implicit.
 
 ## The subagent prompt (copy into the slice's plan)
 

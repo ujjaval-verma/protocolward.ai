@@ -26,7 +26,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 - Product: `docs/product/vision.md` (direction), `docs/product/pitch.md`, `docs/product/deployment-modes.md`
 - Architecture and invariants: `docs/engineering/architecture.md`, `docs/engineering/invariants.md`
 - Decisions: `docs/engineering/decisions/ADR-NNNN-*.md`
-- Brand: `DESIGN.md`; mascot brief `docs/design/mascot.md` (pose canon includes Flight (dorsal), used by the README header and protocolward.ai hero; tagline #1 is the README headline, and product descriptors are not taglines)
+- Brand: `DESIGN.md`; mascot brief `docs/design/mascot.md` (pose canon includes Flight (dorsal), used by the README header, protocolward.ai hero and docs 404; perched-watching is planned, no asset; the Hover motif maps to `pkg/detect` today; tagline #1 is the README headline, and product descriptors are not taglines)
 - User docs and demos: https://protocolward.ai (separate repository)
 
 ## Dev loop

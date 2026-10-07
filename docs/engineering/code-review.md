@@ -2,14 +2,14 @@
 
 This document defines two things:
 
-1. **The adversarial review** that every non-trivial slice runs before push. Sometimes called the "Ralph" review after the maintainer's workflow that introduced it.
+1. **The adversarial review** the maintainer runs on every non-trivial slice before push (optional for other contributors; see CLAUDE.md). Sometimes called the "Ralph" review after the maintainer's workflow that introduced it.
 2. **The spec-promotion rubric** that decides whether a shipped slice's design doc becomes a tracked ADR or is deleted.
 
 Both exist so that future Claude sessions and future human contributors run the same review in the same shape — instead of re-deriving the prompt and the disposition format every slice.
 
 ## When the adversarial review fires
 
-Once per slice, after all functional tasks are green and before push. The maintainer runs it on every slice that touches `internal/` or `pkg/`; for other contributors it is optional (CLAUDE.md). Optional but recommended for docs-only or scripts-only slices that introduce new authored content (a doc the next contributor will read as ground truth deserves an adversarial pass — docs drift silently in a way code does not).
+Once per slice, after all functional tasks are green and before push. The maintainer runs it on every slice that touches `internal/` or `pkg/`; for other contributors it is optional (CLAUDE.md). For docs-only or scripts-only slices that introduce new authored content it is recommended too (a doc the next contributor will read as ground truth deserves an adversarial pass — docs drift silently in a way code does not).
 
 A second review may fire mid-slice as a checkpoint when a task is unusually risky (e.g. the first commit that introduces a new wire-format or a panic-recovery path). Checkpoint reviews are scoped to the single task; the end-of-slice review is scoped to the whole diff.
 

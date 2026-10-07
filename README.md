@@ -57,7 +57,7 @@ go install protocolward.ai/ward/cmd/ward@latest   # Go 1.25+
 ward version
 ```
 
-`go install` builds print `ward dev`; the archives on the [releases page](https://github.com/ujjaval-verma/protocolward.ai/releases) print the tag version.
+`go install` builds print `ward dev`; the archives on the [releases page](https://github.com/ujjaval-verma/protocolward.ai/releases) print the release version (for example `ward 0.2.0-beta.1`).
 
 Ward runs on Linux and macOS. Windows support is planned for the future.
 

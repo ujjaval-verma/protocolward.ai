@@ -1,6 +1,6 @@
 # Protocol Ward — Product Vision (v4)
 
-> **Status:** Draft, revised 2026-10-06. Supersedes v3.
+> **Status:** Draft v4.1, revised 2026-10-06. Supersedes v3.
 > **Scope:** This is the product direction, not a description of what ships today. What ships today is in the README roadmap. In the public beta, Ward analyses each hostname that misses your lists on-device; timing and per-device history are coming soon.
 
 ## The Bet
@@ -77,7 +77,7 @@ The model is strictly a classifier and summarizer. Its outputs conform to a type
 
 ## Deployment Modes
 
-Three personas, three UX surfaces — same core. Pro and Pro+ Mesh are paid services and coverage on top of Community, not separate UX surfaces; the full tier list is in `docs/product/deployment-modes.md`.
+Three personas, three UX surfaces — same core. Pro (paid services) and Pro+ Mesh (a candidate) sit on top of Community and are not separate UX surfaces; the full tier list is in `docs/product/deployment-modes.md`.
 
 | Mode | Persona | Primary UX | Scope |
 | --- | --- | --- | --- |
@@ -170,7 +170,7 @@ Phase 1 ships in versions; ADR-0001 D2 keeps AI out of v0.1.
 
 - Policy-mediated **local-agent bridge**: typed API surface for OpenClaw, MCP servers, and LLM tools to access internal resources with declared scopes and payload sanitization
 - Managed-CA mode for TLS inspection on operator-owned devices (Intune / Jamf / Kandji integrations)
-- Signed threat-intelligence subscription for SMB (the Pro managed feed, extended to multi-site)
+- Signed threat-intelligence subscription for SMB (planned; see the Pro managed feed in `docs/product/deployment-modes.md`)
 - **Native macOS client** (Pro): SwiftUI + Network Extension content filter with the Go core as an XPC engine; works with no home appliance (`docs/product/deployment-modes.md`)
 - **Validated MLX-backed model adapter for Apple Silicon**: promotes the Mac mini reference tier from "supported" to "recommended" once the adapter clears the full validation gauntlet (schema-constrained decoding, adversarial-eval suite, Bet-1 acceptance criteria, parity benchmarks against the reference Gemma-via-llama.cpp adapter, signed release through the pull-only update channel)
 - Guided onboarding flow; dashboard-first UX
@@ -237,7 +237,7 @@ Protocol Ward does **not** ship compute-burning honeypots that feed attackers fa
 
 ## Appendix B — What changed between versions
 
-- **v4 (freshness pass, 2026-10-06):** planned features (CA provisioning, per-device override, RFC process, Hall of Fame) marked as planned; v0.1 and v0.2 described as pre-public milestones; native macOS client listed in Phase 2 (Pro), matching `deployment-modes.md`.
+- **v4.1 (freshness pass, 2026-10-06):** planned features (CA provisioning, per-device override, RFC process, Hall of Fame) marked as planned; v0.1 and v0.2 described as pre-public milestones; native macOS client listed in Phase 2 (Pro), matching `deployment-modes.md`.
 - **v4 (public beta, 2026-10-05):** relicensed to Apache-2.0 everywhere (ADR-0007); Pro is paid services and Enterprise is commercial add-ons, support and managed services. Phases rewritten to match shipped versions; claims fact-checked; Bet 5 added.
 - **v3 (cleanup, 2026-04-25):** restored Gemma 4 E4B as the unambiguous reference model after a brief detour through "Gemma 3n with Gemma 4 as migration target" — the detour was an over-cautious editorial call; Gemma 4 E4B shipped April 2026 under Apache 2.0 and is the model the project is built around. Clarified the licensing precedent (superseded in v4). Split the enterprise reference architecture into a discrete-GPU rackmount row and a Mac Studio Ultra row to make "VRAM or unified" precise. Clarified that decoy primitives ship in Phase 1 across all tiers, with centralized placement UX and SIEM correlation gated to enterprise.
 - **v3 (revision, 2026-04-22):** corrected the licensing precedent (superseded in v4). Reference architectures reworked: replaced speculative "AI HAT+ 2" SKU with Hailo-10H accelerator as a capability, added Apple Silicon Mac mini and AMD Ryzen AI rows for SMB, marked Pi-5-without-accelerator as experimental. Marked 8–11 tok/s Hailo number as a design target. Tied 128k context claim to enterprise tier explicitly. Added prompt-injection risk (Key Risks #6) with schema-constrained decoding and adversarial-eval mitigation. Tightened Bet 2 break condition from an attrition percentage to an absolute sustained-install count. SLSA target raised to Level 3. MITRE CNA application gated on a disclosure track record rather than a single CVE. Added MLX-backed model adapter validation as an explicit Phase 2 deliverable gating Mac mini "recommended" status.

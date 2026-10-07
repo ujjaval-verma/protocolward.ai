@@ -13,7 +13,7 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 
 ## Gate 1 — `make ci && make dod && make audit` (automated; every tag)
 
-- `make ci`: lint, vet, race tests, testing-doc, SPDX and public-content gates, build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
+- `make ci`: lint, vet, race tests, testing-doc, SPDX, public-content and third-party-licence gates, build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
 - `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
 - `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
 
@@ -26,7 +26,7 @@ Per ADR-0001 D7 as amended by ADR-0007, the rig run gates releases, not reposito
 ### Rig checklist (v0.2)
 
 - [ ] **Fresh clone** of `main` on the Mac mini, `make bootstrap`, `make ci` green.
-- [ ] **`make dod`** green (gate 1).
+- [ ] **Gate 1** green on the rig (`make dod` and `make audit`; `make ci` is the item above).
 - [ ] **DNS forwarder mode** — router DHCP advertises the mini's IP as DNS. Verify a phone on the same network resolves via ward.
 - [ ] **Blocklist hit** — known-tracked hostname (e.g. an ads CDN you actually use) returns the configured block_response from a phone, with attribution visible in `ward` logs.
 - [ ] **Allowlist override** — a hostname added to the local allowlist forwards instead of blocks, attribution visible.
@@ -44,8 +44,10 @@ Sign-off: date + operator name on each checked item.
 
 This repository is the development repository; there is no separate publish step. The public repository was created on 2026-10-06 from one squashed commit of the earlier private tree (ADR-0007); that was a one-time launch.
 
-1. `make ci` passes before you push (the pre-push hook runs a fast subset; `make ci` also runs the SPDX and public-content gates, `scripts/check-spdx.sh` and `scripts/check-public.sh`).
+1. `make ci` passes before you push (the pre-push hook runs a fast subset; `make ci` also runs the SPDX, public-content and third-party-licence gates, `scripts/check-spdx.sh`, `scripts/check-public.sh` and `scripts/check-third-party-licenses.sh`).
 2. Every commit carries a DCO sign-off (`git commit -s`; `CONTRIBUTING.md`).
+
+## Tagged release build
 
 Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. That is the only GitHub Actions workflow; there is no PR CI (ADR-0002).
 

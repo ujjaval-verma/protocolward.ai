@@ -40,7 +40,7 @@ Generalizes Pro Roaming to many devices and sites under one policy, via a WireGu
 
 ## SMB (Phase 2, planned)
 
-Per vision.md, "What We Ship First", Phase 2: policy-mediated local-agent bridge, managed-CA TLS inspection, guided onboarding, dashboard-first UX, MLX-backed model adapter.
+Per vision.md, "What We Ship First", Phase 2: policy-mediated local-agent bridge, managed-CA TLS inspection, guided onboarding, dashboard-first UX, MLX-backed model adapter (vision.md's Phase 2 also lists the Pro native macOS client, above).
 
 ## Enterprise (Phase 3, planned)
 

@@ -56,7 +56,7 @@ func probeBind(listenAddr string) error {
 
 // probeUpstream performs a TCP-only reachability check against address with
 // the given timeout. Does NOT initiate a TLS handshake (that would couple
-// the doctor probe to upstream cert validity, which is out of scope for v0.1).
+// the doctor probe to upstream cert validity, which is out of scope today).
 // Returns an upstreamProbeResult with OK + Detail populated.
 func probeUpstream(address string, timeout time.Duration) upstreamProbeResult {
 	conn, err := net.DialTimeout("tcp", address, timeout)
