@@ -52,3 +52,20 @@ This repository is the development repository; there is no separate publish step
 Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. That is the only GitHub Actions workflow; there is no PR CI (ADR-0002).
 
 Each release archive (`ward_<os>_<arch>.tar.gz`) carries `THIRD_PARTY_LICENSES/`: the licence, NOTICE and PATENTS files of every Go module linked into `ward` on the released platforms, plus the Go standard library's licence, with `MODULES.txt` listing each module and version. The goreleaser `before` hook generates it with `scripts/third-party-licenses.sh` (not committed; gitignored) and fails the release if a linked module has no licence file. `make check` runs `scripts/check-third-party-licenses.sh`, so a dependency without a licence is caught when it is added, not at tag time.
+
+### Verifying a release
+
+`checksums.txt` is signed keylessly with cosign v3 in the release workflow. The signature, the short-lived signing certificate and the transparency-log entry are in one Sigstore bundle, `checksums.txt.sigstore.json`. To verify a release, download `checksums.txt`, `checksums.txt.sigstore.json` and the archive you want from the release page, then:
+
+```sh
+TAG=v0.2.0-beta.1   # the release you downloaded
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/ujjaval-verma/protocolward.ai/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+sha256sum --ignore-missing -c checksums.txt      # Linux
+shasum -a 256 --ignore-missing -c checksums.txt  # macOS
+```
+
+`cosign verify-blob` must print `Verified OK`, and the checksum line for your archive must say `OK`. The release workflow signs with cosign v3.0.6; verify with cosign v3.
