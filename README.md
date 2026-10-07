@@ -48,7 +48,7 @@ The detector is opt-in: set `model: { builtin: lexical }` in your config. When e
 
 You configure names that nothing legitimate on your network ever resolves, such as `nas-backup.home.arpa`. A lookup is a high-confidence sign that something is enumerating your network, and Ward raises an alert with attribution. No model runs. Decoys never appear in `ward config export` ([invariant 6](docs/engineering/invariants.md)). → [Try the decoys demo](https://protocolward.ai/demos/decoys/).
 
-**The AI classifies. The deterministic policy engine decides.** Classifiers emit a typed verdict; the policy engine is a stateless Go function with an exhaustive case for every verdict. In the beta, built-in detector verdicts only raise a flag, and an external classifier's verdicts are only logged. A model never has direct effect on whether a query is answered, and the DoD harness checks that import boundary on every `make dod` run ([invariant 1](docs/engineering/invariants.md)).
+**The AI classifies. The deterministic policy engine decides.** Classifiers emit a typed verdict; the policy engine is a stateless Go function with an exhaustive case for every verdict. In the beta, built-in detector verdicts only raise a flag, and an external classifier's verdicts are only logged. A model never has direct effect on whether a query is answered, and the DoD harness checks the `pkg/model` import boundary on every `make dod` run ([invariant 1](docs/engineering/invariants.md)).
 
 ## Install
 
@@ -56,6 +56,8 @@ You configure names that nothing legitimate on your network ever resolves, such 
 go install protocolward.ai/ward/cmd/ward@latest   # Go 1.25+
 ward version
 ```
+
+`go install` builds print `ward dev`; the archives on the [releases page](https://github.com/ujjaval-verma/protocolward.ai/releases) print the tag version.
 
 Ward runs on Linux and macOS. Windows support is planned for the future.
 
@@ -67,7 +69,7 @@ From source:
 git clone https://github.com/ujjaval-verma/protocolward.ai.git
 cd protocolward.ai
 make bootstrap          # pinned tools + git hooks (needs pre-commit installed)
-make ci                 # lint + vet + race tests + build
+make ci                 # lint + vet + race tests + repo gates + build + wasm
 ./bin/ward version
 ```
 
@@ -156,7 +158,7 @@ Full design: [`docs/engineering/architecture.md`](docs/engineering/architecture.
 
 ## Security
 
-There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). Pre-push runs lint, vet, race tests, `go mod verify` and `govulncheck`. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
+There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). Pre-push runs `go mod tidy`, lint, vet, race tests, `go mod verify` and `govulncheck`. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
 
 ## The kestrel
 

@@ -77,8 +77,8 @@ record() {
 # ---------------------------------------------------------------------------
 # Bullets. Each function records exactly one bullet via `record`. Bullets
 # 1–11 encode shipped v0.1 behavior (unchanged at the v0.2 bump). Bullets
-# 12–15 are v0.2 TODO stubs (see below) that flip to PASS as their
-# implementing slices ship. Bullet 16 is the SHIP gate, opt-in via --closeout.
+# 12–15 are the v0.2 model-stack assertions. Bullet 16 is the SHIP gate,
+# opt-in via --closeout.
 # ---------------------------------------------------------------------------
 
 bullet_1_make_ci() {
@@ -507,11 +507,9 @@ EOF
   record PASS 11 "CLI: ward doctor reports bind + upstream probe"
 }
 
-# --- v0.2 TODO stubs (bullets 12–15) ---------------------------------------
-# Each stub records exactly one TODO line and returns. They touch no shared
-# state (ward_pid, tmpdir, WARD_LOG) so they cannot interfere with bullets
-# 1–11's pass/fail chaining. Each stub becomes a real assertion when its
-# implementing slice ships, following the v0.1 stub-to-PASS pattern.
+# --- v0.2 model-stack bullets (12–15) --------------------------------------
+# They touch no shared state (ward_pid, tmpdir, WARD_LOG), so they cannot
+# interfere with bullets 1–11's pass/fail chaining.
 
 bullet_12_model_abstraction() {
   # Two-clause assertion per definition-of-done.md bullet 12:

@@ -53,7 +53,7 @@ Decoys              → tripwires   (names nothing legitimate ever resolves)
 
 **Decoys, tripwires.** You configure hostnames that no legitimate device on your network ever looks up, such as `nas-backup.home.arpa`. A lookup is a high-confidence sign that something is enumerating your network, and Ward raises an alert with attribution. No model runs. Decoys never appear in `ward config export`, so a shared config cannot tip off an attacker.
 
-**The AI classifies; the deterministic policy engine decides.** Detector and model outputs are a typed enum. The policy engine is a stateless Go function with an exhaustive case for every value. A model never has direct effect on whether a query is answered; in the beta no detector verdict leads to an applied action, and a verdict's only effect is a dashboard flag.
+**The AI classifies; the deterministic policy engine decides.** Detector and model outputs are a typed enum. The policy engine is a stateless Go function with an exhaustive case for every value. A model never has direct effect on whether a query is answered; in the beta no detector verdict leads to an applied action; a built-in detector verdict's only effect is a dashboard flag, and an external classifier's verdict is only logged.
 
 ---
 

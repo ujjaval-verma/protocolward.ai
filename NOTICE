@@ -20,5 +20,7 @@ testdata/eval/lexical-v1.jsonl are derived from the Majestic Million
 licensed under the Creative Commons Attribution 3.0 Unported License
 (https://creativecommons.org/licenses/by/3.0/). The data was modified:
 ngrams.bin holds quantised character-trigram statistics (no domain names);
-the eval fixture is a 1-in-10 sample of ranks 1-20,000. Snapshot hash and regeneration steps: pkg/detect/NOTICE and
-testdata/eval/NOTICE.
+the eval fixture is a 1-in-10 sample of ranks 1-20,000 (1,998 records:
+the generator skips punycode and out-of-alphabet names). Snapshot
+hashes: pkg/detect/NOTICE and testdata/eval/NOTICE. Regeneration: make
+ngrams (see pkg/detect/NOTICE).

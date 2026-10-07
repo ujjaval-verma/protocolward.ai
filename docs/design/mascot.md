@@ -20,7 +20,7 @@ The species is a real, living animal. Anything we render or write should be defe
 | Layer | Name | Where it appears |
 |---|---|---|
 | Product | **Protocol Ward** | Wordmark, repo, package name, formal docs, the company-style mention |
-| Mascot / in-universe character | **Kestrel** | Operator vernacular, community channels, mascot illustrations, `ward doctor` output |
+| Mascot / in-universe character | **Kestrel** | Operator vernacular, community channels, mascot illustrations (planned: `ward doctor` output) |
 | CLI binary | `ward` | Shell, scripts, systemd units, manpages |
 
 **Protocol Ward** names the discipline; **Kestrel** names the character. They are not interchangeable. Operators will say *"running Kestrel"* the way OpenClaw users say *"raising lobsters"* — this is desirable. Resist the gravitational pull to rename the product to Kestrel later; the two names doing two jobs is the point.
@@ -29,12 +29,12 @@ The species is a real, living animal. Anything we render or write should be defe
 
 The kestrel hovers stationary above a field for seconds at a time before dropping to take ground prey. That rhythm — **bounded observation, deterministic action** — is the architecture of Protocol Ward:
 
-- **Hover** = slow-path classifier (`pkg/model`, v0.2+). Bounded context, bounded latency, no side effects.
+- **Hover** = the slow-path detector (`pkg/detect` in-process today; sibling-process classifiers via the `pkg/model` contract). Bounded context, bounded latency, no side effects.
 - **Strike** = `internal/policy`. Exhaustively cased, deterministic, no judgement at the moment of action.
 
 This motif is the single most important narrative anchor and should reappear in:
 - Hero copy on the landing site.
-- The "How it works" section of `docs/product/`.
+- A future "How it works" section (docs site or `docs/product/`).
 - Any explainer that talks about the three-tier defense.
 - The pose of every mascot illustration (see §5).
 
@@ -44,9 +44,9 @@ This motif is the single most important narrative anchor and should reappear in:
 
 Kestrel is rendered in three sanctioned registers. The OpenClaw illustration register (organic, illustrative, cartoon-leaning, red `#e81b25`) is the *contrast anchor*, not the model to follow.
 
-### 4.1 Flat vector illustration (README header, protocolward.ai hero, favicon)
+### 4.1 Flat vector illustration (README header, protocolward.ai hero and 404, social preview, favicon)
 
-Flat-shaded layered paths traced from the reference photo (see the credit in §10). No gradients, no outlines, transparent background (hero; the favicon adds an opaque `#0B0F14` tile and thin feather strokes). The hero is `docs/assets/kestrel-flight.svg` (87 paths, 13 fills); the favicon is `docs/assets/kestrel-favicon.svg`.
+Flat-shaded layered paths traced from the reference photo (see the credit in §10). The bird itself has no gradients and no outlines; the hero has a transparent background (the favicon adds an opaque `#0B0F14` tile and thin feather strokes). A composition may place the bird on a soft radial backdrop that lifts `#0B0F14` toward a mid-tone (the social preview, §9); that backdrop is the only sanctioned gradient. The hero is `docs/assets/kestrel-flight.svg` (87 paths, 13 fills); the favicon is `docs/assets/kestrel-favicon.svg`.
 
 | Hex | Source | Use |
 |---|---|---|
@@ -97,21 +97,21 @@ Single-color `#F2A23B` flat fill, no outline, no gradient, no shadow. Use when t
 Four sanctioned poses. Anything else needs a written justification before it ships.
 
 1. **Hover (canonical).** Viewed from below or front: wings fully spread and slightly downward; tail fanned for stabilization; talons drawn up under the body; head tilted toward the ground. This remains the canonical pose for the motif and for any future illustration where the kestrel is the focal element. Mirrors the motif (§3).
-2. **Perched-watching.** Silhouette of a kestrel perched on a post or wire, head turned in profile. Use for empty states, 404 pages, and `ward doctor` healthy output. Conveys "stationed, alert."
+2. **Perched-watching.** Silhouette of a kestrel perched on a post or wire, head turned in profile. Planned for empty states and `ward doctor` healthy output; no asset exists yet. Conveys "stationed, alert."
 3. **Flight (dorsal).** Seen from above while gliding: wings spread, tail closed, head forward. The README header and the protocolward.ai hero use it, drawn as the §4.1 vector illustration (`docs/assets/kestrel-flight.svg`). Hover stays the motif (§3).
 4. **Stoop (deferred).** Wings folded, diving. Reserved for the "blocked event" surface in the dashboard once it exists. Do not produce until that surface is designed; we don't want stoop floating around as decorative art divorced from a "strike just happened" semantic.
 
 ## 6. Taglines
 
-Three sanctioned taglines, each bound to its surfaces. Mixing them or coining new ones requires updating this document first.
+Three sanctioned taglines, each bound to its surfaces. Mixing them or coining new ones requires updating this document first. Product descriptors (e.g. the social-preview line "Sovereign DNS defence on hardware you own.") are not taglines and may be used anywhere.
 
 | Tagline | Use on | Do not use on |
 |---|---|---|
-| **"Quiet observation. Deterministic strike."** | Landing hero, README headline, docs nav, primary external presence | Pitch deck (too understated for that audience) |
+| **"Quiet observation. Deterministic strike."** | README headline, primary external presence | Pitch deck (too understated for that audience) |
 | "Small. Patient. Lethal to phone-home." | Pitch deck, supply-chain narrative pages, the section of `docs/product/pitch.md` that names the threat class | Landing hero (over-narrow; phone-home is not the only thing Kestrel is lethal to) |
 | **"The lobster molts. The kestrel watches the perimeter."** | `docs/community/peers.md`, OpenClaw-adjacent community posts, stickers, any context where the OpenClaw friendly-rivalry is in play | Primary marketing — requires audience familiarity with OpenClaw to land |
 
-Voice rules that override any tagline: per `DESIGN.md`, no AI-magic, no superlatives, no "Trusted by 10,000+ teams" social proof, no exclamation marks. If a tagline ever wants an exclamation marks, the tagline is wrong.
+Voice rules that override any tagline: per `DESIGN.md`, no AI-magic, no superlatives, no "Trusted by 10,000+ teams" social proof, no exclamation marks. If a tagline ever wants an exclamation mark, the tagline is wrong.
 
 ## 7. Emoji conventions
 
@@ -149,22 +149,23 @@ Where Kestrel appears, where it doesn't, and what's deferred.
 | Surface | Status | Notes |
 |---|---|---|
 | Wordmark / primary lockup | **No** | Linear-style restraint. "Protocol Ward" alone. Kestrel is character, not logotype. |
-| Landing hero | Yes | Vector flight (dorsal) pose. Owns the hero composition; tagline #1 underneath. |
+| Landing hero | Yes | Vector flight (dorsal) pose. Owns the hero composition. |
 | `README.md` header | Yes | Vector flight (dorsal). A small geometric-silhouette variant is acceptable next to the title. |
-| Social preview (Open Graph, GitHub) | Yes | 1280x640, `docs/assets/og.png`. Vector register on `#0B0F14` with a lifted mid-tone backdrop behind the bird. The docs site serves the same file as its `og:image`. |
-| Docs sidebar / 404 / empty states | Yes | Perched-watching pose, geometric silhouette register. One per page maximum. |
-| Dashboard chrome (`web/`) | **No** | Operator data does not compete with mascot. Mascot may appear in onboarding, empty states, and `404`/error views only. |
-| `ward serve` startup banner | **Deferred** | ASCII Kestrel + version on startup. Planned for sub-project 5 (`ward` CLI / `ward doctor` polish). Do not retrofit silently. |
-| `ward doctor` healthy state | Deferred | Perched-watching glyph next to "all systems quiet" output. Same target sub-project as above. |
-| Swag / stickers | Yes | Pixel-art hover pose preferred. Third tagline ("The lobster molts...") earns a sticker of its own. |
-| Community channels (Discord, mailing list avatars) | Yes | Pixel-art hover or perched-watching. |
+| Social preview (Open Graph, GitHub) | Yes | 1280x640, `docs/assets/og.png`. Vector register on `#0B0F14` with a soft radial mid-tone backdrop behind the bird (see §4.1). The docs site serves the same file as its `og:image`. |
+| Docs 404 | Yes | Vector flight (dorsal), same art as the hero. |
+| Docs sidebar / empty states | Planned | Perched-watching pose, geometric silhouette register. One per page maximum. |
+| Dashboard chrome (`internal/web/`, future `web/`) | **No** | Operator data does not compete with mascot. Mascot may appear in onboarding, empty states, and `404`/error views only. |
+| `ward serve` startup banner | **Deferred** | ASCII Kestrel + version on startup. Planned with the `ward` CLI / `ward doctor` polish work. Do not retrofit silently. |
+| `ward doctor` healthy state | Deferred | Perched-watching glyph next to "all systems quiet" output. Same work item as above. |
+| Swag / stickers | Planned | Pixel-art hover pose preferred. Third tagline ("The lobster molts...") earns a sticker of its own. |
+| Community channels (Discord, mailing list avatars) | Planned | Pixel-art hover or perched-watching. |
 
 Future surfaces (any new mascot deployment) get added to this table by PR. The table is the gate.
 
 ## 10. Cross-references
 
 - `DESIGN.md` — brand DNA: colors, typography, voice, register.
-- `docs/product/vision.md` — product thesis (Kestrel motif should appear here when the narrative gets a polish pass).
+- `docs/product/vision.md` — product thesis.
 - `docs/product/pitch.md` — supply-chain attack framing; natural home for tagline #2.
 - `docs/engineering/architecture.md` — three-tier defense; Kestrel motif maps to the slow-path → policy state-engine boundary.
 - `docs/community/peers.md` — *not yet created*; will house the OpenClaw peer narrative when it lands.

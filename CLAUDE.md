@@ -13,7 +13,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 ## Repository invariants (non-negotiable)
 
 - **The AI is a classifier, never a decider.** Detector and model outputs are typed (`pkg/schema`); the deterministic policy engine (`internal/policy`) chooses actions. In the public beta, detector verdicts are flagged, never enforced.
-- **No flow data leaves the device.** At any tier. Pro = managed feeds + opt-in alert relay (alert metadata only, as defined in invariant 4). Pro+ Mesh is a candidate, not committed.
+- **No flow data leaves the device.** At any tier. Pro = managed feeds + opt-in alert relay (alert metadata only, as defined in invariant 4) + support (+ Roaming, planned). Pro+ Mesh is a candidate, not committed.
 - **Update channel is pull-only.** The device initiates; no inbound connections on the update path.
 - **Decoys never appear in config exports** or any shareable artifact.
 - **No silent drops** by default. Every block carries user-visible attribution and a one-click allowlist override (invariant 7; the one-click override is not built yet, so until it is, an allowlist entry is the override).
@@ -26,7 +26,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 - Product: `docs/product/vision.md` (direction), `docs/product/pitch.md`, `docs/product/deployment-modes.md`
 - Architecture and invariants: `docs/engineering/architecture.md`, `docs/engineering/invariants.md`
 - Decisions: `docs/engineering/decisions/ADR-NNNN-*.md`
-- Brand: `DESIGN.md`; mascot brief `docs/design/mascot.md` (pose canon includes Flight (dorsal), used by the README header and protocolward.ai hero)
+- Brand: `DESIGN.md`; mascot brief `docs/design/mascot.md` (pose canon includes Flight (dorsal), used by the README header and protocolward.ai hero; tagline #1 is the README headline, and product descriptors are not taglines)
 - User docs and demos: https://protocolward.ai (separate repository)
 
 ## Dev loop
@@ -43,7 +43,7 @@ make vuln       # govulncheck (also runs on pre-push)
 make audit      # pre-release: go mod verify + govulncheck + goreleaser check
 make build      # bin/ward
 make wasm       # dist/wasm/ward.wasm for the browser demos
-make dod        # current-version Definition of Done harness
+make dod        # v0.2 Definition of Done harness
 ```
 
 Targets are quiet by default; pass `V=1` for full commands.
@@ -52,13 +52,13 @@ Targets are quiet by default; pass `V=1` for full commands.
 
 ## Definition of Done
 
-`make dod` is the versioned acceptance gate (`docs/engineering/definition-of-done.md`, runner `scripts/dod.sh`). It exits 0 only when every bullet for the current version passes. **Do not relax a bullet to make it green.** Either ship the feature or do not claim the version.
+`make dod` is the versioned acceptance gate (`docs/engineering/definition-of-done.md`, runner `scripts/dod.sh`). The current target is v0.2. It exits 0 only when every v0.2 bullet passes. **Do not relax a bullet to make it green.** Either ship the feature or do not claim the version.
 
 ## Security posture
 
 See `docs/engineering/decisions/ADR-0002-security-posture.md`. In short:
 
-- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 20 s (lint, vet, `go test -race -short`, `go mod verify`, `govulncheck`).
+- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 20 s (`go mod tidy`, lint, vet, `go test -race -short`, `go mod verify`, `govulncheck`).
 - **`git push --no-verify` is a policy violation.** If you bypass, run `make ci && make audit` by hand and roll back if either fails.
 - **JS/TS: pnpm only**, Node 24 LTS, `engine-strict=true`, `onlyBuiltDependencies: []`.
 

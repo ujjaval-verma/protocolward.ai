@@ -1,40 +1,51 @@
 # Release Process
 
-The release process for Protocol Ward. Three gates: one automated, one manual, and one for publishing the public repository.
+The release process for Protocol Ward. Every change to `main` passes the local gates; every tag passes Gate 1. A GA (non-prerelease) tag also needs the manual rig run (Gate 2).
 
-> **Status:** public beta. Gates 1 and 3 apply to every publish of the public repository; Gate 2 applies to tagged releases.
+> **Status:** public beta. Development happens in this public repository.
+>
+> | Tag kind | Example | Gates |
+> |---|---|---|
+> | Beta (pre-release) | `v0.2.0-beta.1` | Gate 1 (`make ci && make dod && make audit`) |
+> | GA | `v0.2.0` | Gate 1 **and** Gate 2 (Mac mini rig run) |
+>
+> goreleaser publishes any tag with a pre-release suffix (`-beta.N`, `-rc.N`) as a GitHub pre-release (`prerelease: auto` in `.goreleaser.yaml`).
 
-## Gate 1 — `make dod` (automated)
+## Gate 1 — `make ci && make dod && make audit` (automated; every tag)
 
-The versioned acceptance harness. See [`docs/engineering/definition-of-done.md`](definition-of-done.md). Every bullet PASS, exit 0. Run from a fresh clone (or `make distclean && make bootstrap && make dod`) to prove no working-tree pollution.
+- `make ci`: lint, vet, race tests, testing-doc, SPDX and public-content gates, build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
+- `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
+- `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
 
-## Gate 2 — Mac mini rig run (manual)
+Run from a fresh clone (or `make distclean && make bootstrap`) on the commit you are about to tag, to prove no working-tree pollution. This gate is sufficient for a beta (pre-release) tag.
 
-Per ADR-0001 D7 as amended by ADR-0007, the rig run gates **tagged releases**, not repository visibility. The harness cannot verify it; an operator does.
+## Gate 2 — Mac mini rig run (manual; GA tags only)
 
-### Rig checklist (v0.1 — fill in as bullets land)
+Per ADR-0001 D7 as amended by ADR-0007, the rig run gates releases, not repository visibility. It is required before a GA (non-prerelease) tag such as `v0.2.0`; beta and release-candidate tags (`-beta.N`, `-rc.N`) ship on Gate 1 alone. The harness cannot verify the rig run; an operator does.
+
+### Rig checklist (v0.2)
 
 - [ ] **Fresh clone** of `main` on the Mac mini, `make bootstrap`, `make ci` green.
 - [ ] **`make dod`** green (gate 1).
 - [ ] **DNS forwarder mode** — router DHCP advertises the mini's IP as DNS. Verify a phone on the same network resolves via ward.
 - [ ] **Blocklist hit** — known-tracked hostname (e.g. an ads CDN you actually use) returns the configured block_response from a phone, with attribution visible in `ward` logs.
 - [ ] **Allowlist override** — a hostname added to the local allowlist forwards instead of blocks, attribution visible.
-- [ ] **Decoy tripwire** *(blocked-on sub-project 4)* — synthetic decoy hostname resolves to the rig's decoy listener; an alert fires; the alert metadata is visible in the dashboard.
-- [ ] **Dashboard reachability** *(blocked-on sub-project 6)* — `http://<mini>:<port>/` loads in a browser on the LAN. Read-only; no auth at MVP+.
-- [ ] **Config export hygiene** *(blocked-on sub-project 4)* — `ward config export` from the rig does NOT contain any of the configured decoy hostnames (invariant 6).
-- [ ] **Signed update flow** *(blocked-on sub-project 8)* — `ward update check` reaches the update channel, fetches signed TUF metadata, verifies a cosign signature, applies the update. Rollback path also exercised.
-- [ ] **Reboot survival** — rig restarts; ward comes back up via `launchd` (or `systemd` if Linux rig variant); first DNS query within 10s of boot.
+- [ ] **Decoy tripwire** — a phone queries a configured decoy hostname: it gets the configured block response, `ward` logs a `policy: alert` line with the decoy ID, and the dashboard's recent-decisions table shows a `decoy` row.
+- [ ] **Dashboard reachability** — on the mini (or through `ssh -L 18987:127.0.0.1:18987 <mini>`), `http://127.0.0.1:18987/` loads and shows recent decisions and flags. Confirm it is NOT reachable at `http://<mini-LAN-IP>:18987/` from another LAN device (loopback-only, invariant 4). Read-only; no auth.
+- [ ] **Config export hygiene** — `ward config export` from the rig does NOT contain any of the configured decoy hostnames (invariant 6).
+- [ ] **Update verifier** — `ward update verify testdata/update/v0.1-good` passes on the rig binary and `ward update verify testdata/update/v0.1-tampered-target` fails.
+- [ ] **Signed update flow** *(not built yet: `ward update fetch` and `ward update apply` are planned)* — fetch signed TUF metadata from the update channel, verify the cosign signature, apply the update, exercise the rollback path.
+- [ ] **Reboot survival** *(not built yet: no `launchd` plist or `systemd` unit ships in `deploy/`)* — rig restarts; ward comes back up via `launchd` (or `systemd` if Linux rig variant); first DNS query within 10s of boot.
 - [ ] **24-hour soak** — leave it running on the home network for 24 hours. No queries dropped silently; no unexpected log volume; no memory growth visible in `top`.
 
 Sign-off: date + operator name on each checked item.
 
-## Gate 3 — Public repository
+## Every change to `main`
 
-The public repository `github.com/ujjaval-verma/protocolward.ai` is published from a single squashed commit of this tree (ADR-0007). Before each publish:
+This repository is the development repository; there is no separate publish step. The public repository was created on 2026-10-06 from one squashed commit of the earlier private tree (ADR-0007); that was a one-time launch.
 
-1. `make ci && make dod && make audit` on this tree.
-2. On the squashed tree, after `git add -A` (the gates scan tracked files only): `scripts/check-public.sh <dir>` and `scripts/check-spdx.sh <dir>` both exit 0.
-3. Author and committer emails on the squashed commit are the maintainer's public address only.
+1. `make ci` passes before you push (the pre-push hook runs a fast subset; `make ci` also runs the SPDX and public-content gates, `scripts/check-spdx.sh` and `scripts/check-public.sh`).
+2. Every commit carries a DCO sign-off (`git commit -s`; `CONTRIBUTING.md`).
 
 Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. That is the only GitHub Actions workflow; there is no PR CI (ADR-0002).
 

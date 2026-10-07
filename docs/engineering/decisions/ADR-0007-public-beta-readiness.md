@@ -6,6 +6,7 @@
 - **Supersedes:** ADR-0001 D6 (licence split)
 - **Amends:** ADR-0001 (D7, D13), ADR-0002 (§1, text amended in place)
 - **Related:** ADR-0006 (hybrid classifier direction)
+- **Amended:** 2026-10-06 — the rig run gates GA (non-prerelease) tags only; beta tags are gated by `make ci`, `make dod` and `make audit` (operator decision; see `release.md`). Publishing completed 2026-10-06; the squashed-tree gate run and the pre-launch operator action were one-time launch steps.
 
 ## Context
 

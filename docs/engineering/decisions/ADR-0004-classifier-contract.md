@@ -53,7 +53,7 @@ Allow and blocklist are re-consulted (not assumed pre-cleared by the caller) so 
 
 ### D4 — `MatchedLabel = "(model)"` is the sentinel for model-sourced blocks
 
-The sentinel cannot collide with real hostnames (`internal/hostlist/parser.go:94` `hostnameRE = ^[a-z0-9.-]+$` rejects `(`). Reusing `KindBlock` avoids `kind_string.go` regen and exhaustive-switch ripple in v0.2. SP10c MAY introduce `KindModelTelemetry` / `KindModelMalicious` variants if observability needs to switch on them.
+The sentinel cannot collide with real hostnames (`hostnameRE` in `internal/hostlist/parser.go`, `^[a-z0-9.-]+$`, rejects `(`). Reusing `KindBlock` avoids `kind_string.go` regen and exhaustive-switch ripple in v0.2. SP10c MAY introduce `KindModelTelemetry` / `KindModelMalicious` variants if observability needs to switch on them.
 
 ## Consequences
 
@@ -92,13 +92,13 @@ stdout (child  → parent): {"verdict":"benign|telemetry|malicious"}\n
 
 ### Annex B — SP10b poisoned-state stance
 
-`Adapter` exposes a one-way "poisoned" latch (`internal/model/adapter.go:64-65`). The first IO/decode error during `Classify` poisons the adapter and SIGKILLs the child; every subsequent `Classify` returns `internal/model.ErrUnavailable`. The latch is intentional: the SP10c dataplane fork treats classifier failure as terminal — one `policy: model unavailable` log line per process lifetime (invariant 7), not one per query. `Close` reaps the child unconditionally.
+`Adapter` exposes a one-way "poisoned" latch (`Adapter.poisoned` in `internal/model/adapter.go`). The first IO/decode error during `Classify` poisons the adapter and SIGKILLs the child; every subsequent `Classify` returns `internal/model.ErrUnavailable`. The latch is intentional: the SP10c dataplane fork treats classifier failure as terminal — one `policy: model unavailable` log line per process lifetime (invariant 7), not one per query. `Close` reaps the child unconditionally.
 
 A future v0.3 slice MAY introduce adapter restart with backoff if operator demand surfaces; ADR-0004 D3's revisit conditions cover that scope.
 
 ### Annex C — SP10c observe-only narrowing (load-bearing for SP10e)
 
-SP10c shipped the slow-path observe fork at `internal/dataplane.classifyAsync` (~line 605). The fork:
+SP10c shipped the slow-path observe fork at `Server.classifyAsync` in `internal/dataplane/dataplane.go`. The fork:
 
 1. Spawns asynchronously on every fast-path miss (no qname dedup in v0.2; SP10e will add learned-block matching upstream).
 2. Calls `model.Classifier.Classify` against a bounded `Input{Hostname}` (SP10c does not yet populate `ClientHints` / `UserAgent`).
@@ -129,8 +129,8 @@ Verdict-to-log-level mapping:
 - `docs/engineering/decisions/ADR-0001-foundation-design.md` D2 (v0.2 scope) and D6 (license split, public-API stability)
 - `docs/engineering/decisions/ADR-0003-v0.2-sub-project-decomposition.md` SP10a row
 - `docs/engineering/invariants.md` invariants 1, 7, 10
-- `docs/engineering/architecture.md` Tier 2 (4–8k token bound)
+- `docs/engineering/architecture.md` Tier 2 (the 4–8k token bound was removed from architecture.md when the classical detector became primary, ADR-0006)
 - `docs/product/vision.md` Key Risk #6 (schema-constrained decoding)
 - `pkg/model/classifier.go` (the surface)
 - `pkg/schema/verdict.go` (the typed enum the surface returns)
-- `internal/policy/policy.go:116-158` (`DecideWithVerdict` implementation)
+- `Engine.DecideWithVerdict` in `internal/policy/policy.go`

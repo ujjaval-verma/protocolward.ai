@@ -4,7 +4,8 @@ Benign records (label "benign-majestic"): every 10th-ranked domain in ranks
 1-20,000 of the Majestic Million (https://majestic.com/reports/majestic-million),
 (c) Majestic-12 Ltd, licensed under the Creative Commons Attribution 3.0
 Unported License (https://creativecommons.org/licenses/by/3.0/). Selected
-and relabelled; otherwise unmodified. Snapshot 2026-10-05 (UTC), SHA-256 56a9065ad41e3adf3b8bb87ef04740d59630de5c9d90470eaec09f112266ed48.
+and relabelled; otherwise unmodified. 1,998 records: the generator skips
+punycode and out-of-alphabet names. Snapshot 2026-10-05 (UTC), SHA-256 56a9065ad41e3adf3b8bb87ef04740d59630de5c9d90470eaec09f112266ed48.
 
 Malicious records (labels "dga-wiki", "dga-ramnit", "dga-md5"): generated
 by scripts/build-ngrams/dga.go: two public algorithms (the Wikipedia

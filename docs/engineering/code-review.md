@@ -9,20 +9,20 @@ Both exist so that future Claude sessions and future human contributors run the 
 
 ## When the adversarial review fires
 
-Once per slice, after all functional tasks are green and before push. Mandatory for any slice that touches `internal/` or `pkg/`. Optional but recommended for docs-only or scripts-only slices that introduce new authored content (a doc the next contributor will read as ground truth deserves an adversarial pass — docs drift silently in a way code does not).
+Once per slice, after all functional tasks are green and before push. The maintainer runs it on every slice that touches `internal/` or `pkg/`; for other contributors it is optional (CLAUDE.md). Optional but recommended for docs-only or scripts-only slices that introduce new authored content (a doc the next contributor will read as ground truth deserves an adversarial pass — docs drift silently in a way code does not).
 
 A second review may fire mid-slice as a checkpoint when a task is unusually risky (e.g. the first commit that introduces a new wire-format or a panic-recovery path). Checkpoint reviews are scoped to the single task; the end-of-slice review is scoped to the whole diff.
 
 ## The subagent prompt (copy into the slice's plan)
 
-Spawn a `feature-dev:code-reviewer` (or `general-purpose`) subagent with a self-contained prompt. Paste-template:
+Give the prompt below to a fresh reviewer (a subagent such as Claude Code's `general-purpose`, or a human). Paste-template:
 
 ```
 You are reviewing slice <slice-id> on Protocol Ward (main branch).
 
 Context you must read first:
   - docs/engineering/invariants.md         — non-negotiable rules
-  - docs/engineering/architecture.md       — current layering (skeleton, grows per sub-project)
+  - docs/engineering/architecture.md       — current layering
   - docs/engineering/testing.md            — per-surface test discipline
   - docs/superpowers/specs/<spec>.md       — the design this slice executes
   - docs/superpowers/plans/<plan>.md       — the task list this slice executes
@@ -51,7 +51,7 @@ file:line, why it matters, and a concrete fix. Empty sections are fine; say
 Do not write code or edit files. Report only.
 ```
 
-Save the subagent's report to `docs/superpowers/reviews/<YYYY-MM-DD>-<slice-id>-ralph.md`. That path is gitignored under `docs/superpowers/`; the report is transient by design and gets pruned (see [scripts/prune-superpowers.sh](../../scripts/prune-superpowers.sh) once it lands).
+Save the subagent's report to `docs/superpowers/reviews/<YYYY-MM-DD>-<slice-id>-ralph.md`. That path is gitignored under `docs/superpowers/`; the report is transient by design and gets pruned (see [scripts/prune-superpowers.sh](../../scripts/prune-superpowers.sh), `make prune-superpowers`).
 
 ## Disposition format
 

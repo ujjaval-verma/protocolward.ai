@@ -4,16 +4,16 @@ The versioned acceptance contract for Protocol Ward. `make dod` exits 0 only whe
 
 ## Current target: v0.2 (Slow-Path)
 
-Scope per `docs/engineering/decisions/ADR-0001-foundation-design.md` D2: slow-path classifier contract (reference sibling adapter) + `pkg/model` / `pkg/schema` model abstraction + eval suite, with v0.1's fast-path DNS + operator-configured blocklists + decoys + `ward` CLI + read-only web dashboard + signed update channel preserved unchanged. **The AI is a classifier, never a decider** (invariant 1) and **the local model runtime is a sibling process** (invariant 3) — both are structurally verified by v0.2 bullets, not merely asserted.
+Scope per `docs/engineering/decisions/ADR-0001-foundation-design.md` D2: slow-path classifier contract (reference sibling adapter) + `pkg/model` / `pkg/schema` model abstraction + eval suite, with v0.1's fast-path DNS + operator-configured blocklists + decoys + `ward` CLI + read-only web dashboard + signed-update metadata verifier (`ward update verify`) preserved unchanged. **The AI is a classifier, never a decider** (invariant 1) and **the local model runtime is a sibling process** (invariant 3) — both are structurally verified by v0.2 bullets, not merely asserted.
 
-The script that runs these bullets is [`scripts/dod.sh`](../../scripts/dod.sh). The harness is fixture-based; no real network is contacted. The Mac mini rig run (ADR-0001 D7 as amended by ADR-0007) is a separate manual gate for tagged releases — see [`docs/engineering/release.md`](release.md).
+The script that runs these bullets is [`scripts/dod.sh`](../../scripts/dod.sh). The harness is fixture-based; no real network is contacted. The Mac mini rig run (ADR-0001 D7 as amended by ADR-0007) is a separate manual gate for GA (non-prerelease) tags; beta tags ship on `make ci`, `make dod` and `make audit` — see [`docs/engineering/release.md`](release.md).
 
 ### Bullets
 
 | # | Assertion | Source | Status |
 |---|---|---|---|
-| 1 | `make ci` passes (lint + vet + race tests + build + testing-doc) | universal preflight | PASS |
-| 2 | `make audit` passes (`go mod verify` + govulncheck) | universal preflight | PASS |
+| 1 | `make ci` passes (lint + vet + race tests + testing-doc + SPDX + public-content gate + build + wasm compile/size gate) | universal preflight | PASS |
+| 2 | `make audit` passes (`go mod verify` + govulncheck + `goreleaser check`) | universal preflight | PASS |
 | 3 | `ward serve --config testdata/dod/ward.yaml` binds 127.0.0.1:5354 within 5s; emits `policy: engine ready` | sub-project 2 + 5 | PASS |
 | 4 | DNS: blocked hostname returns the configured block_response AND emits `policy: blocked` log line with matched qname (invariant 7) | sub-project 2 | PASS |
 | 5 | DNS: forwarded hostname returns the upstream answer | sub-project 2 | PASS |
@@ -33,7 +33,7 @@ All 15 functional bullets PASS at SP10d ship; bullet 16 (SHIP) requires `make do
 
 ## How to use it
 
-- **During development of a sub-project:** ignore the bullets for *other* sub-projects (they stay TODO). Focus on turning your sub-project's bullet from TODO to PASS. The slice that lands the feature also turns its bullet green in `scripts/dod.sh`, in the same commit.
+- **During development:** all v0.2 bullets PASS today. After a version bump, new bullets land as TODO; ignore the ones for *other* work and focus on turning yours from TODO to PASS. The slice that lands the feature also turns its bullet green in `scripts/dod.sh`, in the same commit.
 - **At slice closeout:** `make dod CLOSEOUT=1`. The harness adds bullet 16 (no unpushed commits) to the gate.
 - **At version readiness:** all PASS, no TODO, no FAIL. That is what "v0.2 done" means — nothing else.
 
@@ -43,11 +43,11 @@ All 15 functional bullets PASS at SP10d ship; bullet 16 (SHIP) requires `make do
 2. Replace the `record TODO` body with the real assertion.
 3. Update this doc's status column in the same commit.
 4. Run `make dod` locally — the new bullet should be PASS.
-5. Push; the pre-push hook runs `make ci` (which doesn't include `make dod`, by design — dod is a separate, opt-in gate).
+5. Run `make ci`, then push; the pre-push hook re-runs a fast subset (lint, vet, `go test -race -short`, `go mod verify`, govulncheck). Neither includes `make dod`, by design: dod is a separate, opt-in gate.
 
 ## Rewrite-per-version contract
 
-When v0.2 is shipped (all bullets PASS), the next slice does the v0.3 bump:
+All v0.2 bullets PASS; the v0.3 bump has not happened yet, so `make dod` stays the v0.2 gate until it does. When the project moves to v0.3, one slice does the bump:
 
 1. Rewrite the bullet table in this doc to the v0.3 acceptance set (WireGuard Roaming Mode, Headscale-compatible coordination plane — per the ADR-0001 D3 progression).
 2. Rewrite `scripts/dod.sh`'s bullets to match. Previously-PASS bullets that remain v0.3 acceptance criteria stay green; bullets that don't survive the version bump are removed; new bullets land as TODO.
@@ -57,6 +57,6 @@ The git history is the record of what the goal post was at each version. **Do no
 
 ## What `make dod` is NOT
 
-- **Not in `make ci`.** CI is the per-change gate (fast, runs on every commit). DOD is the per-version gate (slow, run intentionally before claiming a release).
-- **Not the rig run.** `make dod` is the automated harness. The Mac mini rig run is a separate, manual checklist in `docs/engineering/release.md`. Sub-project 9 (public flip) requires *both* green.
+- **Not in `make ci`.** `make ci` is the per-change gate, run before every push. DOD is the per-version gate (slow, run intentionally before claiming a release).
+- **Not the rig run.** `make dod` is the automated harness. The Mac mini rig run is a separate, manual checklist in `docs/engineering/release.md`. A GA tag requires *both* green; a beta tag requires `make dod` (with `make ci` and `make audit`), not the rig run. See `release.md`.
 - **Not a substitute for the per-surface testing scope** in `docs/engineering/testing.md`. DOD asserts that the *feature* exists end-to-end; testing.md asserts that the *internals* are tested at the right discipline.

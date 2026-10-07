@@ -20,10 +20,9 @@
 #     -plan/-ralph/-design suffix MUST match the slice-id token used in the
 #     slice's commit messages, e.g. `feat(scope): T1 ... (<slice-id> T1)`.
 #
-# Known limitation: plan files predating the slice-id-in-commit-scope
-# convention (currently 3 such files on disk) will never auto-prune because
-# their slice-ids never appear in `git log`. Delete those manually at
-# operator discretion.
+# Known limitation: slices shipped before the 2026-10-06 public launch were
+# squashed into one commit, so their slice-ids never appear in `git log`;
+# delete those plan/review files manually.
 #
 # Dry-run by default; pass --apply to actually delete.
 
