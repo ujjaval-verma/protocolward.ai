@@ -1,6 +1,6 @@
-# Protocol Ward — Product Vision (v4)
+# Protocol Ward — Product Vision (v4.1)
 
-> **Status:** Draft, revised 2026-10-05. Supersedes v3.
+> **Status:** Draft v4.1, revised 2026-10-06. Supersedes v3.
 > **Scope:** This is the product direction, not a description of what ships today. What ships today is in the README roadmap. In the public beta, Ward analyses each hostname that misses your lists on-device; timing and per-device history are coming soon.
 
 ## The Bet
@@ -55,7 +55,7 @@ Three layers, cleanly separated.
 
 A DNS resolver today, with a reverse proxy planned. Intercepts DNS, plans to inspect available metadata (SNI where visible, TLS handshake fields, DNS query patterns, flow timing, decoy endpoint hits), enforces policy decisions, and is planned to emit structured flow records to the SIEM/log sink of the operator's choice. Fast-path cache hits are designed to route in under one millisecond (design target; not yet benchmarked). Cache misses hand flow context to the intelligence layer.
 
-The fast-path cache is populated from two sources: operator-defined policy rules, and **curated public blocklists** compiled into the cache at startup and refreshed via the signed pull-only update channel. The planned default blocklist bundle covers three categories (today Ward loads any hosts-format list the operator configures):
+The fast-path cache is populated from two sources: operator-defined policy rules, and **curated public blocklists** compiled into the cache at startup and refreshed via the signed pull-only update channel. The planned default blocklist bundle covers three categories (today Ward loads hosts-format lists and AdGuard `||host^` rules the operator configures):
 
 - **Tracking and ads:** [OISD](https://oisd.nl) (big tier), [Hagezi](https://github.com/hagezi/dns-blocklists) (normal tier), EasyPrivacy — covers the long tail of ad networks, trackers, and telemetry endpoints across consumer devices and smart home hardware.
 - **Malware and C2:** [URLhaus](https://urlhaus.abuse.ch) (abuse.ch live malware distribution feed), [Feodo Tracker](https://feodotracker.abuse.ch) (botnet and banking trojan C2 infrastructure), [Emerging Threats Open](https://rules.emergingthreats.net) (Proofpoint's open C2/exploit-kit ruleset) — directly relevant to supply chain payloads phoning home.
@@ -67,7 +67,7 @@ Blocklists will update daily via the same signed, pull-only channel used for mod
 
 ### 2. The Intelligence Layer (open-weights, model-abstracted)
 
-The planned reference LLM is **Google Gemma 4 E4B** (released 2 April 2026, Apache 2.0, ~4.5B effective parameters, multimodal, 128k context). In the public beta the shipped classifier is a small on-device lexical detector (`pkg/detect`); an LLM becomes an optional explainer later (ADR-0006). **But the project is not wedded to Gemma.** A model abstraction layer (`pkg/model`) exposes a narrow interface — classify, summarize, explain — with planned adapters for Gemma, Qwen 3, DeepSeek, Mistral, and any future open-weights model meeting the licensing criteria in §Assumptions and Bets.
+The planned reference LLM is **Google Gemma 4 E4B** (released 2 April 2026, Apache 2.0, ~4.5B effective parameters, multimodal, 128k context). In the public beta the shipped classifier is a small on-device lexical detector (`pkg/detect`); an LLM becomes an optional explainer later (ADR-0006). **But the project is not wedded to Gemma.** A model abstraction layer (`pkg/model`) exposes a narrow interface (classify today; summarize and explain are planned) with planned adapters for Gemma, Qwen 3, DeepSeek, Mistral, and any future open-weights model meeting the licensing criteria in §Assumptions and Bets.
 
 Operating context is bounded to **4–8k tokens** for classification (recent device history + current flow). The 128k ceiling is for on-demand forensic analysis, not every packet, and is realistically usable only on the enterprise hardware tier — see §Reference Architectures. Smaller tiers cap practical context at the level their RAM envelope sustains after KV-cache overhead. Nothing phones home. Model weights and policy updates are delivered via a signed, pull-only channel.
 
@@ -77,7 +77,7 @@ The model is strictly a classifier and summarizer. Its outputs conform to a type
 
 ## Deployment Modes
 
-Three personas, three UX surfaces — same core.
+Three personas, three UX surfaces — same core. Pro (paid services) and Pro+ Mesh (a candidate) sit on top of Community and are not separate UX surfaces; the full tier list is in `docs/product/deployment-modes.md`.
 
 | Mode | Persona | Primary UX | Scope |
 | --- | --- | --- | --- |
@@ -123,14 +123,14 @@ Out of scope (explicit):
 
 ## TLS Inspection
 
-**Community mode:** no TLS interception by default. Classification operates on metadata that remains visible in TLS 1.3 + ECH: flow timing, volume, handshake fields where unencrypted, DNS patterns, decoy hits, and cooperative payloads from local agents that route through the proxy intentionally. An opt-in CA-provisioning flow exists for desktop browsers on operator-owned devices.
+**Community mode:** no TLS interception by default. Classification operates on metadata that remains visible in TLS 1.3 + ECH: flow timing, volume, handshake fields where unencrypted, DNS patterns, decoy hits, and cooperative payloads from local agents that route through the proxy intentionally. An opt-in CA-provisioning flow for desktop browsers on operator-owned devices is planned.
 
 **Enterprise / SMB mode — Managed CA mode:** first-class support for TLS interception using the organization's existing enterprise CA, distributed via MDM. Documented integration with Microsoft Intune, Jamf, Kandji, and open-source alternatives (FleetDM, MicroMDM). Deep payload inspection is available on managed devices with declared consent paths. This is standard enterprise practice and removes the main consumer-era objection to DPI.
 
 ## Key Risks and How We Handle Them
 
 1. **ECH / DoH / QUIC opacity (community mode).** The external inspection surface is shrinking. Our bet: metadata-plus-behavior classification plus decoy endpoints plus cooperative local-agent integration covers the threat model more honestly than claiming payload DPI on a consumer network.
-2. **False positives.** A proxy that breaks production traffic gets uninstalled. Every block carries user-visible attribution, per-device allowlist override, and a one-click feedback loop that locally retunes policy. No silent drops by default. In enterprise, blocks route through a review queue before enforcement on a configurable fraction of flows.
+2. **False positives.** A proxy that breaks production traffic gets uninstalled. Every block carries user-visible attribution today; a per-device allowlist override and a one-click feedback loop that locally retunes policy are planned. No silent drops by default. In enterprise, blocks route through a review queue before enforcement on a configurable fraction of flows.
 3. **Model staleness on offline devices.** Signed, pull-only update channel for policy rules, threat signatures, and model-weight deltas. Device initiates; no inbound connection accepted. Updates are auditable and reproducible from public manifests. Enterprise mode adds air-gapped bundle import.
 4. **Open-weights license risk.** See §Assumptions and Bets. Model abstraction layer keeps swap cost low.
 5. **Edge-model capability plateau.** See §Assumptions and Bets. If capability stops tracking, slow-path accuracy caps our ceiling — not an existential risk, but a roadmap constraint.
@@ -149,8 +149,8 @@ Protocol Ward is open source under the **Apache License 2.0, everywhere**: the d
 - **Open source (Apache-2.0):** everything in this repository. Free for any use, with an explicit patent grant.
 - **Pro (paid services):** managed signed threat-intel feeds, the opt-in alert relay (alert metadata only, invariant 4) and support. These are services, not licence terms.
 - **Enterprise (commercial add-ons, support and managed services):** SSO/SAML, RBAC, audit log retention, FIPS-validated crypto builds, air-gapped update tooling, SLA support. These are commercial add-ons, support and managed services, not a relicensing of the core; any add-on that cannot be Apache-2.0 ships as a separate module outside this repository, and the core stays Apache-2.0.
-- **Governance:** BDFL with published RFC process, trusted-committer status after sustained contribution. Foundation formation deferred until commercial viability is proven.
-- **Contribution:** DCO (`git commit -s`), inbound = outbound: contributions are Apache-2.0, like the project, so no CLA is needed. Hall of Fame for responsible disclosures. Intent to apply for MITRE CNA status once a coordinated-disclosure track record is established across multiple published CVEs.
+- **Governance:** BDFL; an RFC process will be published, and trusted-committer status after sustained contribution. Foundation formation deferred until commercial viability is proven.
+- **Contribution:** DCO (`git commit -s`), inbound = outbound: contributions are Apache-2.0, like the project, so no CLA is needed. Public credit for responsible disclosures (a Hall of Fame page is planned). Intent to apply for MITRE CNA status once a coordinated-disclosure track record is established across multiple published CVEs.
 - **Security disclosure:** `SECURITY.md` (email `security@protocolward.ai`), 90-day coordinated disclosure, public credit for reporters.
 
 Why Apache-2.0 everywhere: a DNS appliance wins by being embedded by router OEMs, homelab distributions and integrators, and copyleft review blocks exactly those adopters. What earns money here (managed feeds, the relay, support and enterprise operations) is a service that no code licence protects either way. The trade-off is accepted: the permissive release is irreversible, and there is no dual-licensing revenue.
@@ -161,16 +161,17 @@ Why Apache-2.0 everywhere: a DNS appliance wins by being embedded by router OEMs
 
 Phase 1 ships in versions; ADR-0001 D2 keeps AI out of v0.1.
 
-- **v0.1 (shipped):** Go DNS data plane with fast-path blocklists and allowlists, decoy tripwires, decoy-free config export, `ward` CLI, read-only web dashboard, signed-update verification.
-- **v0.2 (shipped):** classifier contract (`pkg/model`, `pkg/schema`), sibling-process model isolation, eval harness.
-- **Public beta (now):** on-device lexical hostname detector (`pkg/detect`), flag-only; in-browser demos at protocolward.ai.
-- **Coming soon:** timing and per-device history signals; enforcement of verdicts; a local LLM explainer with a Gemma 4 E4B reference adapter and a second validated adapter (Qwen 3 or DeepSeek); reverse proxy; packaging as a container image (Linux amd64/arm64), Helm chart, Ansible role, flashable Pi 5 image, native macOS package and Home Assistant add-on.
+- **v0.1 (done; pre-public milestone, no tagged release):** Go DNS data plane with fast-path blocklists and allowlists, decoy tripwires, decoy-free config export, `ward` CLI, read-only web dashboard, signed-update verification.
+- **v0.2 (done; pre-public milestone, no tagged release):** classifier contract (`pkg/model`, `pkg/schema`), sibling-process model isolation, eval harness.
+- **Public beta (now; first tagged release `v0.2.0-beta.1`, a pre-release):** on-device lexical hostname detector (`pkg/detect`), flag-only; in-browser demos at protocolward.ai.
+- **Coming soon:** timing and per-device history signals; enforcement of verdicts; a local LLM explainer with a Gemma 4 E4B reference adapter and a second validated adapter (Qwen 3 or DeepSeek); reverse proxy; packaging as a container image (Linux amd64/arm64), Helm chart, Ansible role, flashable Pi 5 image, macOS package and Home Assistant add-on.
 
 ### Phase 2 — SMB hardening
 
 - Policy-mediated **local-agent bridge**: typed API surface for OpenClaw, MCP servers, and LLM tools to access internal resources with declared scopes and payload sanitization
 - Managed-CA mode for TLS inspection on operator-owned devices (Intune / Jamf / Kandji integrations)
-- Signed threat-intelligence subscription (the one paid surface compatible with "no cloud")
+- Signed threat-intelligence subscription for SMB (planned; see the Pro managed feed in `docs/product/deployment-modes.md`)
+- **Native macOS client** (Pro): SwiftUI + Network Extension content filter with the Go core as an XPC engine; works with no home appliance (`docs/product/deployment-modes.md`)
 - **Validated MLX-backed model adapter for Apple Silicon**: promotes the Mac mini reference tier from "supported" to "recommended" once the adapter clears the full validation gauntlet (schema-constrained decoding, adversarial-eval suite, Bet-1 acceptance criteria, parity benchmarks against the reference Gemma-via-llama.cpp adapter, signed release through the pull-only update channel)
 - Guided onboarding flow; dashboard-first UX
 
@@ -236,6 +237,7 @@ Protocol Ward does **not** ship compute-burning honeypots that feed attackers fa
 
 ## Appendix B — What changed between versions
 
+- **v4.1 (freshness pass, 2026-10-06):** planned features (CA provisioning, per-device override, RFC process, Hall of Fame) marked as planned; v0.1 and v0.2 described as pre-public milestones; native macOS client listed in Phase 2 (Pro), matching `deployment-modes.md`.
 - **v4 (public beta, 2026-10-05):** relicensed to Apache-2.0 everywhere (ADR-0007); Pro is paid services and Enterprise is commercial add-ons, support and managed services. Phases rewritten to match shipped versions; claims fact-checked; Bet 5 added.
 - **v3 (cleanup, 2026-04-25):** restored Gemma 4 E4B as the unambiguous reference model after a brief detour through "Gemma 3n with Gemma 4 as migration target" — the detour was an over-cautious editorial call; Gemma 4 E4B shipped April 2026 under Apache 2.0 and is the model the project is built around. Clarified the licensing precedent (superseded in v4). Split the enterprise reference architecture into a discrete-GPU rackmount row and a Mac Studio Ultra row to make "VRAM or unified" precise. Clarified that decoy primitives ship in Phase 1 across all tiers, with centralized placement UX and SIEM correlation gated to enterprise.
 - **v3 (revision, 2026-04-22):** corrected the licensing precedent (superseded in v4). Reference architectures reworked: replaced speculative "AI HAT+ 2" SKU with Hailo-10H accelerator as a capability, added Apple Silicon Mac mini and AMD Ryzen AI rows for SMB, marked Pi-5-without-accelerator as experimental. Marked 8–11 tok/s Hailo number as a design target. Tied 128k context claim to enterprise tier explicitly. Added prompt-injection risk (Key Risks #6) with schema-constrained decoding and adversarial-eval mitigation. Tightened Bet 2 break condition from an attrition percentage to an absolute sustained-install count. SLSA target raised to Level 3. MITRE CNA application gated on a disclosure track record rather than a single CVE. Added MLX-backed model adapter validation as an explicit Phase 2 deliverable gating Mac mini "recommended" status.

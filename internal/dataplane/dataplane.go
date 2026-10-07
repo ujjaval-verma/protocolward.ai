@@ -161,9 +161,9 @@ type Config struct {
 	// Flags, and NEVER consult the Engine (DD8): their results are flags,
 	// not decisions.
 	//
-	// TODO(SP10e): On the Classify-only (sibling) path the returned
+	// TODO(enforcement): On the Classify-only (sibling) path the returned
 	// policy.Decision is currently used for log attribution only — its
-	// Action is NOT applied. SP10e adds a runtime-mutable learned-block
+	// Action is NOT applied. Planned: a runtime-mutable learned-block
 	// matcher that enforces VerdictMalicious / VerdictTelemetry on future
 	// DNS queries. That enforcement applies to the Classify-only path only;
 	// enforcing Assessor verdicts requires its own ADR (ADR-0006 D3, spec
@@ -642,7 +642,7 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 // `go s.classifyAsync(qname, client)` from the ActionForward branch with
 // s.inFlight.Add(1) already accounted; Done is deferred here so Shutdown's
 // drain blocks until the fork completes. See Config.Classifier doc for the
-// observe-only contract + the SP10e enforcement carry-forward.
+// observe-only contract + the planned enforcement carry-forward.
 //
 // When the classifier also implements model.Assessor (the in-process
 // builtin detector), Assess is called instead of Classify and a non-benign
@@ -731,7 +731,7 @@ func (s *Server) classifyAsync(qname, client string) {
 
 	// Builtin (Assessor) path: flag-only by construction (ADR-0006
 	// D3). The policy engine is deliberately NOT consulted (DD8):
-	// DecideWithVerdict maps Malicious → ActionBlock, and SP10e will start
+	// DecideWithVerdict maps Malicious → ActionBlock, and planned enforcement will start
 	// applying that Decision on the Classify path below. A detector flag
 	// must never become a block without its own ADR. Flag attrs ride on the
 	// single policy: classified line (one event, one line); only non-benign
@@ -761,7 +761,7 @@ func (s *Server) classifyAsync(qname, client string) {
 	// end-to-end. With a nil Engine, skip the decide call and log the bare
 	// verdict — there is no policy to consult.
 	//
-	// TODO(SP10e): d.Action is intentionally NOT applied here — the current
+	// TODO(enforcement): d.Action is intentionally NOT applied here — the current
 	// query has already been answered, and future-query enforcement is
 	// deferred to the runtime-block matcher slice. The Decision is used for
 	// log attribution only (kind + matched fields).

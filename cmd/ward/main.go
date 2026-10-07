@@ -16,8 +16,8 @@ var version = "dev"
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "ward",
-		Short:         "Protocol Ward — sovereign edge proxy",
-		Long:          "Protocol Ward is a hardened, edge-native proxy with curated blocklists, behavioral classification, and decoy detection. See https://protocolward.ai.",
+		Short:         "Protocol Ward — sovereign DNS defence",
+		Long:          "Protocol Ward is a local DNS resolver with operator-configured blocklists, flag-only behavioral detection, and decoy tripwires. See https://protocolward.ai.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: Protocol Ward
-description: Sovereign edge proxy with curated blocklists, behavioral classification, and decoy detection.
+description: Sovereign DNS defence with blocklists, on-device behavioral detection, and decoys.
 colors:
   bg:              "#0B0F14"   # near-black slate, primary background
   bg-elevated:     "#11161D"   # cards, panels, modals
@@ -121,7 +121,7 @@ The product looks like a **security operations console**, not a fintech card or 
 - protocolward.ai docs site (separate repository) — Starlight theme maps these tokens
 - `internal/web/` — the read-only dashboard's CSS mirrors the colour tokens
 - `cmd/ward` — lipgloss styling for `ward doctor` and startup errors approximates the accent and status colours
-- `docs/design/visual-language.md` — translates tokens into component conventions (later sub-project)
+- `docs/design/visual-language.md` (planned) — will translate tokens into component conventions
 
 ## Companion docs
 

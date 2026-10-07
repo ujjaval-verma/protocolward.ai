@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Fail if the tracked tree carries anything that must not reach the public
-# repository (ADR-0007). Runs in `make check` and on the squashed tree in
-# launch task L2. Searches tracked files only.
+# repository (ADR-0007). Runs in `make check`. Searches tracked files only.
 # Usage: scripts/check-public.sh [repo-dir]   (default: this repo)
 set -euo pipefail
 dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -11,7 +10,7 @@ root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || {
   exit 1
 }
 cd "$root"
-# An empty index (e.g. a squashed tree before `git add -A`) must not pass vacuously.
+# An empty index (e.g. a fresh `git init` before `git add -A`) must not pass vacuously.
 [[ -n "$(git ls-files | head -n1)" ]] || {
   echo "check-public: no tracked files under $root (run git add -A first)" >&2
   exit 1

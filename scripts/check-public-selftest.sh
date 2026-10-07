@@ -61,7 +61,7 @@ err="$("$here/check-public.sh" "$N" 2>&1)" && { echo "check-public selftest: non
 rm -rf "$N"
 grep -q '^check-public: ' <<<"$err" || { echo "check-public selftest: non-git error unlabelled" >&2; exit 1; }
 
-# A repo with nothing tracked (squashed tree before `git add -A`) must not pass vacuously.
+# A repo with nothing tracked (e.g. a fresh `git init` before `git add -A`) must not pass vacuously.
 E="$(mktemp -d)"; git -C "$E" init -q; echo x > "$E/f"
 err="$("$here/check-public.sh" "$E" 2>&1)" && { echo "check-public selftest: zero tracked files should fail" >&2; rm -rf "$E"; exit 1; }
 grep -q '^check-public: no tracked files' <<<"$err" || { echo "check-public selftest: zero-file error unlabelled" >&2; rm -rf "$E"; exit 1; }

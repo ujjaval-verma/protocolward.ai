@@ -461,7 +461,7 @@ func TestFlags_RealDetector_RootAndUnderscore_Quiet(t *testing.T) {
 
 // DD8 / invariant 1 / D7: with a real (non-nil) Engine — cmd/ward serve always
 // builds one — the Assessor path must NOT consult DecideWithVerdict, whose
-// Malicious → ActionBlock mapping SP10e will start applying. The sibling path
+// Malicious → ActionBlock mapping planned enforcement will start applying. The sibling path
 // with the same Engine still does (unchanged attribution).
 func TestFlags_Assessor_NeverConsultsEngine(t *testing.T) {
 	engine := policy.NewEngine(nil, nil)

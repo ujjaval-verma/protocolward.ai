@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-05-21
 - **Author:** Ujjaval Verma
-- **Amended by:** ADR-0007 (D6 licence split superseded: Apache-2.0 everywhere; D7 visibility gate; D13 site location; pricing figure and unpublished-note citations removed 2026-10-05)
+- **Amended by:** ADR-0005 (D10 scoped: server-rendered dashboard until interactivity is needed); ADR-0007 (D6 licence split superseded: Apache-2.0 everywhere; D7 visibility gate; D13 site location; pricing figure and unpublished-note citations removed 2026-10-05)
+- **See also:** ADR-0006 (the slow path's primary classifier is now the classical on-device detector; an LLM is an optional explainer)
 - **Spec:** internal design notes (not published); this ADR is the durable summary
 
 ## Context

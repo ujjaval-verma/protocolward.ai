@@ -5,13 +5,13 @@
 ## Architecture invariants
 
 1. **The AI is a classifier, never a decider.** Slow-path model output conforms to `pkg/schema` and maps to a hardcoded handler in `internal/policy`. The model never has direct effect on connection state.
-2. **The policy state engine is deterministic and exhaustively cased.** Every value in the decision enum maps to exactly one handler. Adding a new enum variant without a handler is a compile error.
+2. **The policy state engine is deterministic and exhaustively cased.** Every value in the decision enum maps to exactly one handler. Adding a new enum variant without a handler is a lint failure (`golangci-lint exhaustive`, part of `make check`).
 3. **One binary.** `cmd/ward` produces a single executable. No microservices. The daemon, dashboard and CLI ship in one binary, and the planned update client will too. (The local model runtime in v0.2+ is a sibling process for prompt-injection isolation — that is the only documented exception. The classical lexical detector of ADR-0006, `pkg/detect`, is not a model runtime: it is pure Go with no prompt surface and runs in-process.)
 
 ## Data invariants
 
 4. **No flow data leaves the device. Ever.** At any tier. *Flow data* is any record of which names devices looked up or connected to, and when (query, hostname, answer, payload or timing). Forwarding a query to the operator-configured upstream resolver is the DNS service itself, not an export of flow data; no other path may carry flow data off the device: no telemetry, no cloud analysis, no aggregation. The only thing an opt-in alert relay (Pro; planned, not built) may carry is **alert metadata**: event type, the identifier of the list or rule that matched (a list name or rule category, never a hostname), timestamp and an operator-assigned device label. The only hostname that may appear is a decoy name the operator planted. Pro+ Mesh (candidate) follows the same rule.
-5. **The update channel is pull-only.** Device initiates connections; no inbound connections are accepted on the update path. Updates are signed (cosign) and verified against TUF metadata.
+5. **The update channel is pull-only.** Device initiates connections; no inbound connections are accepted on the update path. Updates are signed (cosign) and verified against TUF metadata. Status (public beta): only the verifier (`ward update verify`) ships; the update client is planned.
 6. **Decoys do not leak through config exports.** A config dumped from an instance with decoys configured MUST NOT include decoy hostnames in exportable / shareable artifacts. Tested end to end in `internal/decoy/export_test.go`, structurally in `internal/configexport` (the export document has no decoy field), and, for the WebAssembly demo's `exportConfig()`, in `cmd/wardwasm/internal/demo`.
 
 ## UX invariants
@@ -24,13 +24,13 @@
 9. **`internal/` is not importable.** Go enforces this. Anything that needs to be reused from outside the binary lives in `pkg/`.
 10. **`pkg/` has no `internal/` imports.** The public Go API is self-contained.
 11. **No third-party config-binding magic.** No Viper. Configuration is plain YAML decoded into Go structs in `internal/config` with explicit validation.
-12. **CLI subcommands are pure.** Each `ward <verb>` subcommand reads config, performs the action, and returns. State lives in the daemon, not the CLI; the CLI calls the daemon over its local control socket once `ward serve` exists.
+12. **CLI subcommands are pure.** Each `ward <verb>` subcommand reads config, performs the action, and returns. State lives in the daemon, not the CLI. No subcommand talks to a running daemon today; a local control socket is planned.
 
 ## Anti-goals
 
 Things we are choosing *not* to do, to keep scope honest. An anti-goal is the same shape as an invariant: a change that contradicts one is a bug regardless of test coverage. Promoted from the foundation brainstorm (2026-05-21 UTC) so they survive on a fresh clone.
 
-13. **No consumer hardware SKU.** Per VISION.md Bet 2. We ship software that runs on commodity hardware (Mac mini, RPi-class, x86 NUC).
+13. **No consumer hardware SKU.** Per `docs/product/vision.md` Bet 2. We ship software that runs on commodity hardware (Mac mini, RPi-class, x86 NUC).
 14. **No Electron.** Anywhere. Native (SwiftUI + Network Extension on macOS, Phase 2) or web-served-from-daemon only.
 15. **No Viper.** Plain YAML decoded into Go structs in `internal/config` with explicit validation. (Restates invariant 11 — listed here so the anti-goal is discoverable from either direction.)
 16. **No slow-path model in v0.1.** v0.1 shipped fast path + blocklists + decoys + CLI + dashboard. The classifier contract landed in v0.2; the on-device detector direction is ADR-0006.

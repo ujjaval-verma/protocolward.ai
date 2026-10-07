@@ -36,7 +36,7 @@ Per query, decoys are matched first (a decoy is never forwarded), then allowlist
 
 ### Blocklists — fast path
 
-Names on your lists are answered with your configured block response, with the list and rule in the log. Ward reads hosts-format or AdGuard-format lists, so the hosts-format or AdGuard-format exports of public lists such as OISD, Hagezi and StevenBlack work without conversion. Bare-domain lines (a name with no address) are skipped with a warning, so a mixed file still loads, but a file with no usable entries fails to load. AdGuard exports' `[Adblock Plus]` and `!` header lines also produce warnings but the file loads. Allowlists take precedence.
+Names on your lists are answered with your configured block response, with the list and rule in the log. Ward reads hosts-format lists and AdGuard `||host^` rules, so the hosts-format or AdGuard-format exports of public lists such as OISD, Hagezi and StevenBlack work without conversion. Bare-domain lines (a name with no address) are skipped with a warning, so a mixed file still loads, but a file with no usable entries fails to load. AdGuard exports' `[Adblock Plus]` and `!` header lines also produce warnings but the file loads. Allowlists take precedence.
 
 > **Example — TanStack, May 2026 (CVE-2026-45321).** 84 malicious versions of 42 `@tanstack/*` packages sent stolen credentials out through `filev2.getsession.org` and `seed1`–`seed3.getsession.org`. The advisory names domain blocking as the only network mitigation. Put `getsession.org` on a list and that route is closed.
 
@@ -48,7 +48,7 @@ The detector is opt-in: set `model: { builtin: lexical }` in your config. When e
 
 You configure names that nothing legitimate on your network ever resolves, such as `nas-backup.home.arpa`. A lookup is a high-confidence sign that something is enumerating your network, and Ward raises an alert with attribution. No model runs. Decoys never appear in `ward config export` ([invariant 6](docs/engineering/invariants.md)). → [Try the decoys demo](https://protocolward.ai/demos/decoys/).
 
-**The AI classifies. The deterministic policy engine decides.** Classifiers emit a typed verdict; the policy engine is a stateless Go function with an exhaustive case for every verdict. In the beta, built-in detector verdicts only raise a flag, and an external classifier's verdicts are only logged. A model never has direct effect on whether a query is answered, and the DoD harness checks that import boundary on every `make dod` run ([invariant 1](docs/engineering/invariants.md)).
+**The AI classifies. The deterministic policy engine decides.** Classifiers emit a typed verdict; the policy engine is a stateless Go function with an exhaustive case for every verdict. In the beta, built-in detector verdicts only raise a flag, and an external classifier's verdicts are only logged. A model never has direct effect on whether a query is answered, and the DoD harness checks the `pkg/model` import boundary on every `make dod` run ([invariant 1](docs/engineering/invariants.md)).
 
 ## Install
 
@@ -56,6 +56,8 @@ You configure names that nothing legitimate on your network ever resolves, such 
 go install protocolward.ai/ward/cmd/ward@latest   # Go 1.25+
 ward version
 ```
+
+`go install` builds print `ward dev`; the archives on the [releases page](https://github.com/ujjaval-verma/protocolward.ai/releases) print the release version (for example `ward 0.2.0-beta.1`).
 
 Ward runs on Linux and macOS. Windows support is planned for the future.
 
@@ -67,7 +69,7 @@ From source:
 git clone https://github.com/ujjaval-verma/protocolward.ai.git
 cd protocolward.ai
 make bootstrap          # pinned tools + git hooks (needs pre-commit installed)
-make ci                 # lint + vet + race tests + build
+make ci                 # lint + vet + race tests + repo gates + build + wasm
 ./bin/ward version
 ```
 
@@ -113,7 +115,7 @@ Trackers return `0.0.0.0`; everything else is forwarded. `qwkjxzpvtr.net` is a m
 ## Roadmap
 
 ### Shipped
-- Fast-path blocklists and allowlists from hosts-format or AdGuard-format lists, with attribution in every log line
+- Fast-path blocklists and allowlists from hosts-format lists and AdGuard `||host^` rules, with attribution in every log line
 - Decoy tripwire hostnames with alerts; decoy-free `ward config export`
 - DNS-over-TLS upstreams; `ward doctor` (bind and upstream checks)
 - Read-only web dashboard
@@ -156,7 +158,7 @@ Full design: [`docs/engineering/architecture.md`](docs/engineering/architecture.
 
 ## Security
 
-There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). Pre-push runs lint, vet, race tests, `go mod verify` and `govulncheck`. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
+There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). Pre-push runs `go mod tidy`, lint, vet, race tests, `go mod verify` and `govulncheck`. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
 
 ## The kestrel
 

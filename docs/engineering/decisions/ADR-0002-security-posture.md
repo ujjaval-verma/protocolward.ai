@@ -29,6 +29,8 @@ This ADR captures the policies that determine when and how code is validated aga
 | pre-push | ≤20s | golangci-lint, go vet, `go test -race -short`, go mod tidy, go mod verify, **`govulncheck`** |
 | `make audit` (manual, pre-release) | unbounded | full `go test -race`, future syft+grype SBOM, future cosign verify of update-channel artifacts, pnpm audit signatures (when web exists) |
 
+Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `goreleaser check`; the full race suite runs in `make ci`, and pnpm audit runs in `make audit` once a lockfile exists, not on pre-push.
+
 Re-evaluation ladder if pre-push exceeds 20s sustainably:
 
 1. Split `go test -race -short` (pre-push) from `go test -race` full (audit-only).

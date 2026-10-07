@@ -94,7 +94,7 @@ $(TOOLS_DIR)/goreleaser:
 
 .PHONY: hooks
 hooks: ## Install pre-commit + pre-push git hooks
-	$(Q)command -v pre-commit >/dev/null || { printf "$(C_WARN)pre-commit not installed; brew install pre-commit$(C_OFF)\n"; exit 1; }
+	$(Q)command -v pre-commit >/dev/null || { printf "$(C_WARN)pre-commit not installed; brew install pre-commit (macOS) or pipx install pre-commit (Linux)$(C_OFF)\n"; exit 1; }
 	$(Q)pre-commit install --hook-type pre-commit
 	$(Q)pre-commit install --hook-type pre-push
 
@@ -160,7 +160,7 @@ check-licenses: ## Verify every module linked into ward ships a licence file (re
 check: lint vet test check-testing-doc check-spdx check-public check-licenses ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence gate — the "is everything OK" gate
 
 .PHONY: ci
-ci: check build wasm-check wasm ## What CI runs (incl. js/wasm compile + 5 MB size gate)
+ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
 
 ## === Audit ===
 
@@ -169,7 +169,7 @@ vuln: tools ## Run govulncheck against the module
 	$(Q)$(TOOLS_DIR)/govulncheck $(PKG)
 
 .PHONY: audit
-audit: tools ## Pre-release audit: module verify + vuln scan + goreleaser config lint + (future) pnpm audit signatures
+audit: tools ## Pre-release audit: module verify + vuln scan + goreleaser config lint + pnpm audit + signatures when a pnpm lockfile exists
 	$(Q)$(GO) mod verify
 	$(Q)$(TOOLS_DIR)/govulncheck $(PKG)
 	$(Q)$(TOOLS_DIR)/goreleaser check
