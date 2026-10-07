@@ -6,10 +6,12 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 >
 > | Tag kind | Example | Gates |
 > |---|---|---|
-> | Beta (pre-release) | `v0.2.0-beta.1` | Gate 1 (`make ci && make dod && make audit`) |
+> | Beta (pre-release) | `v0.2.0-beta.2` | Gate 1 (`make ci && make dod && make audit`) |
 > | GA | `v0.2.0` | Gate 1 **and** Gate 2 (Mac mini rig run) |
 >
 > goreleaser publishes any tag with a pre-release suffix (`-beta.N`, `-rc.N`) as a GitHub pre-release (`prerelease: auto` in `.goreleaser.yaml`).
+>
+> `v0.2.0-beta.1` was tagged but never released: its release run failed at signing. `v0.2.0-beta.2` superseded it as the first release (2026-10-07).
 
 ## Gate 1 — `make ci && make dod && make audit` (automated; every tag)
 
@@ -58,7 +60,7 @@ Each release archive (`ward_<os>_<arch>.tar.gz`) carries `THIRD_PARTY_LICENSES/`
 `checksums.txt` is signed keylessly with cosign v3 in the release workflow. The signature, the short-lived signing certificate and the transparency-log entry are in one Sigstore bundle, `checksums.txt.sigstore.json`. To verify a release, download `checksums.txt`, `checksums.txt.sigstore.json` and the archive you want from the release page, then:
 
 ```sh
-TAG=v0.2.0-beta.1   # the release you downloaded
+TAG=v0.2.0-beta.2   # the release you downloaded
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/ujjaval-verma/protocolward.ai/.github/workflows/release.yml@refs/tags/${TAG}" \
