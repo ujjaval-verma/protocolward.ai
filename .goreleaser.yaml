@@ -54,18 +54,20 @@ snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"
 
 signs:
+  # cosign v3 keyless: one Sigstore bundle (signature + Fulcio certificate +
+  # Rekor entry) per signed artifact. Users verify with
+  # `cosign verify-blob --bundle checksums.txt.sigstore.json ...`
+  # (docs/engineering/release.md).
   - id: cosign-keyless
     cmd: cosign
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
-      - "--yes"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--bundle=${signature}"
       - "${artifact}"
+      - "--yes"
     artifacts: checksum
     output: true
-    certificate: "${artifact}.pem"
-    signature: "${artifact}.sig"
 
 release:
   draft: false

@@ -31,6 +31,10 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          # Pinned so an installer default bump cannot change the signature format.
+          # cosign v3 writes a Sigstore bundle (.goreleaser.yaml `signs:`).
+          cosign-release: 'v3.0.6'
 
       - name: Run local CI (lint + vet + test + build)
         run: make ci

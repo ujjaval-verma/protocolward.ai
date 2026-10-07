@@ -163,7 +163,7 @@ Phase 1 ships in versions; ADR-0001 D2 keeps AI out of v0.1.
 
 - **v0.1 (done; pre-public milestone, no tagged release):** Go DNS data plane with fast-path blocklists and allowlists, decoy tripwires, decoy-free config export, `ward` CLI, read-only web dashboard, signed-update verification.
 - **v0.2 (done; pre-public milestone, no tagged release):** classifier contract (`pkg/model`, `pkg/schema`), sibling-process model isolation, eval harness.
-- **Public beta (now; first tagged release `v0.2.0-beta.1`, a pre-release):** on-device lexical hostname detector (`pkg/detect`), flag-only; in-browser demos at protocolward.ai.
+- **Public beta (now; first tagged release `v0.2.0-beta.2`, a pre-release):** on-device lexical hostname detector (`pkg/detect`), flag-only; in-browser demos at protocolward.ai.
 - **Coming soon:** timing and per-device history signals; enforcement of verdicts; a local LLM explainer with a Gemma 4 E4B reference adapter and a second validated adapter (Qwen 3 or DeepSeek); reverse proxy; packaging as a container image (Linux amd64/arm64), Helm chart, Ansible role, flashable Pi 5 image, macOS package and Home Assistant add-on.
 
 ### Phase 2 — SMB hardening
