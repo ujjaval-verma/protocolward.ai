@@ -24,6 +24,8 @@
 // fixture bytes are stable across runs on the same Go and go-tuf
 // versions (TestGenerateFixtures_Deterministic). A Go bump may change
 // how crypto consumes randomness, so bytes can differ across toolchains.
+// Do not run with GODEBUG=cryptocustomrand=1: crypto then randomly
+// consumes an extra byte from the seeded reader and output varies.
 
 package update
 
