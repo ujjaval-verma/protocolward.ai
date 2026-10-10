@@ -23,8 +23,15 @@ fail=0
 
 rule() { # rule "<label>" <git grep args...>
   local label="$1"; shift
-  local hits
-  hits="$(git grep -nI "$@" || true)"
+  local hits rc=0
+  # git grep exits 1 for "no match"; anything higher is an error (e.g. an
+  # invalid pattern) and must not read as a clean pass.
+  hits="$(git grep -nI "$@")" || rc=$?
+  if (( rc > 1 )); then
+    printf 'check-public: %s: git grep failed (exit %d)\n\n' "$label" "$rc" >&2
+    fail=1
+    return
+  fi
   if [[ -n "$hits" ]]; then
     printf 'check-public: %s\n%s\n\n' "$label" "$hits" >&2
     fail=1
