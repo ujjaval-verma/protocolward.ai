@@ -8,7 +8,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/status-public%20beta-F2A23B?style=flat-square" alt="public beta"/>
-    <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.25+"/>
+    <img src="https://img.shields.io/badge/go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.26+"/>
     <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="license Apache-2.0"/>
   </p>
 
@@ -53,7 +53,7 @@ You configure names that nothing legitimate on your network ever resolves, such 
 ## Install
 
 ```bash
-go install protocolward.ai/ward/cmd/ward@latest   # Go 1.25+
+go install protocolward.ai/ward/cmd/ward@latest   # Go 1.26+
 ward version
 ```
 
