@@ -69,4 +69,12 @@ rm -rf "$E"
 
 git -C "$T" rm -q -f docs/n6a.md docs/n6b.md docs/n6ok.md docs/n2a.md notes/n2b.md docs/q.md site/p.html deploy/p.yaml deploy/p.json docs/a.md b.go docs/c.md d.txt e.go f.go g.go h.sh i.go
 "$here/check-public.sh" "$T" >/dev/null || { echo "check-public selftest: clean tree should pass" >&2; exit 1; }
+
+# A pattern git grep rejects (exit > 1) must fail loudly, not pass as "no hits".
+B="$(mktemp)"
+sed 's/investor|confidential/investor(|confidential/' "$here/check-public.sh" > "$B"
+grep -q 'investor(|confidential' "$B" || { echo "check-public selftest: broken-pattern mutation did not apply" >&2; rm -f "$B"; exit 1; }
+err="$(bash "$B" "$T" 2>&1)" && { echo "check-public selftest: invalid pattern should fail" >&2; rm -f "$B"; exit 1; }
+rm -f "$B"
+grep -q '^check-public: private or internal-only reference: git grep failed' <<<"$err" || { echo "check-public selftest: invalid-pattern error unlabelled" >&2; exit 1; }
 echo "check-public selftest: OK"
