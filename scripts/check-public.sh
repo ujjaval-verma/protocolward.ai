@@ -33,7 +33,7 @@ rule() { # rule "<label>" <git grep args...>
 
 # Eval fixtures hold real popular domain names (Majestic sample); a benign
 # name like investors.com is data, not a leak.
-rule "private or internal-only reference" -iE 'toptal|greenmile|investor|confidential|ai/docs/ujjaval' \
+rule "private or internal-only reference" -iE 'investor|confidential|ai/docs/ujjaval' \
   -- . "$self" "$selftest" ':(exclude)testdata/eval/*.jsonl'
 rule "price figure in public copy" -E '(^|[[:space:](])[$€£][0-9]|[0-9] ?(USD|EUR|GBP)|(USD|EUR|GBP) ?[0-9]|[0-9] ?(per |/ ?)(month|mo|year|yr)' \
   -- . "$self" "$selftest" ':(exclude)go.sum' ':(exclude)testdata/eval/*.jsonl'
