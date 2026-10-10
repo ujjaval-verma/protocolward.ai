@@ -52,7 +52,7 @@ repos:
     hooks:
       # Uses the pinned .tools/ binary (same as `make lint`), built by the repo's
       # own Go toolchain. The upstream pre-commit golang env builds with a
-      # different Go and cannot read go1.26.8 export data.
+      # different Go and cannot read this toolchain's export data.
       - id: golangci-lint
         name: golangci-lint
         entry: .tools/golangci-lint run ./...

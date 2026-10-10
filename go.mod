@@ -2,7 +2,7 @@ module protocolward.ai/ward
 
 go 1.25.0
 
-toolchain go1.26.8
+toolchain go1.26.9
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
