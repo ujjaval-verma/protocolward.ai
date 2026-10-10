@@ -6,7 +6,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+trap 'rm -rf "$T" "${B:-}"' EXIT
 git -C "$T" init -q
 mkdir -p "$T/docs" "$T/testdata/eval" "$T/sub"
 printf 'Pro costs $9/mo\n'                              > "$T/docs/a.md"
@@ -73,8 +73,7 @@ git -C "$T" rm -q -f docs/n6a.md docs/n6b.md docs/n6ok.md docs/n2a.md notes/n2b.
 # A pattern git grep rejects (exit > 1) must fail loudly, not pass as "no hits".
 B="$(mktemp)"
 sed 's/investor|confidential/investor(|confidential/' "$here/check-public.sh" > "$B"
-grep -q 'investor(|confidential' "$B" || { echo "check-public selftest: broken-pattern mutation did not apply" >&2; rm -f "$B"; exit 1; }
-err="$(bash "$B" "$T" 2>&1)" && { echo "check-public selftest: invalid pattern should fail" >&2; rm -f "$B"; exit 1; }
-rm -f "$B"
+grep -q 'investor(|confidential' "$B" || { echo "check-public selftest: broken-pattern mutation did not apply" >&2; exit 1; }
+err="$(bash "$B" "$T" 2>&1)" && { echo "check-public selftest: invalid pattern should fail" >&2; exit 1; }
 grep -q '^check-public: private or internal-only reference: git grep failed' <<<"$err" || { echo "check-public selftest: invalid-pattern error unlabelled" >&2; exit 1; }
 echo "check-public selftest: OK"
