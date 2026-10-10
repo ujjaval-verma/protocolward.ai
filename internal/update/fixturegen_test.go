@@ -16,18 +16,26 @@
 // regeneration; the failing happy-path test will surface this clearly.
 //
 // Determinism: ed25519 keys (TUF roles) come from seeded ed25519.
-// GenerateKey + a math/rand-backed io.Reader. ECDSA keys + cert
-// generation + ECDSA SignASN1 use the same seeded reader. With fixed
+// GenerateKey + a math/rand-backed io.Reader. ECDSA keys, cert
+// generation and ECDSA SignASN1 ignore a caller-supplied reader from
+// go 1.26 (GODEBUG cryptocustomrand=0), so each of those calls is
+// preceded by cryptotest.SetGlobalRandom with a fixed seed. With fixed
 // seeds + fixed RefTime + ed25519's deterministic signing, regenerated
-// fixture bytes are stable across runs on the same go-tuf version.
+// fixture bytes are stable across runs on the same Go and go-tuf
+// versions (TestGenerateFixtures_Deterministic). A Go bump may change
+// how crypto consumes randomness, so bytes can differ across toolchains.
+// Do not run with GODEBUG=cryptocustomrand=1: crypto then randomly
+// consumes an extra byte from the seeded reader and output varies.
 
 package update
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -36,12 +44,14 @@ import (
 	"encoding/pem"
 	"flag"
 	"io"
+	"io/fs"
 	"math/big"
 	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"testing/cryptotest"
 	"time"
 
 	"github.com/sigstore/sigstore/pkg/signature"
@@ -83,14 +93,94 @@ func TestGenerateFixtures(t *testing.T) {
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatalf("clean fixture root: %v", err)
 	}
-	for _, v := range []variant{
-		variantGood,
-		variantBadCosign,
-		variantBadRootSig,
-		variantTamperedTarget,
-		variantExpired,
-		variantMissingTrustRoot,
-	} {
+	generateFixtures(t, root)
+}
+
+// TestGenerateFixtures_Deterministic guards the -update path: two
+// regenerations must produce identical bytes, and every variant must
+// share one CA and leaf so cross-variant tests (TestVerify_TrustRootOverride
+// checks missing-trust-root against good's CA) keep passing after a
+// regeneration.
+func TestGenerateFixtures_Deterministic(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	generateFixtures(t, a)
+	generateFixtures(t, b)
+
+	err := filepath.WalkDir(a, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(a, path)
+		if err != nil {
+			return err
+		}
+		got, err := os.ReadFile(filepath.Join(b, rel))
+		if err != nil {
+			return err
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s differs between two regenerations", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+
+	goodCA, err := os.ReadFile(filepath.Join(a, "v0.1-good", "cosign-trust-root.pem"))
+	if err != nil {
+		t.Fatalf("read good CA: %v", err)
+	}
+	goodLeaf := bundleCert(t, filepath.Join(a, "v0.1-good"))
+	for _, v := range fixtureVariants {
+		dir := filepath.Join(a, "v0.1-"+v.suffix)
+		if !v.omitTrustRoot {
+			ca, err := os.ReadFile(filepath.Join(dir, "cosign-trust-root.pem"))
+			if err != nil {
+				t.Fatalf("read %s CA: %v", v.suffix, err)
+			}
+			if !bytes.Equal(ca, goodCA) {
+				t.Errorf("%s: CA differs from good's", v.suffix)
+			}
+		}
+		if leaf := bundleCert(t, dir); leaf != goodLeaf {
+			t.Errorf("%s: leaf cert differs from good's", v.suffix)
+		}
+	}
+}
+
+func bundleCert(t *testing.T, dir string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "root.json.cosign-bundle"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var b struct {
+		Cert string `json:"cert"`
+	}
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("parse bundle: %v", err)
+	}
+	return b.Cert
+}
+
+var fixtureVariants = []variant{
+	variantGood,
+	variantBadCosign,
+	variantBadRootSig,
+	variantTamperedTarget,
+	variantExpired,
+	variantMissingTrustRoot,
+}
+
+// generateFixtures writes every variant under root.
+func generateFixtures(t *testing.T, root string) {
+	t.Helper()
+	for _, v := range fixtureVariants {
 		dir := filepath.Join(root, "v0.1-"+v.suffix)
 		if err := os.MkdirAll(filepath.Join(dir, "targets"), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
@@ -219,7 +309,8 @@ func writeVariant(t *testing.T, dir string, v variant) {
 	}
 
 	// Cosign-style CA + leaf cert. CA self-signs; leaf is issued by CA.
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), detRand(0xC0_51_6E_A0))
+	cryptotest.SetGlobalRandom(t, 0xC0_51_6E_A0)
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen ca key: %v", err)
 	}
@@ -232,7 +323,8 @@ func writeVariant(t *testing.T, dir string, v variant) {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	caDER, err := x509.CreateCertificate(detRand(0xC0_51_6E_A0), caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	cryptotest.SetGlobalRandom(t, 0xC0_51_6E_A0)
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create ca cert: %v", err)
 	}
@@ -242,7 +334,8 @@ func writeVariant(t *testing.T, dir string, v variant) {
 	}
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), detRand(0xC0_51_6E_A1))
+	cryptotest.SetGlobalRandom(t, 0xC0_51_6E_A1)
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen leaf key: %v", err)
 	}
@@ -254,7 +347,8 @@ func writeVariant(t *testing.T, dir string, v variant) {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
 	}
-	leafDER, err := x509.CreateCertificate(detRand(0xC0_51_6E_A1), leafTemplate, caCert, &leafKey.PublicKey, caKey)
+	cryptotest.SetGlobalRandom(t, 0xC0_51_6E_A1)
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create leaf cert: %v", err)
 	}
@@ -262,7 +356,8 @@ func writeVariant(t *testing.T, dir string, v variant) {
 
 	// Sign sha256(rootJSON) with the leaf key. Deterministic RNG.
 	digest := sha256.Sum256(rootJSON)
-	cosignSig, err := ecdsa.SignASN1(detRand(0xC0_51_6E_A2), leafKey, digest[:])
+	cryptotest.SetGlobalRandom(t, 0xC0_51_6E_A2)
+	cosignSig, err := ecdsa.SignASN1(rand.Reader, leafKey, digest[:])
 	if err != nil {
 		t.Fatalf("ecdsa sign root.json: %v", err)
 	}

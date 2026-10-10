@@ -38,7 +38,8 @@ repos:
         # codespell wants "double-click" which is wrong for a hostname. fpr = false-positive rate.
         args: ["--ignore-words-list=ans,iam,hda,cna,doubleclick,fpr"]
         # Generated DGA + real-domain eval fixture: random labels, not prose.
-        exclude: ^testdata/eval/lexical-v1\.jsonl$
+        # go.sum holds base64 hashes, which codespell reads as misspellings.
+        exclude: ^(testdata/eval/lexical-v1\.jsonl|go\.sum)$
 
   # --- pre-push (heavier; ≤20s budget) ---
 
