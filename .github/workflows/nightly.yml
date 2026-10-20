@@ -31,6 +31,7 @@ env:
 jobs:
   gate:
     name: decide scope
+    if: github.repository == 'ujjaval-verma/protocolward.ai'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -144,7 +145,7 @@ jobs:
         if: failure() && env.MODE == 'full'
         run: |
           shopt -s nullglob
-          for f in "${RUNNER_TEMP}"/ward-dod.*/*.log "${RUNNER_TEMP}"/ward-dod.*/*.out; do
+          for f in "${RUNNER_TEMP}"/ward-dod.*/*.log "${RUNNER_TEMP}"/ward-dod.*/*.out "${RUNNER_TEMP}"/ward-dod.*/*.err; do
             echo "::group::${f##*/}"; tail -n 50 "$f"; echo "::endgroup::"
           done
 
@@ -155,7 +156,7 @@ jobs:
   report:
     name: failure issue
     needs: [gate, verify]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && github.ref == 'refs/heads/main' && github.repository == 'ujjaval-verma/protocolward.ai'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

@@ -18,6 +18,9 @@
 # Flags:
 #   --closeout   include bullet 16 (git log origin/main..HEAD must be empty).
 #                Run this at slice-closeout time, NOT during development.
+#
+# Environment:
+#   DOD_KEEP_TMPDIR=1  keep the temp dir with every bullet's logs (prints its path on exit).
 
 set -uo pipefail
 
@@ -29,7 +32,7 @@ for arg in "$@"; do
   case "$arg" in
     --closeout) closeout=1 ;;
     -h|--help)
-      sed -n '2,22p' "$0"
+      sed -n '2,24p' "$0"
       exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
