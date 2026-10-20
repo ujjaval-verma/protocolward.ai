@@ -13,6 +13,7 @@ GOFUMPT_VERSION      ?= v0.7.0
 GOLANGCI_VERSION     ?= v1.62.2
 GOVULNCHECK_VERSION  ?= v1.1.4
 GORELEASER_VERSION   ?= v2.16.0
+ACTIONLINT_VERSION   ?= v1.7.12
 
 BIN_DIR     := bin
 TOOLS_DIR   := .tools
@@ -76,7 +77,7 @@ bootstrap: tools hooks ## Set up a fresh checkout (tools + git hooks)
 	@printf "$(C_OK)bootstrap complete$(C_OFF). Try: make ci\n"
 
 .PHONY: tools
-tools: $(TOOLS_DIR)/golangci-lint $(TOOLS_DIR)/gofumpt $(TOOLS_DIR)/govulncheck $(TOOLS_DIR)/goreleaser ## Install pinned dev tools into .tools/
+tools: $(TOOLS_DIR)/golangci-lint $(TOOLS_DIR)/gofumpt $(TOOLS_DIR)/govulncheck $(TOOLS_DIR)/goreleaser $(TOOLS_DIR)/actionlint ## Install pinned dev tools into .tools/
 
 $(TOOLS_DIR)/golangci-lint:
 	$(Q)mkdir -p $(TOOLS_DIR)
@@ -93,6 +94,10 @@ $(TOOLS_DIR)/govulncheck:
 $(TOOLS_DIR)/goreleaser:
 	$(Q)mkdir -p $(TOOLS_DIR)
 	$(Q)GOBIN=$(CURDIR)/$(TOOLS_DIR) $(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
+
+$(TOOLS_DIR)/actionlint:
+	$(Q)mkdir -p $(TOOLS_DIR)
+	$(Q)GOBIN=$(CURDIR)/$(TOOLS_DIR) $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 .PHONY: hooks
 hooks: ## Install pre-commit + pre-push git hooks
@@ -158,8 +163,12 @@ check-public: ## Fail on content that must not reach the public repo (ADR-0007)
 check-licenses: ## Verify every module linked into ward ships a licence file (release archives carry them)
 	$(Q)scripts/check-third-party-licenses.sh
 
+.PHONY: check-workflows
+check-workflows: tools ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
+	$(Q)$(TOOLS_DIR)/actionlint -shellcheck= -pyflakes=
+
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public check-licenses ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence gate — the "is everything OK" gate
+check: lint vet test check-testing-doc check-spdx check-public check-licenses check-workflows ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + workflow-lint gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)

@@ -18,6 +18,7 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 - `make ci`: lint, vet, race tests, testing-doc, SPDX, public-content and third-party-licence gates, build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
 - `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
 - `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
+- `gh workflow view nightly.yml`: the nightly workflow is enabled and its last run on `main` is green (GitHub disables schedules after 60 quiet days; re-enable with `gh workflow enable nightly.yml`).
 
 Run from a fresh clone (or `make distclean && make bootstrap`) on the commit you are about to tag, to prove no working-tree pollution. This gate is sufficient for a beta (pre-release) tag.
 
@@ -51,7 +52,7 @@ This repository is the development repository; there is no separate publish step
 
 ## Tagged release build
 
-Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. That is the only GitHub Actions workflow; there is no PR CI (ADR-0002).
+Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. `.github/workflows/nightly.yml` re-verifies `main` daily after merge; those are the only two GitHub Actions workflows, and there is no PR CI (ADR-0002).
 
 Each release archive (`ward_<os>_<arch>.tar.gz`) carries `THIRD_PARTY_LICENSES/`: the licence, NOTICE and PATENTS files of every Go module linked into `ward` on the released platforms, plus the Go standard library's licence, with `MODULES.txt` listing each module and version. The goreleaser `before` hook generates it with `scripts/third-party-licenses.sh` (not committed; gitignored) and fails the release if a linked module has no licence file. `make check` runs `scripts/check-third-party-licenses.sh`, so a dependency without a licence is caught when it is added, not at tag time.
 

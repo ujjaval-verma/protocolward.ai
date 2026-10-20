@@ -49,7 +49,7 @@ cleanup() {
     kill "$ward_pid" 2>/dev/null || true
     wait "$ward_pid" 2>/dev/null || true
   fi
-  rm -rf "$tmpdir"
+  if [[ -n "${DOD_KEEP_TMPDIR:-}" ]]; then echo "dod: logs kept in $tmpdir" >&2; else rm -rf "$tmpdir"; fi
 }
 trap cleanup EXIT
 

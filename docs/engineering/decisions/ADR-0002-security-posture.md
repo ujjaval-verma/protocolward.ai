@@ -8,6 +8,7 @@
 - **Amended:** 2026-10-05 — PR CI stays deferred past the public beta (operator decision; see §1 and ADR-0007)
 - **Amended:** 2026-10-20 — invariant gates (public-content, SPDX, testing-doc, third-party licences, wasm compile + size) added to pre-push (§2)
 - **Amended:** 2026-10-20 — pre-push runs the full race suite; lint, vet, tests and the wasm gate run concurrently; the 20 s budget is defined cold (§2)
+- **Amended:** 2026-10-20 — nightly post-merge verification of `main` on GitHub Actions (`nightly.yml`); replaces the local launchd step of the re-evaluation ladder (§1, §2; issue #11)
 
 ## Context
 
@@ -17,11 +18,13 @@ This ADR captures the policies that determine when and how code is validated aga
 
 ## Decision
 
-### 1. No PR CI; the tag-triggered release workflow is the only workflow
+### 1. No PR CI; workflows run only on release tags and a nightly schedule
 
-`.github/workflows/` holds one workflow, `release.yml`, which runs only on `v*.*.*` tags (goreleaser + cosign). Nothing runs on pushes or pull requests. All validation happens locally via git hooks and `make ci`.
+`.github/workflows/` holds two workflows. `release.yml` runs only on `v*.*.*` tags (goreleaser + cosign). `nightly.yml` re-verifies `main` after merge (see the 2026-10-20 amendment below). Nothing runs on pushes or pull requests, and no workflow is a required check. All validation before merge happens locally via git hooks and `make ci`.
 
 **Amendment (2026-10-05).** The original text deferred CI to sub-project 8 and expected a successor ADR to add CI as required checks when the repository went public. On 2026-10-05 the operator decided to go public as a beta **without** PR CI. Local hooks and `make ci` remain the gate for every change, and contributors run them (CONTRIBUTING.md). PR CI is reconsidered when outside contributions arrive (see Revisit conditions). No successor ADR is needed for the beta.
+
+**Amendment (2026-10-20, issue #11).** Merged pull requests and web edits were never re-verified after merge, and `make dod`, the wasm smoke test and a goreleaser build ran only by hand or at tag time. `.github/workflows/nightly.yml` now runs against `main` on a daily cron and on `workflow_dispatch`. It detects breakage after merge; it is never a required check and never gates a merge, so the pre-push hook and `make ci` remain the gate. When `main` is unchanged since the workflow's last successful run, only `govulncheck` runs, because the vulnerability database is then the only input that changed. Otherwise it runs `make ci`, `make audit`, `make wasm-smoke`, `make dod` and a goreleaser snapshot build that neither publishes nor signs. The workflow sets `permissions: {}` at the top level and grants each job only what it uses (`actions: read` to find the last successful run, `contents: read` to check out, `issues: write` to report). Every action is pinned by full commit SHA, and no secrets are used. A failing run opens one issue labelled `ci:nightly-failure`; later failures comment on that issue, and the next green run closes it. GitHub disables scheduled workflows in a public repository after 60 days without repository activity, so the release checklist (`docs/engineering/release.md`) confirms the workflow is enabled and its last run was green.
 
 ### 2. Hook tiering with strict latency budgets
 
@@ -41,7 +44,9 @@ Re-evaluation ladder if pre-push exceeds 20s sustainably:
 
 1. Move the full race suite off pre-push to `make ci` only, keeping a fast subset on pre-push.
 2. Once the repo is public, move the heaviest checks into a pre-merge GitHub workflow as required checks.
-3. Last resort: nightly local launchd job runs `make audit` against HEAD.
+3. Last resort: move the slowest remaining pre-push checks to the nightly workflow (§1, `nightly.yml`), which already runs `make ci`, `make audit` and `make dod` against `main`. This trades detection before push for detection within a day of merge.
+
+Note (2026-10-20, issue #11): step 3 previously read "nightly local launchd job runs `make audit` against HEAD". The nightly GitHub workflow replaces it: it runs on a clean machine rather than one checkout, verifies `main` rather than a local HEAD, and reports a failure as a repository issue rather than on one laptop.
 
 ### 3. `git push --no-verify` is a policy violation
 
@@ -79,7 +84,9 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - Pre-push becomes mildly slower (about 9 s warm and 18 s cold as of 2026-10-20, ≤20s cold budget) — acceptable for the supply-chain guarantee.
 - Solo dev can choose to bypass with `--no-verify`; that is a documented policy violation, not an accident.
 - No green-checkmark hygiene burden on GitHub; contributors run `make ci` locally.
-- Re-introducing PR CI later means adding a workflow that runs `make ci` with the policies captured here as required checks.
+- A nightly workflow re-verifies `main` after merge. It costs a few runner-minutes on days `main` changed and a minute or two otherwise (free for a public repository). A failure surfaces as one open `ci:nightly-failure` issue, not as a red check on a pull request, so a break can sit on `main` for up to a day.
+- If the repository sees no activity for 60 days, GitHub disables the nightly schedule. It is re-enabled by hand (`gh workflow enable nightly.yml`); the release checklist catches it.
+- Re-introducing PR CI later means adding a `pull_request` trigger that runs `make ci` with the policies captured here as required checks; `nightly.yml` already runs the same targets on `main`.
 
 ## Revisit conditions
 
@@ -87,10 +94,12 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - A CVE arrives that `govulncheck` does not detect but `grype` or Socket.dev would have. Pulls SBOM tooling into pre-push.
 - Bun, Deno, or another runtime gains a credible security track record (Sigstore-equivalent provenance, formal audits) that justifies a swap. ≥18 months sustained signal required.
 - Outside pull requests arrive faster than local review can keep up with. (The repository going public on 2026-10-05 was considered and did not by itself trigger CI; see the §1 amendment.)
+- The nightly workflow catches, within one month, two breaks on `main` that a pre-merge check would have caught. Pulls PR CI forward.
 
 ## References
 
 - `Makefile` — `make audit` ladder; `.tools/govulncheck` install target
+- `.github/workflows/nightly.yml` — nightly post-merge verification of `main` (§1 amendment of 2026-10-20)
 - `.pre-commit-config.yaml` — hook tiering
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
