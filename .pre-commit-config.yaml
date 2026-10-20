@@ -85,3 +85,45 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+      # Invariant gates (issue #10): the same Make targets `make check`/`make ci`
+      # run, so the hook and the manual gate cannot drift. always_run because
+      # they scan the whole tree, not the files being pushed. Each entry unsets
+      # the git-local env (GIT_DIR, GIT_INDEX_FILE, ...) that git exports to
+      # hooks: the check-public/check-spdx selftests build throwaway repos with
+      # `git -C`, and under that env they would write to the real index.
+      - id: check-public
+        name: check-public (public-content gate)
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); make check-public'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-spdx
+        name: check-spdx (SPDX header gate)
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); make check-spdx'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-testing-doc
+        name: check-testing-doc (testing.md row gate)
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); make check-testing-doc'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-licenses
+        name: check-licenses (third-party licence gate)
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); make check-licenses'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: wasm-size
+        name: wasm compile + 5 MB size gate
+        entry: bash -c 'unset $(git rev-parse --local-env-vars); make wasm-check wasm'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
