@@ -12,7 +12,7 @@ The script that runs these bullets is [`scripts/dod.sh`](../../scripts/dod.sh). 
 
 | # | Assertion | Source | Status |
 |---|---|---|---|
-| 1 | `make ci` passes (lint + vet + race tests + testing-doc + SPDX + public-content + third-party-licence gates + build + wasm compile/size gate) | universal preflight | PASS |
+| 1 | `make ci` passes (lint + vet + race tests + testing-doc + SPDX + public-content + third-party-licence gates + workflow lint (actionlint) + build + wasm compile/size gate) | universal preflight | PASS |
 | 2 | `make audit` passes (`go mod verify` + govulncheck + `goreleaser check`) | universal preflight | PASS |
 | 3 | `ward serve --config testdata/dod/ward.yaml` binds 127.0.0.1:5354 within 5s; emits `policy: engine ready` | sub-project 2 + 5 | PASS |
 | 4 | DNS: blocked hostname returns the configured block_response AND emits `policy: blocked` log line with matched qname (invariant 7) | sub-project 2 | PASS |

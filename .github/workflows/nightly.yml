@@ -1,0 +1,192 @@
+# Protocol Ward — nightly verification of main (ADR-0002 §1, amendment of 2026-10-20).
+# Post-merge detection only: never a required check, never runs on pushes or
+# pull requests. When main is unchanged since this workflow's last successful
+# run, only govulncheck runs. A failure opens or updates one issue labelled
+# ci:nightly-failure; the next green run closes it.
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC daily
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run the full verification even if main is unchanged
+        type: boolean
+        default: false
+      selftest_failure:
+        description: Fail on purpose to exercise the failure-issue lifecycle
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FAILURE_LABEL: 'ci:nightly-failure'
+
+jobs:
+  gate:
+    name: decide scope
+    if: github.repository == 'ujjaval-verma/protocolward.ai'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read   # list this workflow's earlier runs
+    outputs:
+      mode: ${{ steps.decide.outputs.mode }}
+    steps:
+      - name: Compare main with the last successful run
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_FULL: ${{ inputs.force_full }}
+          SELFTEST_FAILURE: ${{ inputs.selftest_failure }}
+        run: |
+          set -euo pipefail
+          if ! last="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=main&status=success&per_page=1" \
+                --jq '.workflow_runs[0].head_sha // ""')"; then
+            echo "::warning::could not list earlier runs; running the full verification"
+            last=""
+          fi
+          mode=full
+          if [[ "${GITHUB_REF}" == refs/heads/main && "${FORCE_FULL:-false}" != true && -n "${last}" && "${last}" == "${GITHUB_SHA}" ]]; then
+            mode=vuln
+          fi
+          echo "last successful run on main: ${last:-none}; this commit: ${GITHUB_SHA}; mode: ${mode}"
+          echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+          if [[ "${SELFTEST_FAILURE:-false}" == true ]]; then
+            echo "::error::selftest_failure was requested; failing on purpose"
+            exit 1
+          fi
+
+  verify:
+    name: verify (${{ needs.gate.outputs.mode }})
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ needs.gate.outputs.mode }}
+    steps:
+      - name: Checkout (full history, so tags give the snapshot version)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        id: go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: true   # module + build cache, keyed on go.sum
+
+      - name: Cache pinned tools (.tools/)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5.1.0
+        with:
+          path: .tools
+          key: tools-${{ runner.os }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('Makefile') }}
+
+      - name: govulncheck only (main unchanged since the last green run)
+        if: env.MODE == 'vuln'
+        run: make vuln
+
+      - name: Cache golangci-lint
+        if: env.MODE == 'full'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5.1.0
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yml', 'go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            golangci-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yml', 'go.sum') }}-
+
+      - name: Set up Node (wasm smoke test)
+        if: env.MODE == 'full'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false   # package.json names pnpm, but there is no lockfile to cache
+
+      - name: Preflight (commands make dod and wasm-smoke need)
+        if: env.MODE == 'full'
+        run: |
+          set -euo pipefail
+          for c in dig curl pgrep node; do
+            command -v "$c" >/dev/null || { echo "::error::$c is not installed on the runner"; exit 1; }
+          done
+          node --version
+
+      - name: make ci
+        if: env.MODE == 'full'
+        run: make ci
+
+      - name: make wasm-smoke
+        if: env.MODE == 'full'
+        run: make wasm-smoke
+
+      - name: make audit
+        if: env.MODE == 'full'
+        run: make audit
+
+      - name: make dod
+        if: env.MODE == 'full'
+        env:
+          TMPDIR: ${{ runner.temp }}
+          DOD_KEEP_TMPDIR: '1'   # keep bullet logs; the runner is ephemeral
+        run: make dod
+
+      - name: make dod logs (on failure)
+        if: failure() && env.MODE == 'full'
+        run: |
+          shopt -s nullglob
+          for f in "${RUNNER_TEMP}"/ward-dod.*/*.log "${RUNNER_TEMP}"/ward-dod.*/*.out "${RUNNER_TEMP}"/ward-dod.*/*.err; do
+            echo "::group::${f##*/}"; tail -n 50 "$f"; echo "::endgroup::"
+          done
+
+      - name: goreleaser snapshot (no publish, no sign)
+        if: env.MODE == 'full'
+        run: .tools/goreleaser release --snapshot --clean --skip=sign
+
+  report:
+    name: failure issue
+    needs: [gate, verify]
+    if: always() && github.ref == 'refs/heads/main' && github.repository == 'ujjaval-verma/protocolward.ai'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write   # create the label; open, comment on and close the failure issue
+    steps:
+      - name: Open, update or close the ci:nightly-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GATE: ${{ needs.gate.result }}
+          VERIFY: ${{ needs.verify.result }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create "${FAILURE_LABEL}" --color B60205 \
+            --description 'Nightly verification of main failed (ADR-0002)' --force >/dev/null
+          open="$(gh issue list --label "${FAILURE_LABEL}" --state open --limit 1 \
+            --json number --jq '.[0].number // ""')"
+          details="$(printf 'Run: %s\nCommit: %s\nTrigger: %s; scope: %s\nJobs: gate=%s, verify=%s' \
+            "${RUN_URL}" "${GITHUB_SHA}" "${GITHUB_EVENT_NAME}" "${MODE:-unknown}" "${GATE}" "${VERIFY}")"
+          if [[ "${GATE}" == success && "${VERIFY}" == success ]]; then
+            if [[ -n "${open}" ]]; then
+              gh issue close "${open}" --comment "$(printf 'Nightly verification of main is green again.\n\n%s' "${details}")"
+            fi
+            exit 0
+          fi
+          if [[ -n "${open}" ]]; then
+            gh issue comment "${open}" --body "$(printf 'Failed again.\n\n%s' "${details}")"
+          else
+            gh issue create --title 'Nightly verification of main failed' --label "${FAILURE_LABEL}" \
+              --body "$(printf '%s\n\nThis issue stays open while the nightly workflow fails. Later failures comment here; the next green run closes it (ADR-0002 §1).' "${details}")"
+          fi
