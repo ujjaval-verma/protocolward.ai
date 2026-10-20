@@ -32,7 +32,7 @@ This ADR captures the policies that determine when and how code is validated aga
 
 Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `goreleaser check`; the full race suite runs in `make ci`, and pnpm audit runs in `make audit` once a lockfile exists, not on pre-push.
 
-Note (2026-10-20): the invariant gates run on pre-push through the same Make targets `make check`/`make ci` use, so the two cannot drift. Measured warm cost is about 2 s.
+Note (2026-10-20): the invariant gates run on pre-push through the same Make targets `make check`/`make ci` use, so the two cannot drift. Measured warm cost is about 2 s. They check the checked-out working tree (including untracked files), not the pushed commits; `make ci` on the commit you push remains the gate.
 
 Re-evaluation ladder if pre-push exceeds 20s sustainably:
 
