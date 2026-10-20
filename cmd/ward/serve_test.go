@@ -118,7 +118,18 @@ var (
 	wardBin     string
 	wardBinErr  error
 	wardBinOnce sync.Once
+	wardBinDir  string // temp dir holding the binary; removed by TestMain
 )
+
+// TestMain removes the ward test binary directory after the run so each
+// `go test` leaves nothing behind in $TMPDIR. The exit code is preserved.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if wardBinDir != "" {
+		_ = os.RemoveAll(wardBinDir)
+	}
+	os.Exit(code)
+}
 
 // buildWardBin compiles the ward binary into a temp dir (once per test
 // process) and returns its path.
@@ -133,6 +144,7 @@ func compileWardBin() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	wardBinDir = dir
 	binPath := filepath.Join(dir, "ward")
 	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/ward")
 	cmd.Dir = moduleRoot
@@ -213,7 +225,7 @@ func runServeForBriefRun(t *testing.T, cfgPath string, dur time.Duration) string
 	t.Helper()
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary for subprocess test: %v", err)
+		t.Fatalf("could not build ward binary for subprocess test: %v", err)
 	}
 	// Override the dashboard bind to an ephemeral port so back-to-back
 	// subprocess tests don't collide on the hardcoded 127.0.0.1:18987
@@ -278,7 +290,7 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 	t.Helper()
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary for subprocess test: %v", err)
+		t.Fatalf("could not build ward binary for subprocess test: %v", err)
 	}
 	cmd := exec.Command(bin, "serve", "--config", cfgPath, "--dash-listen-addr", "127.0.0.1:0")
 	var stderrBuf bytes.Buffer
@@ -610,7 +622,7 @@ func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 	}
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary: %v", err)
+		t.Fatalf("could not build ward binary: %v", err)
 	}
 	dnsAddr, dashAddr := freeUDPAddr(t), freeTCPAddr(t)
 	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")

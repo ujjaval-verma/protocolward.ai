@@ -35,7 +35,7 @@ Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `gor
 
 Note (2026-10-20): the invariant gates run on pre-push through the same Make targets `make check`/`make ci` use, so the two cannot drift. Measured warm cost is about 2 s. They check the checked-out working tree (including untracked files), not the pushed commits; `make ci` on the commit you push remains the gate.
 
-Note (2026-10-20, issue #25): the pre-push budget is measured cold, meaning empty Go build and golangci-lint caches (equivalent to `go clean -cache`), with the module cache and hook environments warm, on the maintainer's Apple M5 Pro. Measured 17.3/17.5/18.4 s cold, 8.8/9.0 s warm (was about 27 s cold). The hook runs the full race suite through `make test`, so the hook and `make ci` share one test timeout (`TEST_TIMEOUT`).
+Note (2026-10-20, issue #25): the pre-push budget is measured cold, meaning empty Go build and golangci-lint caches (equivalent to `go clean -cache` plus `golangci-lint cache clean`), with the module cache and hook environments warm, on the maintainer's Apple M5 Pro. Measured 17.3/17.5/18.4 s cold, 8.8/9.0 s warm (was about 27 s cold). The hook runs the full race suite through `make test`, so the hook and `make ci` share one test timeout (`TEST_TIMEOUT`).
 
 Re-evaluation ladder if pre-push exceeds 20s sustainably:
 

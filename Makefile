@@ -20,7 +20,7 @@ DIST_DIR    := dist
 BINARY      := ward
 PKG         := ./...
 # One test timeout for `make test`, which is also what the pre-push hook runs (issue #25).
-TEST_TIMEOUT ?= 120s
+TEST_TIMEOUT := 120s
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
