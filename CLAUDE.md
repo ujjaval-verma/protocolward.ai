@@ -58,7 +58,7 @@ Targets are quiet by default; pass `V=1` for full commands.
 
 See `docs/engineering/decisions/ADR-0002-security-posture.md`. In short:
 
-- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 20 s (`go mod tidy`, lint, vet, `go test -race -short`, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence and wasm size gates).
+- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 20 s cold (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence and wasm size gates).
 - **`git push --no-verify` is a policy violation.** If you bypass, run `make ci && make audit` by hand and roll back if either fails.
 - **JS/TS: pnpm only**, Node 24 LTS, `engine-strict=true`, `onlyBuiltDependencies: []`.
 

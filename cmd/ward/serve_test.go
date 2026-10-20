@@ -112,17 +112,22 @@ timeouts:
 	_ = syscall.SIGTERM
 }
 
-// wardBin is the path to the compiled test binary, built once per test process.
-// Populated by TestMain; tests that run without TestMain fall back to buildWardBin.
-var wardBin string
+// wardBin is the ward binary built once per test process by buildWardBin.
+// sync.Once makes the build safe for parallel subprocess tests.
+var (
+	wardBin     string
+	wardBinErr  error
+	wardBinOnce sync.Once
+)
 
-// buildWardBin compiles the ward binary into a temp dir and returns its path.
-// The dir is owned by the caller; pass t.TempDir() to auto-clean on test end.
-// Pass an empty string for tempDir to create a persistent temp dir.
+// buildWardBin compiles the ward binary into a temp dir (once per test
+// process) and returns its path.
 func buildWardBin() (string, error) {
-	if wardBin != "" {
-		return wardBin, nil
-	}
+	wardBinOnce.Do(func() { wardBin, wardBinErr = compileWardBin() })
+	return wardBin, wardBinErr
+}
+
+func compileWardBin() (string, error) {
 	moduleRoot := findModuleRoot(nil)
 	dir, err := os.MkdirTemp("", "ward-test-bin-*")
 	if err != nil {
@@ -135,8 +140,7 @@ func buildWardBin() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build ward: %w\n%s", err, out)
 	}
-	wardBin = binPath
-	return wardBin, nil
+	return binPath, nil
 }
 
 // findModuleRoot walks up from the test binary's working directory until it
@@ -306,6 +310,7 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 }
 
 func TestServe_LoadsBlocklists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bl := filepath.Join(dir, "list.txt")
 	if err := os.WriteFile(bl, []byte("0.0.0.0 blocked.test.invalid\n"), 0o600); err != nil {
@@ -334,6 +339,7 @@ blocklists:
 }
 
 func TestServe_PureForwarderBanner(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -352,6 +358,7 @@ upstreams:
 }
 
 func TestServe_MissingBlocklistFile_StartupError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -376,6 +383,7 @@ blocklists:
 }
 
 func TestServe_PolicyReady_Banner_AllowOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	al := filepath.Join(dir, "allow.txt")
 	if err := os.WriteFile(al, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
@@ -404,6 +412,7 @@ allowlists:
 }
 
 func TestServe_PolicyReady_Banner_BlockOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bl := filepath.Join(dir, "block.txt")
 	if err := os.WriteFile(bl, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
@@ -432,6 +441,7 @@ blocklists:
 }
 
 func TestServe_PolicyReady_Banner_Both(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	al := filepath.Join(dir, "allow.txt")
 	bl := filepath.Join(dir, "block.txt")
@@ -466,6 +476,7 @@ allowlists:
 }
 
 func TestServe_PassthroughBanner_Policy(t *testing.T) {
+	t.Parallel()
 	// Neither blocklist nor allowlist configured → pure-forwarder banner
 	// (renamed from slice-B's "blocklist:" to "policy:" in the policy-engine rename).
 	dir := t.TempDir()
@@ -494,6 +505,7 @@ upstreams:
 // ───────────────────────────────────────────────────────────────────────────
 
 func TestServe_Model_MissingBinary_StartsAnyway(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -522,6 +534,7 @@ model:
 }
 
 func TestServe_Model_HappyPath_LoadsAdapter(t *testing.T) {
+	t.Parallel()
 	// /bin/cat blocks reading stdin, satisfying os/exec Start without
 	// producing valid JSON verdicts. We assert only on the `policy: model
 	// loaded` startup log line — the happy-path verdict round-trip is
