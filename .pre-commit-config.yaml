@@ -1,5 +1,5 @@
 # Hook tiering — see docs/engineering/decisions/ADR-0002-security-posture.md
-# pre-commit ≤5s; pre-push ≤20s. govulncheck on pre-push is the supply-chain enforcement point.
+# pre-commit ≤5s; pre-push ≤20s cold (empty Go build + lint caches). govulncheck on pre-push is the supply-chain enforcement point.
 
 default_stages: [pre-commit]
 
@@ -41,37 +41,28 @@ repos:
         # go.sum holds base64 hashes, which codespell reads as misspellings.
         exclude: ^(testdata/eval/lexical-v1\.jsonl|go\.sum)$
 
-  # --- pre-push (heavier; ≤20s budget) ---
-
-  - repo: https://github.com/dnephin/pre-commit-golang
-    rev: v0.5.1
-    hooks:
-      - id: go-mod-tidy
-        stages: [pre-push]
+  # --- pre-push (heavier; ≤20s cold budget) ---
 
   - repo: local
     hooks:
-      # Uses the pinned .tools/ binary (same as `make lint`), built by the repo's
-      # own Go toolchain. The upstream pre-commit golang env builds with a
-      # different Go and cannot read this toolchain's export data.
-      - id: golangci-lint
-        name: golangci-lint
-        entry: .tools/golangci-lint run ./...
-        language: system
-        types: [go]
-        pass_filenames: false
-        stages: [pre-push]
-      - id: go-vet
-        name: go vet ./...
-        entry: go vet ./...
+      - id: go-mod-tidy
+        name: go mod tidy -diff
+        entry: go mod tidy -diff
         language: system
         pass_filenames: false
         stages: [pre-push]
-      - id: go-test-short
-        name: go test -race -short
-        entry: go test -race -count=1 -short -timeout=60s ./...
+      # lint, vet, the full race suite (make test: one TEST_TIMEOUT) and the
+      # js/wasm compile + 5 MB size gate, run concurrently through the same Make
+      # targets `make check`/`make ci` use. pre-commit runs hooks one at a time;
+      # overlapping these keeps cold pre-push inside the 20 s budget (issue #25).
+      # `make lint` uses the pinned .tools/ golangci-lint, built with the repo's
+      # own Go toolchain (the upstream pre-commit golang env cannot read its export data).
+      - id: go-heavy
+        name: lint + vet + race tests + wasm gate (make -j4)
+        entry: make -j4 lint vet test wasm
         language: system
         pass_filenames: false
+        always_run: true
         stages: [pre-push]
       - id: go-mod-verify
         name: go mod verify
@@ -113,13 +104,6 @@ repos:
       - id: check-licenses
         name: check-licenses (third-party licence gate)
         entry: make check-licenses
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: wasm-size
-        name: wasm compile + 5 MB size gate
-        entry: make wasm-check wasm
         language: system
         pass_filenames: false
         always_run: true

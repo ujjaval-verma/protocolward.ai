@@ -19,6 +19,8 @@ TOOLS_DIR   := .tools
 DIST_DIR    := dist
 BINARY      := ward
 PKG         := ./...
+# One test timeout for `make test`, which is also what the pre-push hook runs (issue #25).
+TEST_TIMEOUT := 120s
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
@@ -114,12 +116,12 @@ install: build ## Install ward into $$DESTDIR$$PREFIX/bin (default /usr/local/bi
 ## === Test & verify ===
 
 .PHONY: test
-test: ## Run unit tests with race detector
-	$(Q)$(GO) test -race -count=1 -timeout=120s $(PKG)
+test: ## Run unit tests with race detector (the pre-push hook runs this target)
+	$(Q)$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) $(PKG)
 
 .PHONY: test-cover
 test-cover: ## Run tests with coverage report
-	$(Q)$(GO) test -race -count=1 -coverprofile=$(COVER_OUT) $(PKG)
+	$(Q)$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) -coverprofile=$(COVER_OUT) $(PKG)
 	$(Q)$(GO) tool cover -func=$(COVER_OUT) | tail -1
 
 .PHONY: lint
@@ -199,7 +201,7 @@ dist-darwin-arm64: ## Build darwin/arm64 (Apple Silicon)
 ## === WebAssembly ===
 
 .PHONY: wasm
-wasm: ## Build dist/wasm/ward.wasm + wasm_exec.js; fails if ward.wasm > 5 MB
+wasm: wasm-check ## Build dist/wasm/ward.wasm + wasm_exec.js; fails if ward.wasm > 5 MB
 	$(Q)mkdir -p $(WASM_DIR)
 	$(Q)GOOS=js GOARCH=wasm $(GO) build -trimpath -ldflags '-s -w' -o $(WASM_DIR)/ward.wasm ./cmd/wardwasm
 	$(Q)cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DIR)/wasm_exec.js
@@ -208,8 +210,8 @@ wasm: ## Build dist/wasm/ward.wasm + wasm_exec.js; fails if ward.wasm > 5 MB
 
 .PHONY: wasm-check
 wasm-check: ## Compile + vet cmd/wardwasm for js/wasm (no artifacts; ./... skips js-only files)
-	$(Q)GOOS=js GOARCH=wasm $(GO) vet ./cmd/wardwasm/...
-	$(Q)GOOS=js GOARCH=wasm $(GO) build -o /dev/null ./cmd/wardwasm
+	$(Q)GOOS=js GOARCH=wasm $(GO) vet -trimpath ./cmd/wardwasm/...
+	$(Q)GOOS=js GOARCH=wasm $(GO) build -trimpath -o /dev/null ./cmd/wardwasm
 
 .PHONY: wasm-smoke
 wasm-smoke: wasm ## Exercise globalThis.ward in Node (needs node >= 18; not part of ci)

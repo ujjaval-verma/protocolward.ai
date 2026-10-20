@@ -91,10 +91,15 @@ func runFakeChild(mode string) {
 
 // fakeChildConfig builds a Config that re-execs this test binary in fake-
 // child mode. `-test.run=^$` ensures no real tests run in the child.
+// GORACE atexit_sleep_ms=0 (child only): under -race the child is a race
+// binary, which otherwise sleeps 1 s on exit, and Close waits for that
+// exit. The caller's other GORACE options are kept; the later
+// atexit_sleep_ms wins. The parent test binary's GORACE is not changed.
 func fakeChildConfig(_ *testing.T, mode string) model.Config {
+	gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
 	return model.Config{
 		Command: []string{os.Args[0], "-test.run=^$"},
-		Env:     append(os.Environ(), fakeChildEnv+"="+mode),
+		Env:     append(os.Environ(), fakeChildEnv+"="+mode, "GORACE="+gorace),
 	}
 }
 

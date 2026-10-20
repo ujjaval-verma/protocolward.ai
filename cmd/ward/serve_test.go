@@ -112,22 +112,39 @@ timeouts:
 	_ = syscall.SIGTERM
 }
 
-// wardBin is the path to the compiled test binary, built once per test process.
-// Populated by TestMain; tests that run without TestMain fall back to buildWardBin.
-var wardBin string
+// wardBin is the ward binary built once per test process by buildWardBin.
+// sync.Once makes the build safe for parallel subprocess tests.
+var (
+	wardBin     string
+	wardBinErr  error
+	wardBinOnce sync.Once
+	wardBinDir  string // temp dir holding the binary; removed by TestMain
+)
 
-// buildWardBin compiles the ward binary into a temp dir and returns its path.
-// The dir is owned by the caller; pass t.TempDir() to auto-clean on test end.
-// Pass an empty string for tempDir to create a persistent temp dir.
-func buildWardBin() (string, error) {
-	if wardBin != "" {
-		return wardBin, nil
+// TestMain removes the ward test binary directory after the run so each
+// `go test` leaves nothing behind in $TMPDIR. The exit code is preserved.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if wardBinDir != "" {
+		_ = os.RemoveAll(wardBinDir)
 	}
+	os.Exit(code)
+}
+
+// buildWardBin compiles the ward binary into a temp dir (once per test
+// process) and returns its path.
+func buildWardBin() (string, error) {
+	wardBinOnce.Do(func() { wardBin, wardBinErr = compileWardBin() })
+	return wardBin, wardBinErr
+}
+
+func compileWardBin() (string, error) {
 	moduleRoot := findModuleRoot(nil)
 	dir, err := os.MkdirTemp("", "ward-test-bin-*")
 	if err != nil {
 		return "", err
 	}
+	wardBinDir = dir
 	binPath := filepath.Join(dir, "ward")
 	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/ward")
 	cmd.Dir = moduleRoot
@@ -135,8 +152,7 @@ func buildWardBin() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build ward: %w\n%s", err, out)
 	}
-	wardBin = binPath
-	return wardBin, nil
+	return binPath, nil
 }
 
 // findModuleRoot walks up from the test binary's working directory until it
@@ -209,7 +225,7 @@ func runServeForBriefRun(t *testing.T, cfgPath string, dur time.Duration) string
 	t.Helper()
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary for subprocess test: %v", err)
+		t.Fatalf("could not build ward binary for subprocess test: %v", err)
 	}
 	// Override the dashboard bind to an ephemeral port so back-to-back
 	// subprocess tests don't collide on the hardcoded 127.0.0.1:18987
@@ -274,7 +290,7 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 	t.Helper()
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary for subprocess test: %v", err)
+		t.Fatalf("could not build ward binary for subprocess test: %v", err)
 	}
 	cmd := exec.Command(bin, "serve", "--config", cfgPath, "--dash-listen-addr", "127.0.0.1:0")
 	var stderrBuf bytes.Buffer
@@ -306,6 +322,7 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 }
 
 func TestServe_LoadsBlocklists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bl := filepath.Join(dir, "list.txt")
 	if err := os.WriteFile(bl, []byte("0.0.0.0 blocked.test.invalid\n"), 0o600); err != nil {
@@ -334,6 +351,7 @@ blocklists:
 }
 
 func TestServe_PureForwarderBanner(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -352,6 +370,7 @@ upstreams:
 }
 
 func TestServe_MissingBlocklistFile_StartupError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -376,6 +395,7 @@ blocklists:
 }
 
 func TestServe_PolicyReady_Banner_AllowOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	al := filepath.Join(dir, "allow.txt")
 	if err := os.WriteFile(al, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
@@ -404,6 +424,7 @@ allowlists:
 }
 
 func TestServe_PolicyReady_Banner_BlockOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bl := filepath.Join(dir, "block.txt")
 	if err := os.WriteFile(bl, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
@@ -432,6 +453,7 @@ blocklists:
 }
 
 func TestServe_PolicyReady_Banner_Both(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	al := filepath.Join(dir, "allow.txt")
 	bl := filepath.Join(dir, "block.txt")
@@ -466,6 +488,7 @@ allowlists:
 }
 
 func TestServe_PassthroughBanner_Policy(t *testing.T) {
+	t.Parallel()
 	// Neither blocklist nor allowlist configured → pure-forwarder banner
 	// (renamed from slice-B's "blocklist:" to "policy:" in the policy-engine rename).
 	dir := t.TempDir()
@@ -494,6 +517,7 @@ upstreams:
 // ───────────────────────────────────────────────────────────────────────────
 
 func TestServe_Model_MissingBinary_StartsAnyway(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "ward.yaml")
 	cfgBody := `
@@ -522,6 +546,7 @@ model:
 }
 
 func TestServe_Model_HappyPath_LoadsAdapter(t *testing.T) {
+	t.Parallel()
 	// /bin/cat blocks reading stdin, satisfying os/exec Start without
 	// producing valid JSON verdicts. We assert only on the `policy: model
 	// loaded` startup log line — the happy-path verdict round-trip is
@@ -597,7 +622,7 @@ func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 	}
 	bin, err := buildWardBin()
 	if err != nil {
-		t.Skipf("could not build ward binary: %v", err)
+		t.Fatalf("could not build ward binary: %v", err)
 	}
 	dnsAddr, dashAddr := freeUDPAddr(t), freeTCPAddr(t)
 	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")

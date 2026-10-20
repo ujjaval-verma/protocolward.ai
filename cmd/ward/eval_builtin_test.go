@@ -121,7 +121,7 @@ func TestEvalRun_InvalidFixtureHostnameRemediation(t *testing.T) {
 
 // TestEvalBuiltinLexicalTargets is the S1 acceptance gate: the real
 // detector against testdata/eval/lexical-v1.jsonl must reach DGA recall
-// ≥ 0.85 and benign FPR ≤ 1%. Skipped under -short (pre-push hook);
+// ≥ 0.85 and benign FPR ≤ 1%. Skipped under -short;
 // runs under `make test` / `make ci`.
 func TestEvalBuiltinLexicalTargets(t *testing.T) {
 	if testing.Short() {

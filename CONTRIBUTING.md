@@ -23,7 +23,7 @@ This adds `Signed-off-by: Your Name <your@email>`. It certifies that you have th
 - Branch off `main` with a short kebab-case name (`fix/dns-cache-eviction-race`).
 - One concern per pull request.
 - Use conventional commit messages (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
-- Install [`pre-commit`](https://pre-commit.com), run `make bootstrap` once, then make sure **`make ci` passes locally** before you push. There is no PR CI during the beta (ADR-0002). The pre-push hook runs `go mod tidy`, lint, vet, race tests, `go mod verify`, `govulncheck` and the public-content, SPDX, testing-doc, third-party licence and wasm size gates.
+- Install [`pre-commit`](https://pre-commit.com), run `make bootstrap` once, then make sure **`make ci` passes locally** before you push. There is no PR CI during the beta (ADR-0002). The pre-push hook runs `go mod tidy -diff`, lint, vet, race tests, `go mod verify`, `govulncheck` and the public-content, SPDX, testing-doc, third-party licence and wasm size gates.
 - The Go toolchain is pinned by the `toolchain` line in `go.mod`; `mise.toml` mirrors that version for mise users. Change both together.
 - Code under `internal/` and `pkg/` is test-first: add the failing test in the same change.
 - Supported platforms are Linux and macOS.
