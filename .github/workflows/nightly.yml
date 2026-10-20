@@ -6,8 +6,6 @@
 name: nightly
 
 on:
-  push:
-    branches: [ci/11-nightly-main]   # TEMPORARY proof run; reverted before merge
   schedule:
     - cron: '17 3 * * *'   # 03:17 UTC daily
   workflow_dispatch:
