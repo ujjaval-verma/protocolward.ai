@@ -43,7 +43,7 @@ All 15 functional bullets PASS at SP10d ship; bullet 16 (SHIP) requires `make do
 2. Replace the `record TODO` body with the real assertion.
 3. Update this doc's status column in the same commit.
 4. Run `make dod` locally — the new bullet should be PASS.
-5. Run `make ci`, then push; the pre-push hook re-runs a fast subset (`go mod tidy`, lint, vet, `go test -race -short`, `go mod verify`, govulncheck). Neither includes `make dod`, by design: dod is a separate, opt-in gate.
+5. Run `make ci`, then push; the pre-push hook re-runs a fast subset (`go mod tidy`, lint, vet, `go test -race -short`, `go mod verify`, govulncheck, the public-content, SPDX, testing-doc, third-party licence and wasm size gates). Neither includes `make dod`, by design: dod is a separate, opt-in gate.
 
 ## Rewrite-per-version contract
 

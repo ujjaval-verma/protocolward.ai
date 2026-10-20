@@ -85,3 +85,42 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+      # Invariant gates (issue #10): the same Make targets `make check`/`make ci`
+      # run, so the hook and the manual gate cannot drift. always_run because
+      # they scan the whole tree, not the files being pushed.
+      - id: check-public
+        name: check-public (public-content gate)
+        entry: make check-public
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-spdx
+        name: check-spdx (SPDX header gate)
+        entry: make check-spdx
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-testing-doc
+        name: check-testing-doc (testing.md row gate)
+        entry: make check-testing-doc
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: check-licenses
+        name: check-licenses (third-party licence gate)
+        entry: make check-licenses
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: wasm-size
+        name: wasm compile + 5 MB size gate
+        entry: make wasm-check wasm
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

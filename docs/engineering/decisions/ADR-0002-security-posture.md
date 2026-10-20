@@ -6,6 +6,7 @@
 - **Supersedes:** the CI workflow scaffolded in sub-project 0 (removed in this ADR)
 - **Related:** ADR-0001 (foundation design)
 - **Amended:** 2026-10-05 — PR CI stays deferred past the public beta (operator decision; see §1 and ADR-0007)
+- **Amended:** 2026-10-20 — invariant gates (public-content, SPDX, testing-doc, third-party licences, wasm compile + size) added to pre-push (§2)
 
 ## Context
 
@@ -26,10 +27,12 @@ This ADR captures the policies that determine when and how code is validated aga
 | Stage | Budget | Contents |
 |---|---|---|
 | pre-commit | ≤5s | trailing-ws, eof-fix, check-yaml/json, large-file, merge-conflict, mixed-line-ending, go-fmt, codespell |
-| pre-push | ≤20s | golangci-lint, go vet, `go test -race -short`, go mod tidy, go mod verify, **`govulncheck`** |
+| pre-push | ≤20s | golangci-lint, go vet, `go test -race -short`, go mod tidy, go mod verify, **`govulncheck`**, check-public, check-spdx, check-testing-doc, check-licenses, wasm compile + 5 MB size gate |
 | `make audit` (manual, pre-release) | unbounded | full `go test -race`, future syft+grype SBOM, future cosign verify of update-channel artifacts, pnpm audit signatures (when web exists) |
 
 Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `goreleaser check`; the full race suite runs in `make ci`, and pnpm audit runs in `make audit` once a lockfile exists, not on pre-push.
+
+Note (2026-10-20): the invariant gates run on pre-push through the same Make targets `make check`/`make ci` use, so the two cannot drift. Measured warm cost is about 2 s. They check the checked-out working tree (including untracked files), not the pushed commits; `make ci` on the commit you push remains the gate.
 
 Re-evaluation ladder if pre-push exceeds 20s sustainably:
 
@@ -70,7 +73,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 
 ## Consequences
 
-- Pre-push becomes mildly slower (5–10s typical, ≤20s budget) — acceptable for the supply-chain guarantee.
+- Pre-push becomes mildly slower (about 14 s warm as of 2026-10-20, ≤20s budget) — acceptable for the supply-chain guarantee.
 - Solo dev can choose to bypass with `--no-verify`; that is a documented policy violation, not an accident.
 - No green-checkmark hygiene burden on GitHub; contributors run `make ci` locally.
 - Re-introducing PR CI later means adding a workflow that runs `make ci` with the policies captured here as required checks.

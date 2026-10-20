@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Self-test for check-spdx.sh: a missing or wrong header must fail, a correct one must pass.
 set -euo pipefail
+# Builds throwaway repos with `git -C`; drop any inherited GIT_DIR/GIT_INDEX_FILE/...
+# (git exports GIT_DIR to hooks and `rebase -x` in a linked worktree) so they cannot touch the caller's repo.
+unset $(git rev-parse --local-env-vars)
 here="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
