@@ -4,7 +4,8 @@
 //
 // It listens on UDP and TCP (via miekg/dns.Server), dispatches each incoming
 // query to a round-robin selection of Resolvers, retries once on the next
-// resolver on failure, and returns SERVFAIL if all attempts fail.
+// resolver on failure, and returns SERVFAIL if all attempts fail. Both
+// attempts share one end-to-end budget (Config.QueryTimeout).
 //
 // # Invariants
 //
@@ -119,7 +120,11 @@ type Config struct {
 	// non-zero value to start the rotation at a specific resolver. Defaults to 0.
 	CounterSeed uint64
 
-	// QueryTimeout bounds each upstream Query call. Defaults to 5s.
+	// QueryTimeout is the end-to-end upstream budget for one client query,
+	// failover included (timeouts.query in ward.yaml). With two or more
+	// Resolvers, the first attempt gets at most half of it; the retry on the
+	// next resolver gets whatever remains. Worst case before SERVFAIL is
+	// QueryTimeout, not QueryTimeout per attempt. Defaults to 5s.
 	QueryTimeout time.Duration
 
 	// ShutdownTimeout bounds Shutdown(ctx). The caller's context deadline takes
@@ -648,8 +653,12 @@ func (s *Server) logAttribution(w dns.ResponseWriter, q dns.Question, qname stri
 	}
 }
 
-// forwardUpstream extracts the slice-A round-robin + retry block verbatim.
-// No behavior change — mechanical move from handleQuery.
+// forwardUpstream sends req to the next resolver in round-robin order and,
+// on error, retries once on the resolver after it. Both attempts share one
+// QueryTimeout deadline. With a fallback configured, the first attempt is
+// capped at half the budget so a hanging primary still leaves the fallback
+// time to answer; a primary that fails fast leaves the fallback
+// everything that remains.
 func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 	start := time.Now()
 	n := uint64(len(s.cfg.Resolvers))
@@ -660,7 +669,14 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.QueryTimeout)
 	defer cancel()
 
-	resp, err := resolver.Query(ctx, req)
+	firstCtx := ctx
+	if n > 1 {
+		var cancelFirst context.CancelFunc
+		firstCtx, cancelFirst = context.WithTimeout(ctx, s.cfg.QueryTimeout/2)
+		defer cancelFirst()
+	}
+
+	resp, err := resolver.Query(firstCtx, req)
 	if err != nil {
 		if n > 1 {
 			nextIdx := (idx + 1) % n

@@ -136,3 +136,32 @@ func TestServer_SingleResolver_KeepsWholeBudget(t *testing.T) {
 		t.Fatalf("rcode = %s; want NOERROR (single resolver keeps the whole budget)", dns.RcodeToString[resp.Rcode])
 	}
 }
+
+// Issue #15: the primary hangs, the fallback is healthy. The fallback must
+// answer, inside the configured budget.
+func TestServer_PrimaryHangs_FallbackAnswersWithinBudget(t *testing.T) {
+	t.Parallel()
+	primary := hangingResolver(t, "10.0.0.1:853")
+	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
+	addr := startPolicyServer(t, dataplane.Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []dataplane.Resolver{primary, fallback},
+		CounterSeed:     0,
+		QueryTimeout:    failoverBudget,
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	resp, elapsed := exchangeTimed(t, addr, "hang.example.com.")
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s after %s; want NOERROR from the fallback", dns.RcodeToString[resp.Rcode], elapsed)
+	}
+	if got := primary.queries.Load(); got != 1 {
+		t.Errorf("primary attempts = %d; want 1", got)
+	}
+	if got := fallback.queries.Load(); got != 1 {
+		t.Errorf("fallback attempts = %d; want 1", got)
+	}
+	if elapsed >= failoverBudget+failoverSlack {
+		t.Errorf("answered after %s; want under budget %s (+%s slack)", elapsed, failoverBudget, failoverSlack)
+	}
+}
