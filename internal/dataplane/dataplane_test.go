@@ -27,18 +27,40 @@ import (
 
 // fakeResolver is a test implementation of dataplane.Resolver.
 // It returns a configurable DNS response or error on Query.
+//
+// Like the real DoT client (internal/upstream), it honours ctx: a ctx that
+// is already done fails the call at once, and a hang or delay ends with
+// ctx.Err() when ctx is done first. So a hanging fake never outlives the
+// query that called it.
 type fakeResolver struct {
 	addr    string
 	rcode   int
 	err     error
-	hangCh  chan struct{} // if non-nil, block until channel is closed
+	hangCh  chan struct{} // if non-nil, block until closed or ctx is done
+	delay   time.Duration // if > 0, wait this long (or until ctx is done) before answering
 	queries atomic.Int64
 }
 
-func (f *fakeResolver) Query(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+func (f *fakeResolver) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	f.queries.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("fake upstream %s: %w", f.addr, err)
+	}
 	if f.hangCh != nil {
-		<-f.hangCh
+		select {
+		case <-f.hangCh:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("fake upstream %s: %w", f.addr, ctx.Err())
+		}
+	}
+	if f.delay > 0 {
+		t := time.NewTimer(f.delay)
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("fake upstream %s: %w", f.addr, ctx.Err())
+		}
 	}
 	if f.err != nil {
 		return nil, f.err
