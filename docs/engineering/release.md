@@ -19,6 +19,7 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 - `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
 - `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
 - Nightly workflow: `gh api repos/{owner}/{repo}/actions/workflows/nightly.yml --jq .state` prints `active`, and `gh run list --workflow nightly.yml --branch main --limit 1` shows `completed success` (GitHub disables schedules after 60 quiet days; re-enable with `gh workflow enable nightly.yml`).
+- Actions policy: `gh api repos/{owner}/{repo}/actions/permissions` prints `allowed_actions: selected` and `sha_pinning_required: true`; a release that adds a new third-party action (a new owner/repo) updates the allowlist first (ADR-0002 §1).
 
 Run from a fresh clone (or `make distclean && make bootstrap`) on the commit you are about to tag, to prove no working-tree pollution. This gate is sufficient for a beta (pre-release) tag.
 

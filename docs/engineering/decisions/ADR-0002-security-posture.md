@@ -9,6 +9,7 @@
 - **Amended:** 2026-10-20 — invariant gates (public-content, SPDX, testing-doc, third-party licences, wasm compile + size) added to pre-push (§2)
 - **Amended:** 2026-10-20 — pre-push runs the full race suite; lint, vet, tests and the wasm gate run concurrently; the 20 s budget is defined cold (§2)
 - **Amended:** 2026-10-20 — nightly post-merge verification of `main` on GitHub Actions (`nightly.yml`); replaces the local launchd step of the re-evaluation ladder (§1, §2; issue #11)
+- **Amended:** 2026-10-21 — GitHub repository settings: secret scanning and push protection on; Actions restricted to an allowlist with SHA pinning required (§1; issue #12)
 
 ## Context
 
@@ -25,6 +26,17 @@ This ADR captures the policies that determine when and how code is validated aga
 **Amendment (2026-10-05).** The original text deferred CI to sub-project 8 and expected a successor ADR to add CI as required checks when the repository went public. On 2026-10-05 the operator decided to go public as a beta **without** PR CI. Local hooks and `make ci` remain the gate for every change, and contributors run them (CONTRIBUTING.md). PR CI is reconsidered when outside contributions arrive (see Revisit conditions). No successor ADR is needed for the beta.
 
 **Amendment (2026-10-20, issue #11).** Merged pull requests and web edits were never re-verified after merge, and `make dod`, the wasm smoke test and a goreleaser build ran only by hand or at tag time. `.github/workflows/nightly.yml` now runs against `main` on a daily cron and on `workflow_dispatch`. It detects breakage after merge; it is never a required check and never gates a merge, so the pre-push hook and `make ci` remain the gate. When `main` is unchanged since the workflow's last successful run, only `govulncheck` runs, because the vulnerability database is then the only input that changed. Otherwise it runs `make ci`, `make audit`, `make wasm-smoke`, `make dod` and a goreleaser snapshot build that neither publishes nor signs. The workflow sets `permissions: {}` at the top level and grants each job only what it uses (`actions: read` to find the last successful run, `contents: read` to check out, `issues: write` to report). Every action is pinned by full commit SHA, and no secrets are used. A failing run opens one issue labelled `ci:nightly-failure`; later failures comment on that issue, and the next green run closes it. GitHub disables scheduled workflows in a public repository after 60 days without repository activity, so the release checklist (`docs/engineering/release.md`) confirms the workflow is enabled and its last run was green.
+
+**Amendment (2026-10-21, issue #12).** Two free protections for public repositories were off, and Actions could run any action at any ref. The maintainer set the following through the REST API on 2026-10-21; anyone with admin access can read them back:
+
+- Secret scanning and push protection are enabled (`security_and_analysis.secret_scanning` and `secret_scanning_push_protection`). A push that contains a detected provider secret is blocked; bypassing it records a reason. Non-provider patterns and validity checks stay off.
+- Actions may run only selected actions (`allowed_actions: selected`): actions owned by GitHub (`github_owned_allowed: true`) plus `sigstore/cosign-installer@*` and `goreleaser/goreleaser-action@*`, which `release.yml` uses. Actions from Marketplace verified creators are not allowed (`verified_allowed: false`).
+- SHA pinning is required (`sha_pinning_required: true`): a `uses:` reference that is not a full commit SHA fails at job setup. This turns the existing practice of pinning by SHA into a rule GitHub enforces.
+- The default `GITHUB_TOKEN` permission stays read-only and cannot approve pull requests (unchanged).
+
+Neither workflow needed a change. Every `uses:` was already a full commit SHA and every action is on the allowlist. A `workflow_dispatch` run of `nightly.yml` with `force_full=true` on `main` after the go1.26.10 toolchain bump (run 39665246214) succeeded in every job, including the full verify job, under the policy. `release.yml` runs only on tags, so it could not be dispatched. Reading it shows its four actions (`actions/checkout`, `actions/setup-go`, `sigstore/cosign-installer`, `goreleaser/goreleaser-action`) are all pinned by full SHA and matched by the allowlist. The first real tag is the live proof. The patterns allow any ref, so bumping a pinned SHA needs no settings change, while adding an action does.
+
+To add a new third-party action, pin it by full commit SHA in the workflow and add an `owner/repo@*` pattern to `patterns_allowed` through `PUT repos/{owner}/{repo}/actions/permissions/selected-actions` (send the full list; the call replaces it). To read the current settings: `gh api repos/{owner}/{repo}/actions/permissions`, `gh api repos/{owner}/{repo}/actions/permissions/selected-actions` and `gh api repos/{owner}/{repo} --jq .security_and_analysis`.
 
 ### 2. Hook tiering with strict latency budgets
 
@@ -86,6 +98,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - No green-checkmark hygiene burden on GitHub; contributors run `make ci` locally.
 - A nightly workflow re-verifies `main` after merge. It costs a few runner-minutes on days `main` changed and a minute or two otherwise (free for a public repository). A failure surfaces as one open `ci:nightly-failure` issue, not as a red check on a pull request, so a break can sit on `main` for up to a day.
 - If the repository sees no activity for 60 days, GitHub disables the nightly schedule. It is re-enabled by hand (`gh workflow enable nightly.yml`); the release checklist catches it.
+- Adding a third-party action now needs a repository setting change as well as a workflow change, and an unpinned `uses:` fails at job setup rather than in review. Both are deliberate.
 - Re-introducing PR CI later means adding a `pull_request` trigger that runs `make ci` with the policies captured here as required checks; `nightly.yml` already runs the same targets on `main`.
 
 ## Revisit conditions
@@ -100,6 +113,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 
 - `Makefile` — `make audit` ladder; `.tools/govulncheck` install target
 - `.github/workflows/nightly.yml` — nightly post-merge verification of `main` (§1 amendment of 2026-10-20)
+- GitHub repository settings (Actions permissions, secret scanning): recorded in the §1 amendment of 2026-10-21; not in version control
 - `.pre-commit-config.yaml` — hook tiering
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
