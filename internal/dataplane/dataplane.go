@@ -161,6 +161,9 @@ type Config struct {
 	// miss and nil-Engine flows) is asynchronously handed to Classify (or,
 	// for a model.Assessor, Assess) after the wire response returns. The current query is NEVER blocked by the
 	// slow path; verdicts are observed and logged. nil disables the fork.
+	// At most maxClassifyInFlight classifications run at once; past that a
+	// forwarded name is not classified and the drop is counted and logged
+	// (`policy: classify dropped`, rate-limited, with a running total).
 	//
 	// On errors.Is(err, internal/model.ErrUnavailable): emit
 	// `policy: model unavailable` exactly once (atomic latch) and skip every
@@ -181,11 +184,15 @@ type Config struct {
 	// D7 and invariant 1).
 	Classifier SlowPathClassifier
 
-	// ClassifyTimeout bounds each Classify or Assess call. Defaults to 4s — the Tier 2
+	// ClassifyTimeout bounds each Classify or Assess call, including time spent
+	// waiting for a busy sibling adapter (a call still waiting when it ends is
+	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
 	// upper bound per architecture.md. The slow-path context is decoupled
 	// from the request context because the request has already been answered
-	// when the fork fires; cancellation flows from Server.Shutdown via the
-	// inFlight drain, not from the per-query ctx.
+	// when the fork fires. It derives from the server's stop context
+	// instead: Server.Shutdown cancels it, so a classification still waiting
+	// for the sibling adapter is skipped at once and the inFlight drain
+	// waits only for calls already running.
 	ClassifyTimeout time.Duration
 
 	// Decoys, when non-nil, is consulted BEFORE Engine.Decide. A decoy hit
@@ -236,7 +243,42 @@ type Server struct {
 	// slow-path fork. Once latched, classifyAsync returns immediately without
 	// dispatching, so a dead child does not pile up Classify calls.
 	classifierDead atomic.Bool
+
+	// classifySlots bounds the classifyAsync goroutines alive at once to
+	// maxClassifyInFlight. handleQuery takes a slot without blocking and
+	// classifyAsync gives it back; with no free slot the classification is
+	// dropped, never queued.
+	classifySlots chan struct{}
+
+	// stopCtx is the parent of every classify context. Shutdown cancels it
+	// (stopCancel is idempotent) so queued classifications skip instead of
+	// running out the drain budget.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+
+	// classifyDropped counts classifications that did not run: no free
+	// slot, or the sibling adapter was still busy when the classify timeout
+	// ended (internal/model.ErrSkipped). Reported, with the running total,
+	// by the rate-limited `policy: classify dropped` line.
+	classifyDropped atomic.Uint64
+
+	// classifyDropLoggedAt is the UnixNano time of the last
+	// `policy: classify dropped` line; 0 means none yet.
+	classifyDropLoggedAt atomic.Int64
 }
+
+// maxClassifyInFlight caps concurrent slow-path classifications. Past it a
+// forwarded name is answered normally but not classified, and the drop is
+// counted. 64 keeps a burst from becoming a goroutine flood while leaving
+// headroom: the built-in detector finishes in microseconds, so its slots
+// rarely fill, and a serialised sibling at ~60 ms per call clears 64
+// waiters inside the default 4 s ClassifyTimeout. A constant, not a
+// ward.yaml key: there is no evidence yet that operators need to tune it.
+const maxClassifyInFlight = 64
+
+// classifyDropLogEvery rate-limits the `policy: classify dropped` line: the
+// first drop logs at once, later drops at most once per interval.
+const classifyDropLogEvery = time.Minute
 
 // NewServer creates a Server from cfg. Returns an error if cfg is invalid.
 func NewServer(cfg Config) (*Server, error) {
@@ -268,7 +310,16 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.ClassifyTimeout = 4 * time.Second
 	}
 
-	s := &Server{cfg: cfg, addrCh: make(chan struct{}), listenUDP: net.ListenPacket, listenTCP: net.Listen}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	s := &Server{
+		stopCtx:       stopCtx,
+		stopCancel:    stopCancel,
+		cfg:           cfg,
+		addrCh:        make(chan struct{}),
+		listenUDP:     net.ListenPacket,
+		listenTCP:     net.Listen,
+		classifySlots: make(chan struct{}, maxClassifyInFlight),
+	}
 	s.counter.Store(cfg.CounterSeed)
 
 	mux := dns.NewServeMux()
@@ -367,6 +418,7 @@ func (s *Server) Serve() error {
 
 	pc, ln, err := s.bind()
 	if err != nil {
+		s.stopCancel() // nothing is serving; release the stop context
 		return err
 	}
 	local := pc.LocalAddr().String()
@@ -409,6 +461,10 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 // Shutdown gracefully stops the server within the context deadline. In-flight
 // queries are drained before returning.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Cancel queued and future classifications first so the drain below
+	// waits only for calls already running. Safe to call repeatedly.
+	s.stopCancel()
+
 	// Stop accepting new queries.
 	udpErr := s.udpSrv.ShutdownContext(ctx)
 	tcpErr := s.tcpSrv.ShutdownContext(ctx)
@@ -510,8 +566,13 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 		if s.cfg.Classifier != nil {
 			// Capture the client synchronously: the fork must not touch w.
 			client := clientHost(w.RemoteAddr())
-			s.inFlight.Add(1)
-			go s.classifyAsync(qname, client)
+			select {
+			case s.classifySlots <- struct{}{}:
+				s.inFlight.Add(1)
+				go s.classifyAsync(qname, client)
+			default:
+				s.noteClassifyDropped(qname, "slow path at capacity")
+			}
 		}
 	default:
 		panic(fmt.Sprintf("policy: missing handler for action %v (invariant #2 violation)", d.Action))
@@ -738,16 +799,18 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 // classifyAsync is the SP10c slow-path goroutine entry. Called as
-// `go s.classifyAsync(qname, client)` from the ActionForward branch with
-// s.inFlight.Add(1) already accounted; Done is deferred here so Shutdown's
-// drain blocks until the fork completes. See Config.Classifier doc for the
-// observe-only contract + the planned enforcement carry-forward.
+// `go s.classifyAsync(qname, client)` from the ActionForward branch with a
+// classifySlots slot taken and s.inFlight.Add(1) already accounted; both
+// are released here, so Shutdown's drain blocks until the fork completes.
+// See Config.Classifier doc for the observe-only contract + the planned
+// enforcement carry-forward.
 //
 // When the classifier also implements model.Assessor (the in-process
 // builtin detector), Assess is called instead of Classify and a non-benign
 // result is recorded via Config.Flags. Flags are never enforced.
 func (s *Server) classifyAsync(qname, client string) {
 	defer s.inFlight.Done()
+	defer func() { <-s.classifySlots }()
 	// DD6: an in-process classifier (model.builtin) has no process boundary,
 	// so contain its panics here. Registered after inFlight.Done so it runs
 	// first (LIFO) and Done still fires. The query was already answered.
@@ -767,7 +830,7 @@ func (s *Server) classifyAsync(qname, client string) {
 	if s.classifierDead.Load() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ClassifyTimeout)
+	ctx, cancel := context.WithTimeout(s.stopCtx, s.cfg.ClassifyTimeout)
 	defer cancel()
 
 	var (
@@ -802,6 +865,22 @@ func (s *Server) classifyAsync(qname, client string) {
 				"qname", qname,
 				"reason", "not a scorable hostname",
 			)
+			return
+		}
+		if errors.Is(err, adapter.ErrSkipped) {
+			// The sibling was busy with earlier calls until this call's
+			// timeout ended; nothing was sent to it. A drop, not a failure:
+			// no latch, no per-call Warn.
+			if s.stopCtx.Err() != nil {
+				// Shutdown cancelled it: expected, so counted but silent.
+				s.classifyDropped.Add(1)
+				slog.Debug("policy: classify skipped",
+					"qname", qname,
+					"reason", "server shutting down",
+				)
+				return
+			}
+			s.noteClassifyDropped(qname, "classifier busy past the classify timeout")
 			return
 		}
 		if errors.Is(err, adapter.ErrUnavailable) {
@@ -870,6 +949,35 @@ func (s *Server) classifyAsync(qname, client string) {
 	}
 	d := s.cfg.Engine.DecideWithVerdict(qname, verdict)
 	s.logClassified(qname, verdict, d)
+}
+
+// noteClassifyDropped counts one classification that did not run and emits
+// `policy: classify dropped` on the first drop and then at most once per
+// classifyDropLogEvery, so a burst cannot flood the log. Each line carries
+// the running total; drops between lines are counted, not lost.
+func (s *Server) noteClassifyDropped(qname, reason string) {
+	total := s.classifyDropped.Add(1)
+	now := time.Now().UnixNano()
+	last := s.classifyDropLoggedAt.Load()
+	// now < last means the wall clock stepped back: log and restart the
+	// interval rather than stay quiet until the clock catches up.
+	if last != 0 && now >= last && now-last < int64(classifyDropLogEvery) {
+		slog.Debug("policy: classify drop not logged",
+			"qname", qname,
+			"reason", reason,
+			"dropped_total", total,
+		)
+		return
+	}
+	if !s.classifyDropLoggedAt.CompareAndSwap(last, now) {
+		return // another goroutine logged this interval
+	}
+	slog.Warn("policy: classify dropped",
+		"qname", qname,
+		"reason", reason,
+		"dropped_total", total,
+		"remediation", "the query was answered normally; only its classification was skipped. Drops during a burst are expected. If dropped_total keeps rising, the classifier cannot keep up: use the built-in detector (model: {builtin: lexical}) or a faster model command",
+	)
 }
 
 // logClassified emits the `policy: classified` line at a verdict-appropriate

@@ -83,6 +83,9 @@ func runFakeChild(mode string) {
 		case "slow":
 			time.Sleep(2 * time.Second)
 			emit("benign")
+		case "slow50ms":
+			time.Sleep(50 * time.Millisecond)
+			emit("benign")
 		default:
 			os.Exit(1)
 		}
@@ -233,39 +236,89 @@ func TestAdapter_ChildDiesOnStart_FirstClassifyUnavailable(t *testing.T) {
 	}
 }
 
-// TestAdapter_ContextCancel_PoisonsAdapter is the T-C row: an already-
-// cancelled ctx hits the ctx.Err() early-return guard inside Classify;
-// the slow child is never read. The mid-read cancel path (where
-// exec.CommandContext's background goroutine SIGKILLs the child while
-// ReadBytes is blocked) is also exercised compositionally — any IO
-// failure surfaces as ErrUnavailable — but is not specifically asserted
-// here; SP10c MAY add a dedicated mid-read cancel test when it wires the
-// dataplane fork.
-func TestAdapter_ContextCancel_PoisonsAdapter(t *testing.T) {
-	a, err := model.New(context.Background(), fakeChildConfig(t, "slow"))
+// TestAdapter_ContextDoneBeforeCall_SkipsWithoutPoison is the T-C row
+// (issue #16). A ctx that is already done when Classify is called means
+// nothing is written to the child, so the wire protocol is still in step:
+// the call returns ErrSkipped (wrapping ctx.Err()), never ErrUnavailable,
+// and the next call with a live ctx is answered.
+func TestAdapter_ContextDoneBeforeCall_SkipsWithoutPoison(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "benign"))
 	if err != nil {
 		t.Fatalf("New = %v", err)
 	}
 	defer func() { _ = a.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already-cancelled ctx — Classify must surface immediately
+	cancel()
 
-	_, err = a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
-	if !errors.Is(err, model.ErrUnavailable) {
-		t.Errorf("Classify err = %v; want ErrUnavailable wrapping ctx err", err)
+	// With a free slot and a done ctx, Classify's select picks either case
+	// at random. Looping covers the post-acquire ctx check on every run
+	// (the chance of missing it in 40 tries is 2^-40).
+	for i := range 40 {
+		_, err = a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+		if !errors.Is(err, model.ErrSkipped) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d: Classify err = %v; want ErrSkipped wrapping context.Canceled", i, err)
+		}
+		if errors.Is(err, model.ErrUnavailable) {
+			t.Fatalf("call %d: Classify err = %v; a ctx that ended before the call must not be ErrUnavailable", i, err)
+		}
 	}
 
-	// Subsequent Classify with a fresh ctx still short-circuits — adapter
-	// is poisoned.
-	_, err = a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
-	if !errors.Is(err, model.ErrUnavailable) {
-		t.Errorf("subsequent Classify err = %v; want ErrUnavailable", err)
+	got, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Errorf("Classify after skip = (%v, %v); want (VerdictBenign, nil): adapter must stay usable", got, err)
+	}
+}
+
+// TestAdapter_Burst_WaitersSkipAdapterStaysUsable is the T-B row (issue
+// #16): 100 concurrent calls against a 50 ms child with a 300 ms deadline
+// each. A few are answered; the rest give up while waiting and return
+// ErrSkipped. None is ErrUnavailable and the adapter answers afterwards.
+func TestAdapter_Burst_WaitersSkipAdapterStaysUsable(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "slow50ms"))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	const n = 100
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			_, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+			errs <- err
+		}()
+	}
+	ok, skipped, other := 0, 0, 0
+	var firstOther error
+	for range n {
+		switch err := <-errs; {
+		case err == nil:
+			ok++
+		case errors.Is(err, model.ErrSkipped) && !errors.Is(err, model.ErrUnavailable):
+			skipped++
+		default:
+			other++
+			if firstOther == nil {
+				firstOther = err
+			}
+		}
+	}
+	if other != 0 || ok == 0 || skipped == 0 {
+		t.Errorf("burst: ok=%d skipped=%d other=%d (first: %v); want other=0 and ok, skipped > 0 (100 x 50 ms cannot fit in 300 ms)",
+			ok, skipped, other, firstOther)
+	}
+
+	got, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Errorf("Classify after burst = (%v, %v); want (VerdictBenign, nil): only child failures may poison", got, err)
 	}
 }
 
 // TestAdapter_ConcurrentClassify is the T-CC row: 32 goroutines call
-// Classify concurrently; mutex serializes; no race; all return Benign.
+// Classify concurrently; the one-slot semaphore serializes; no race; all return Benign.
 // Run with -race in make ci.
 func TestAdapter_ConcurrentClassify(t *testing.T) {
 	a, err := model.New(context.Background(), fakeChildConfig(t, "benign"))
