@@ -126,8 +126,8 @@ func TestUnknownKeyError_Message(t *testing.T) {
 }
 
 func TestUnknownKey_String(t *testing.T) {
-	k := config.UnknownKey{Line: 7, Key: "qeury", Section: "timeouts", Valid: []string{"dial", "query", "shutdown"}} // codespell:ignore qeury
-	want := `line 7: unknown key "qeury" under timeouts (valid keys: dial, query, shutdown)`                         // codespell:ignore qeury
+	k := config.UnknownKey{Line: 7, Key: "query_timeout", Section: "timeouts", Valid: []string{"dial", "query", "shutdown"}}
+	want := `line 7: unknown key "query_timeout" under timeouts (valid keys: dial, query, shutdown)`
 	if got := k.String(); got != want {
 		t.Errorf("String() = %q want %q", got, want)
 	}
@@ -165,9 +165,15 @@ func TestLoad_UnknownKey_RejectTable(t *testing.T) {
 		{"allowlists_entry", baseYAML() + "allowlists:\n  - id: a\n    file: b.txt\n", "file", 12, secLists},
 		{"decoys_entry", baseYAML() + "decoys:\n  - id: a\n    file: b.txt\n", "file", 12, secLists},
 		{"timeouts_block", hdr3 + "timeouts:\n  dail: \"3s\"\n", "dail", 6, "timeouts"},
-		{"timeouts_flow_map", hdr3 + "timeouts: {dial: \"3s\", qeury: \"2s\"}\n", "qeury", 5, "timeouts"},                            // codespell:ignore qeury
-		{"block_response", baseYAML() + "block_response:\n  mode: address\n  adress: \"0.0.0.0\"\n", "adress", 12, "block_response"}, //nolint:misspell // deliberate typo // codespell:ignore adress
-		{"model", baseYAML() + "model:\n  buitin: lexical\n", "buitin", 11, "model"},                                                 // codespell:ignore buitin
+		{"timeouts_flow_map", hdr3 + "timeouts: {dial: \"3s\", query_timeout: \"2s\"}\n", "query_timeout", 5, "timeouts"},
+		{"block_response", baseYAML() + "block_response:\n  mode: address\n  address: \"0.0.0.0\"\n", "address", 12, "block_response"},
+		{"model", baseYAML() + "model:\n  built_in: lexical\n", "built_in", 11, "model"},
+		{"empty_key", baseYAML() + "\"\": 1\n", "", 10, ""},
+		{"null_key_top", baseYAML() + "null: 1\n", "null", 10, ""},
+		{"null_key_capitalised_subtree", baseYAML() + "Null:\n  blocklists:\n    - {id: a, path: b}\n", "Null", 10, ""},
+		{"null_key_tilde", baseYAML() + "~: 1\n", "~", 10, ""},
+		{"null_key_nested_flow", hdr3 + "timeouts: {~: 3s}\n", "~", 5, "timeouts"},
+		{"null_key_in_upstream", hdr3 + "    null: x\n", "null", 5, "upstreams[]"},
 		{"key_with_newline", baseYAML() + "\"a\\nb\": 1\n", "a\nb", 10, ""},
 		{"anchor_reused_merge", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - <<: *u\n", "servername", 3, "upstreams[]"},
 		{"anchor_reused_alias", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - *u\n", "servername", 3, "upstreams[]"},
@@ -204,7 +210,7 @@ func TestLoad_UnknownKey_RejectTable(t *testing.T) {
 }
 
 func TestLoad_UnknownKey_ReportsAllInDocumentOrder(t *testing.T) {
-	y := "bogus_top: 1\nlisten: \"127.0.0.1:5354\"\nupstreams:\n  - address: \"9.9.9.9:853\"\n    server_name: \"dns.quad9.net\"\n    servername: \"x\"\ntimeouts: {dial: \"3s\", qeury: \"2s\"}\n" // codespell:ignore qeury
+	y := "bogus_top: 1\nlisten: \"127.0.0.1:5354\"\nupstreams:\n  - address: \"9.9.9.9:853\"\n    server_name: \"dns.quad9.net\"\n    servername: \"x\"\ntimeouts: {dial: \"3s\", query_timeout: \"2s\"}\n"
 	_, err := loadYAMLString(t, y)
 	var uke *config.UnknownKeyError
 	if !errors.As(err, &uke) {
@@ -218,7 +224,7 @@ func TestLoad_UnknownKey_ReportsAllInDocumentOrder(t *testing.T) {
 	for _, k := range uke.Keys {
 		got = append(got, lks{k.Line, k.Key, k.Section})
 	}
-	want := []lks{{1, "bogus_top", ""}, {6, "servername", "upstreams[]"}, {7, "qeury", "timeouts"}} // codespell:ignore qeury
+	want := []lks{{1, "bogus_top", ""}, {6, "servername", "upstreams[]"}, {7, "query_timeout", "timeouts"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Keys = %v want %v", got, want)
 	}

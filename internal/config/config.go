@@ -212,6 +212,17 @@ func exportUpstreams(in []Upstream) []configexport.Upstream {
 // file holds a second non-empty YAML document.
 var ErrMultipleDocuments = errors.New("multiple YAML documents")
 
+// MultipleDocumentsError carries the line where the extra document starts.
+// It matches ErrMultipleDocuments under errors.Is.
+type MultipleDocumentsError struct{ Line int }
+
+func (e *MultipleDocumentsError) Error() string {
+	return fmt.Sprintf("%s: another document starts at line %d", ErrMultipleDocuments, e.Line)
+}
+
+// Is reports whether target is ErrMultipleDocuments.
+func (e *MultipleDocumentsError) Is(target error) bool { return target == ErrMultipleDocuments }
+
 // rejectExtraDocuments drains dec after the first document. Later documents
 // whose only content is a null scalar (a trailing "---") are ignored; any
 // other content, or a syntax error, is a *ParseError.
@@ -228,7 +239,7 @@ func rejectExtraDocuments(path string, dec *yaml.Decoder) error {
 		if len(n.Content) == 1 && n.Content[0].Kind == yaml.ScalarNode && n.Content[0].Tag == "!!null" {
 			continue
 		}
-		return &ParseError{Path: path, Err: fmt.Errorf("%w: another document starts at line %d", ErrMultipleDocuments, n.Line)}
+		return &ParseError{Path: path, Err: &MultipleDocumentsError{Line: n.Line}}
 	}
 }
 
@@ -249,6 +260,9 @@ func Load(path string) (Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&raw); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, classifyDecodeError(path, err)
+	}
+	if keys := nullKeys(data); len(keys) > 0 {
+		return Config{}, &UnknownKeyError{Path: path, Keys: keys}
 	}
 	if err := rejectExtraDocuments(path, dec); err != nil {
 		return Config{}, err

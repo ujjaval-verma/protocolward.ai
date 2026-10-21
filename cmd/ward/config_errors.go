@@ -37,14 +37,10 @@ func mapConfigLoadError(cfgPath string, err error) *serveError {
 		printStartupError("config error", msg, rem)
 		return &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
-	if errors.Is(err, config.ErrMultipleDocuments) {
-		detail := err.Error()
-		var pe *config.ParseError
-		if errors.As(err, &pe) {
-			detail = strings.TrimPrefix(pe.Err.Error(), config.ErrMultipleDocuments.Error()+": ")
-		}
-		msg := fmt.Sprintf("config error in %s: %s", cfgPath, detail)
-		rem := "ward.yaml holds exactly one YAML document; delete the extra document or merge its keys into the first"
+	var mdErr *config.MultipleDocumentsError
+	if errors.As(err, &mdErr) {
+		msg := fmt.Sprintf("config error in %s: another document starts at line %d", cfgPath, mdErr.Line)
+		rem := "ward.yaml holds exactly one YAML document; remove the extra `---` separator or merge the documents into one"
 		printStartupError("config error", msg, rem)
 		return &serveError{Code: 2, Message: msg, Remediation: rem}
 	}

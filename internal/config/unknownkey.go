@@ -51,7 +51,7 @@ func (e *UnknownKeyError) Error() string {
 
 // unknownFieldRe matches yaml.v3's KnownFields(true) TypeError entries. (?s)
 // lets . match the newline in a quoted key.
-var unknownFieldRe = regexp.MustCompile(`(?s)^line (\d+): field (.+) not found in type (\S+)$`)
+var unknownFieldRe = regexp.MustCompile(`(?s)^line (\d+): field (.*) not found in type (\S+)$`)
 
 // sections maps reflect.Type.String() of every decoded struct to its
 // user-facing section label.
@@ -135,4 +135,80 @@ func classifyDecodeError(path string, err error) error {
 		keys = append(keys, UnknownKey{Line: line, Key: m[2], Section: sec.section, Valid: yamlKeys(sec.typ)})
 	}
 	return &UnknownKeyError{Path: path, Keys: keys}
+}
+
+// sectionKeys returns the valid keys for a section label.
+func sectionKeys(section string) []string {
+	for _, v := range sections {
+		if v.section == section {
+			return yamlKeys(v.typ)
+		}
+	}
+	return nil
+}
+
+// childSection names the section a known key's value opens, if any.
+func childSection(parent, key string) (string, bool) {
+	if parent != "" {
+		return "", false
+	}
+	switch key {
+	case "upstreams":
+		return "upstreams[]", true
+	case "blocklists", "allowlists", "decoys":
+		return "blocklists[]/allowlists[]/decoys[]", true
+	case "timeouts", "block_response", "model":
+		return key, true
+	}
+	return "", false
+}
+
+// nullKeys finds mapping keys tagged !!null (null, Null, NULL, ~). yaml.v3
+// drops those and their subtrees before the KnownFields check, so the typed
+// decode never reports them. Only the first document is inspected.
+func nullKeys(data []byte) []UnknownKey {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	type id struct {
+		line    int
+		key     string
+		section string
+	}
+	seen := map[id]bool{}
+	var out []UnknownKey
+	var walk func(n *yaml.Node, section string)
+	walk = func(n *yaml.Node, section string) {
+		if n.Kind == yaml.AliasNode && n.Alias != nil {
+			n = n.Alias
+		}
+		switch n.Kind { //nolint:exhaustive // only containers can hold keys
+		case yaml.SequenceNode:
+			for _, item := range n.Content {
+				walk(item, section)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k, v := n.Content[i], n.Content[i+1]
+				if k.ShortTag() == "!!null" {
+					key := k.Value
+					if key == "" {
+						key = "~"
+					}
+					sid := id{k.Line, key, section}
+					if !seen[sid] {
+						seen[sid] = true
+						out = append(out, UnknownKey{Line: k.Line, Key: key, Section: section, Valid: sectionKeys(section)})
+					}
+					continue
+				}
+				if child, ok := childSection(section, k.Value); ok {
+					walk(v, child)
+				}
+			}
+		}
+	}
+	walk(doc.Content[0], "")
+	return out
 }

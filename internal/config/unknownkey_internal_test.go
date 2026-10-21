@@ -14,7 +14,7 @@ func TestSections_CoverEveryDecodedStruct(t *testing.T) {
 	seen := map[reflect.Type]bool{}
 	var walk func(reflect.Type)
 	walk = func(typ reflect.Type) {
-		for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
+		for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
 			typ = typ.Elem()
 		}
 		if typ.Kind() != reflect.Struct || seen[typ] {
@@ -31,6 +31,9 @@ func TestSections_CoverEveryDecodedStruct(t *testing.T) {
 			f := typ.Field(i)
 			if !f.IsExported() || f.Tag.Get("yaml") == "-" {
 				continue
+			}
+			if strings.Contains(f.Tag.Get("yaml"), ",inline") {
+				t.Errorf("%s.%s uses ,inline; yamlKeys does not flatten inline structs", typ, f.Name)
 			}
 			walk(f.Type)
 		}

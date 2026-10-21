@@ -140,7 +140,7 @@ func TestMapConfigLoadError_MultipleDocuments(t *testing.T) {
 	if want := "config error in " + p + ": another document starts at line 10"; se.Message != want {
 		t.Errorf("Message = %q want %q", se.Message, want)
 	}
-	if want := "ward.yaml holds exactly one YAML document; delete the extra document or merge its keys into the first"; se.Remediation != want {
+	if want := "ward.yaml holds exactly one YAML document; remove the extra `---` separator or merge the documents into one"; se.Remediation != want {
 		t.Errorf("Remediation = %q want %q", se.Remediation, want)
 	}
 }
