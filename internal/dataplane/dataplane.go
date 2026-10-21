@@ -189,8 +189,10 @@ type Config struct {
 	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
 	// upper bound per architecture.md. The slow-path context is decoupled
 	// from the request context because the request has already been answered
-	// when the fork fires; cancellation flows from Server.Shutdown via the
-	// inFlight drain, not from the per-query ctx.
+	// when the fork fires. It derives from the server's stop context
+	// instead: Server.Shutdown cancels it, so a classification still waiting
+	// for the sibling adapter is skipped at once and the inFlight drain
+	// waits only for calls already running.
 	ClassifyTimeout time.Duration
 
 	// Decoys, when non-nil, is consulted BEFORE Engine.Decide. A decoy hit
@@ -248,6 +250,12 @@ type Server struct {
 	// dropped, never queued.
 	classifySlots chan struct{}
 
+	// stopCtx is the parent of every classify context. Shutdown cancels it
+	// (stopCancel is idempotent) so queued classifications skip instead of
+	// running out the drain budget.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+
 	// classifyDropped counts classifications that did not run: no free
 	// slot, or the sibling adapter was still busy when the classify timeout
 	// ended (internal/model.ErrSkipped). Reported, with the running total,
@@ -302,7 +310,10 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.ClassifyTimeout = 4 * time.Second
 	}
 
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	s := &Server{
+		stopCtx:       stopCtx,
+		stopCancel:    stopCancel,
 		cfg:           cfg,
 		addrCh:        make(chan struct{}),
 		listenUDP:     net.ListenPacket,
@@ -407,6 +418,7 @@ func (s *Server) Serve() error {
 
 	pc, ln, err := s.bind()
 	if err != nil {
+		s.stopCancel() // nothing is serving; release the stop context
 		return err
 	}
 	local := pc.LocalAddr().String()
@@ -449,6 +461,10 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 // Shutdown gracefully stops the server within the context deadline. In-flight
 // queries are drained before returning.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Cancel queued and future classifications first so the drain below
+	// waits only for calls already running. Safe to call repeatedly.
+	s.stopCancel()
+
 	// Stop accepting new queries.
 	udpErr := s.udpSrv.ShutdownContext(ctx)
 	tcpErr := s.tcpSrv.ShutdownContext(ctx)
@@ -814,7 +830,7 @@ func (s *Server) classifyAsync(qname, client string) {
 	if s.classifierDead.Load() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ClassifyTimeout)
+	ctx, cancel := context.WithTimeout(s.stopCtx, s.cfg.ClassifyTimeout)
 	defer cancel()
 
 	var (
@@ -855,6 +871,15 @@ func (s *Server) classifyAsync(qname, client string) {
 			// The sibling was busy with earlier calls until this call's
 			// timeout ended; nothing was sent to it. A drop, not a failure:
 			// no latch, no per-call Warn.
+			if s.stopCtx.Err() != nil {
+				// Shutdown cancelled it: expected, so counted but silent.
+				s.classifyDropped.Add(1)
+				slog.Debug("policy: classify skipped",
+					"qname", qname,
+					"reason", "server shutting down",
+				)
+				return
+			}
 			s.noteClassifyDropped(qname, "classifier busy past the classify timeout")
 			return
 		}
@@ -937,6 +962,11 @@ func (s *Server) noteClassifyDropped(qname, reason string) {
 	// now < last means the wall clock stepped back: log and restart the
 	// interval rather than stay quiet until the clock catches up.
 	if last != 0 && now >= last && now-last < int64(classifyDropLogEvery) {
+		slog.Debug("policy: classify drop not logged",
+			"qname", qname,
+			"reason", reason,
+			"dropped_total", total,
+		)
 		return
 	}
 	if !s.classifyDropLoggedAt.CompareAndSwap(last, now) {

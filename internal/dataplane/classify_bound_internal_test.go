@@ -259,3 +259,104 @@ func TestClassify_ErrSkipped_CountedNoLatchNoWarnFlood(t *testing.T) {
 		t.Errorf("reason = %v; want %q", rec["reason"], "classifier busy past the classify timeout")
 	}
 }
+
+// serialClassifier mimics internal/model.Adapter: one call at a time, a call
+// waiting for its turn honours ctx and returns ErrSkipped, a call that has
+// the turn runs for the full dur.
+type serialClassifier struct {
+	sem     chan struct{}
+	dur     time.Duration
+	started atomic.Int64
+}
+
+func newSerialClassifier(dur time.Duration) *serialClassifier {
+	return &serialClassifier{sem: make(chan struct{}, 1), dur: dur}
+}
+
+func (s *serialClassifier) Classify(ctx context.Context, _ model.Input) (schema.Verdict, error) {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return 0, fmt.Errorf("%w: %w", adapter.ErrSkipped, ctx.Err())
+	}
+	defer func() { <-s.sem }()
+	s.started.Add(1)
+	time.Sleep(s.dur)
+	return schema.VerdictBenign, nil
+}
+
+// T-SHUTDOWN: Shutdown cancels classifications still waiting for the
+// adapter, so the drain takes one call, not one per waiter. Skips caused by
+// shutdown are counted but do not produce the drop WARN.
+func TestShutdown_CancelsQueuedClassifications(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+
+	const (
+		waiters = 8
+		callDur = 300 * time.Millisecond
+	)
+	sc := newSerialClassifier(callDur)
+	srv := newBoundTestServer(t, sc)
+	srv.cfg.ClassifyTimeout = 30 * time.Second
+
+	for i := range waiters {
+		forwardOnce(srv, i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for sc.started.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	_ = srv.Shutdown(ctx) // listeners were never bound; the drain is what matters
+	elapsed := time.Since(start)
+
+	if limit := 3 * callDur; elapsed > limit {
+		t.Errorf("Shutdown took %v; want < %v (queued classifications must be cancelled, not run: %d x %v)", elapsed, limit, waiters, callDur)
+	}
+	if got := sc.started.Load(); got > 2 {
+		t.Errorf("classifications that ran = %d; want at most 2", got)
+	}
+	if got := srv.classifyDropped.Load(); got < waiters-2 {
+		t.Errorf("classifyDropped = %d; want >= %d (shutdown skips are counted)", got, waiters-2)
+	}
+	if n, _ := countDropLines(obs.Captured(t)); n != 0 {
+		t.Errorf("policy: classify dropped lines = %d; want 0 (a shutdown skip is expected, not a warning)", n)
+	}
+	_ = srv.Shutdown(ctx) // cancelling twice is safe
+}
+
+// A classification that starts after Shutdown is skipped at once.
+func TestShutdown_ClassifyAfterStopIsSkipped(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	sc := newSerialClassifier(time.Millisecond)
+	srv := newBoundTestServer(t, sc)
+	_ = srv.Shutdown(context.Background())
+	_ = srv.Shutdown(context.Background())
+	forwardOnce(srv, 0)
+	srv.inFlight.Wait()
+	// With a free slot select may pick either case; both are fine, but a
+	// drop must never warn.
+	if n, _ := countDropLines(obs.Captured(t)); n != 0 {
+		t.Errorf("policy: classify dropped lines = %d; want 0", n)
+	}
+}
+
+// T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
+func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newBoundTestServer(t, &blockingClassifier{release: make(chan struct{})})
+	srv.noteClassifyDropped("a.example.com", "slow path at capacity")
+	srv.noteClassifyDropped("quiet.example.com", "slow path at capacity")
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "policy: classify drop not logged" && r["level"] == "DEBUG" && r["qname"] == "quiet.example.com" {
+			return
+		}
+	}
+	t.Error("no Debug `policy: classify drop not logged` line naming the suppressed qname")
+}
