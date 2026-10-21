@@ -64,7 +64,7 @@ func TestServe_UDPListenerErrorAfterReady_StopsTCPAndReturnsError(t *testing.T) 
 	if !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), "udp") {
 		t.Fatalf("Serve = %v; want a udp error wrapping net.ErrClosed", err)
 	}
-	ln, lerr := net.Listen("tcp", addr)
+	ln, lerr := rebindTCP(addr)
 	if lerr != nil {
 		t.Fatalf("tcp %s still bound after Serve returned: %v", addr, lerr)
 	}
@@ -81,11 +81,39 @@ func TestServe_TCPListenerErrorAfterReady_StopsUDPAndReturnsError(t *testing.T) 
 	if !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), "tcp") {
 		t.Fatalf("Serve = %v; want a tcp error wrapping net.ErrClosed", err)
 	}
-	pc, perr := net.ListenPacket("udp", addr)
+	pc, perr := rebindUDP(addr)
 	if perr != nil {
 		t.Fatalf("udp %s still bound after Serve returned: %v", addr, perr)
 	}
 	_ = pc.Close()
+}
+
+// stubListener is a net.Listener that never binds anything.
+type stubListener struct{ addr net.Addr }
+
+func (stubListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (stubListener) Close() error              { return nil }
+func (l stubListener) Addr() net.Addr          { return l.addr }
+
+// rebindTCP and rebindUDP re-bind addr to prove a port was released. Another
+// test may grab a just-freed ephemeral port, so each retries once after a
+// short sleep.
+func rebindTCP(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		time.Sleep(50 * time.Millisecond)
+		ln, err = net.Listen("tcp", addr)
+	}
+	return ln, err
+}
+
+func rebindUDP(addr string) (net.PacketConn, error) {
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		time.Sleep(50 * time.Millisecond)
+		pc, err = net.ListenPacket("udp", addr)
+	}
+	return pc, err
 }
 
 func TestBind_TCPTwinRetry(t *testing.T) {
@@ -123,7 +151,12 @@ func TestBind_TCPTwinRetry(t *testing.T) {
 				if int(calls.Add(1)) <= tc.failFirst {
 					return nil, tc.failWith
 				}
-				return net.Listen(network, address)
+				// Success attempt: a stub, so no real TCP bind can collide.
+				ta, err := net.ResolveTCPAddr(network, address)
+				if err != nil {
+					return nil, err
+				}
+				return stubListener{addr: ta}, nil
 			}
 
 			pc, ln, err := srv.bind()
@@ -144,7 +177,7 @@ func TestBind_TCPTwinRetry(t *testing.T) {
 				t.Fatalf("bind = %v; want an error wrapping %v", err, tc.wantErr)
 			}
 			for _, a := range udpAddrs {
-				c, err := net.ListenPacket("udp", a)
+				c, err := rebindUDP(a)
 				if err != nil {
 					t.Errorf("udp socket %s from a failed attempt was not closed: %v", a, err)
 					continue

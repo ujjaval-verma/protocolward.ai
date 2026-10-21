@@ -121,9 +121,20 @@ func TestServe_TCPPortTaken_ReturnsBindErrorAndReleasesUDP(t *testing.T) {
 	if msg := err.Error(); !strings.Contains(msg, "tcp") || !strings.Contains(msg, addr) {
 		t.Errorf("Serve error %q should name tcp and %s", msg, addr)
 	}
-	pc, err := net.ListenPacket("udp", addr)
+	pc, err := rebindUDP(addr)
 	if err != nil {
 		t.Fatalf("udp %s still bound after Serve returned: %v", addr, err)
 	}
 	_ = pc.Close()
+}
+
+// rebindUDP re-binds addr to prove a port was released. Another test may grab
+// a just-freed ephemeral port, so it retries once after a short sleep.
+func rebindUDP(addr string) (net.PacketConn, error) {
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		time.Sleep(50 * time.Millisecond)
+		pc, err = net.ListenPacket("udp", addr)
+	}
+	return pc, err
 }
