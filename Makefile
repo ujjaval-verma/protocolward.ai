@@ -213,7 +213,7 @@ dist-darwin-arm64: ## Build darwin/arm64 (Apple Silicon)
 wasm: wasm-check ## Build dist/wasm/ward.wasm + wasm_exec.js; fails if ward.wasm > 5 MB
 	$(Q)mkdir -p $(WASM_DIR)
 	$(Q)GOOS=js GOARCH=wasm $(GO) build -trimpath -ldflags '-s -w' -o $(WASM_DIR)/ward.wasm ./cmd/wardwasm
-	$(Q)cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DIR)/wasm_exec.js
+	$(Q)install -m 0644 "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DIR)/wasm_exec.js
 	$(Q)scripts/check-wasm-size.sh $(WASM_DIR)/ward.wasm $(WASM_MAX_BYTES)
 	@printf "$(C_OK)built$(C_OFF) %s (%s bytes, budget %s)\n" "$(WASM_DIR)/ward.wasm" "$$(wc -c < $(WASM_DIR)/ward.wasm | tr -d ' ')" "$(WASM_MAX_BYTES)"
 
