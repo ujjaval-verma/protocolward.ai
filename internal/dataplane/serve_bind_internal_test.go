@@ -4,8 +4,11 @@ package dataplane
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -83,4 +86,71 @@ func TestServe_TCPListenerErrorAfterReady_StopsUDPAndReturnsError(t *testing.T) 
 		t.Fatalf("udp %s still bound after Serve returned: %v", addr, perr)
 	}
 	_ = pc.Close()
+}
+
+func TestBind_TCPTwinRetry(t *testing.T) {
+	inUse := fmt.Errorf("listen tcp: %w", syscall.EADDRINUSE)
+	denied := fmt.Errorf("listen tcp: %w", syscall.EACCES)
+	cases := []struct {
+		name       string
+		listenAddr string
+		failFirst  int   // listenTCP calls that fail before one succeeds
+		failWith   error // error those calls return
+		wantCalls  int32
+		wantErr    error // nil: bind must succeed
+	}{
+		{"ephemeral_retries_until_free", "127.0.0.1:0", 2, inUse, 3, nil},
+		{"ephemeral_gives_up_after_bindAttempts", "127.0.0.1:0", 1 << 30, inUse, bindAttempts, syscall.EADDRINUSE},
+		{"fixed_port_never_retries", "127.0.0.1:5354", 1 << 30, inUse, 1, syscall.EADDRINUSE},
+		{"other_errors_never_retry", "127.0.0.1:0", 1 << 30, denied, 1, syscall.EACCES},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newServeTestServer(t, tc.listenAddr)
+			// Never bind a real fixed port: every UDP bind goes to an
+			// ephemeral loopback port, and each one is recorded so the test
+			// can prove bind closed it again.
+			var udpAddrs []string
+			srv.listenUDP = func(network, _ string) (net.PacketConn, error) {
+				pc, err := net.ListenPacket(network, "127.0.0.1:0")
+				if err == nil {
+					udpAddrs = append(udpAddrs, pc.LocalAddr().String())
+				}
+				return pc, err
+			}
+			var calls atomic.Int32
+			srv.listenTCP = func(network, address string) (net.Listener, error) {
+				if int(calls.Add(1)) <= tc.failFirst {
+					return nil, tc.failWith
+				}
+				return net.Listen(network, address)
+			}
+
+			pc, ln, err := srv.bind()
+			if got := calls.Load(); got != tc.wantCalls {
+				t.Errorf("listenTCP calls = %d; want %d", got, tc.wantCalls)
+			}
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("bind: %v", err)
+				}
+				defer pc.Close()
+				defer ln.Close()
+				if pc.LocalAddr().String() != ln.Addr().String() {
+					t.Errorf("udp %s and tcp %s differ", pc.LocalAddr(), ln.Addr())
+				}
+				udpAddrs = udpAddrs[:len(udpAddrs)-1] // the kept socket
+			} else if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("bind = %v; want an error wrapping %v", err, tc.wantErr)
+			}
+			for _, a := range udpAddrs {
+				c, err := net.ListenPacket("udp", a)
+				if err != nil {
+					t.Errorf("udp socket %s from a failed attempt was not closed: %v", a, err)
+					continue
+				}
+				_ = c.Close()
+			}
+		})
+	}
 }

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -206,6 +207,12 @@ type Server struct {
 	addrCh      chan struct{} // closed when addr is set
 	listenersUp atomic.Int32
 
+	// listenUDP and listenTCP bind the sockets in Serve. NewServer sets them
+	// to net.ListenPacket and net.Listen; internal tests replace them to
+	// force bind errors.
+	listenUDP func(network, address string) (net.PacketConn, error)
+	listenTCP func(network, address string) (net.Listener, error)
+
 	// serveStarted is set true (via CompareAndSwap) by the first Serve call.
 	// Any subsequent call returns ErrAlreadyServing immediately without blocking.
 	serveStarted atomic.Bool
@@ -251,10 +258,7 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.ClassifyTimeout = 4 * time.Second
 	}
 
-	s := &Server{
-		cfg:    cfg,
-		addrCh: make(chan struct{}),
-	}
+	s := &Server{cfg: cfg, addrCh: make(chan struct{}), listenUDP: net.ListenPacket, listenTCP: net.Listen}
 	s.counter.Store(cfg.CounterSeed)
 
 	mux := dns.NewServeMux()
@@ -298,21 +302,40 @@ func (s *Server) listenerStarted() {
 	}
 }
 
+// bindAttempts bounds the retry in bind when ListenAddr asks for an
+// ephemeral port (":0"). The kernel picks the UDP port; the TCP listener must
+// take the same number, which another socket may already hold.
+const bindAttempts = 8
+
 // bind opens the UDP socket on cfg.ListenAddr, then the TCP listener on the
-// same host and port. On a TCP failure it closes the UDP socket. Errors
-// wrap the net error, so errors.Is(err, syscall.EADDRINUSE) holds for a
-// taken port.
+// same host and port. On a TCP failure it closes the UDP socket. When the
+// configured port is 0 and the TCP twin is taken (EADDRINUSE), it retries
+// with a fresh UDP port, up to bindAttempts times. A fixed port is never
+// retried. Errors wrap the net error, so errors.Is(err, syscall.EADDRINUSE)
+// holds for a taken port.
 func (s *Server) bind() (net.PacketConn, net.Listener, error) {
-	pc, err := net.ListenPacket("udp", s.cfg.ListenAddr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("dataplane: %w", err)
+	attempts := 1
+	if _, port, err := net.SplitHostPort(s.cfg.ListenAddr); err == nil && port == "0" {
+		attempts = bindAttempts
 	}
-	ln, err := net.Listen("tcp", pc.LocalAddr().String())
-	if err != nil {
+	var err error
+	for range attempts {
+		var pc net.PacketConn
+		pc, err = s.listenUDP("udp", s.cfg.ListenAddr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dataplane: %w", err)
+		}
+		var ln net.Listener
+		ln, err = s.listenTCP("tcp", pc.LocalAddr().String())
+		if err == nil {
+			return pc, ln, nil
+		}
 		_ = pc.Close()
-		return nil, nil, fmt.Errorf("dataplane: %w", err)
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
 	}
-	return pc, ln, nil
+	return nil, nil, fmt.Errorf("dataplane: %w", err)
 }
 
 // Serve binds the UDP and TCP listeners on one port, then serves both.
