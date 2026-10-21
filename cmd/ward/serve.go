@@ -526,6 +526,9 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 // error and listen address. Specialises on ":53" permission-denied to name
 // the setcap recipe.
 func bindErrRemediation(err error, listenAddr string) string {
+	if errors.Is(err, dataplane.ErrListenerStopped) {
+		return "the DNS listener stopped unexpectedly; check the log above and restart ward"
+	}
 	errStr := err.Error()
 	if containsAny(errStr, "permission denied", "operation not permitted") {
 		_, port, _ := splitHostPort(listenAddr)

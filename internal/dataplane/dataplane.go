@@ -41,6 +41,11 @@ import (
 	"protocolward.ai/ward/pkg/schema"
 )
 
+// ErrListenerStopped is wrapped by the error Serve returns when a listener
+// that was bound successfully later stops with an error (as opposed to a
+// bind failure). Test with errors.Is.
+var ErrListenerStopped = errors.New("stopped")
+
 // ErrAlreadyServing is returned by a second call to Serve() on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
 // need a fresh listener (invariant #8: every error names a remediation).
@@ -280,8 +285,8 @@ func NewServer(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Addr returns the UDP listen address once the server is started, or "" if the
-// server has not yet started.
+// Addr returns the shared UDP/TCP listen address once both listeners are
+// serving, or "" before that. It is not cleared when Serve returns.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -377,7 +382,7 @@ func (s *Server) Serve() error {
 		if r.err == nil || first != nil {
 			continue // clean stop, or the peer we are already aborting
 		}
-		first = fmt.Errorf("dataplane: %s listener on %s stopped: %w", r.transport, local, r.err)
+		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
 		s.abort(pc, ln)
 	}
 	return first
