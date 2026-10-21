@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"sync"
 
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
@@ -35,16 +34,17 @@ type Config struct {
 var ErrNoCommand = errors.New("model: adapter config: command is empty")
 
 // ErrUnavailable is returned by Classify when the child process is not
-// usable — either it exited, it returned a malformed response, an IO
-// error occurred, or the context was cancelled mid-call. Once any of
-// these fires the adapter is poisoned and every subsequent Classify
-// returns ErrUnavailable. SP10c's dataplane fork can therefore handle
-// every classifier failure mode with a single
+// usable — either it exited, it returned a malformed response, or an IO
+// error occurred. Once any of these fires the adapter is poisoned and
+// every subsequent Classify returns ErrUnavailable. A context that ends
+// before the request is written is not a child failure: it returns
+// ErrSkipped instead and leaves the adapter usable. SP10c's dataplane fork
+// therefore handles every child failure mode with a single
 //
 //	errors.Is(err, ErrUnavailable)
 //
 // check + the `policy: model unavailable` log line required by
-// invariant 7.
+// invariant 7, and counts ErrSkipped as a dropped classification.
 //
 // Per pkg/model.Classifier's contract, schema.ErrUnknownVerdict does
 // NOT appear at this boundary — a malformed verdict string from the
@@ -52,17 +52,26 @@ var ErrNoCommand = errors.New("model: adapter config: command is empty")
 // as the wrap cause for diagnostic logging.
 var ErrUnavailable = errors.New("model: adapter: child unavailable")
 
+// ErrSkipped is returned by Classify when ctx ended before the request was
+// written to the child, usually while waiting for an earlier call to
+// finish. Nothing was sent, so the wire protocol is still in step and the
+// adapter is NOT poisoned; the next call with a live context proceeds.
+// The error also wraps ctx.Err().
+var ErrSkipped = errors.New("model: adapter: classify skipped, context ended before the call")
+
 // Adapter implements pkg/model.Classifier by relaying typed Input to a
 // sibling child process over newline-delimited JSON on stdio. Concurrent
-// Classify calls are serialized by the internal mutex; SP10c's dataplane
-// fork is expected to call this from a single dispatch goroutine, but
-// the adapter does not assume that.
+// Classify calls are serialized: one request is on the wire at a time.
+// A caller waiting its turn gives up when its context ends (ErrSkipped).
 type Adapter struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 
-	mu       sync.Mutex
+	// sem is a one-slot semaphore guarding the fields below and the
+	// stdio pipes. A channel, not a sync.Mutex, so Classify can stop
+	// waiting when its context ends.
+	sem      chan struct{}
 	poisoned bool // once set, every Classify returns ErrUnavailable
 }
 
@@ -110,6 +119,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
+		sem:    make(chan struct{}, 1),
 	}, nil
 }
 
@@ -127,17 +137,27 @@ type response struct {
 }
 
 // Classify implements pkg/model.Classifier.
+//
+// ctx bounds the wait for an earlier call and is checked once more before
+// the request is written; either way an ended ctx returns ErrSkipped
+// without poisoning. ctx does not interrupt the child round trip once the
+// request is on the wire.
 func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	select {
+	case a.sem <- struct{}{}:
+	case <-ctx.Done():
+		return 0, fmt.Errorf("%w: %w", ErrSkipped, ctx.Err())
+	}
+	defer func() { <-a.sem }()
 
 	if a.poisoned {
 		return 0, ErrUnavailable
 	}
 
+	// select picks at random when both cases are ready, so the slot may
+	// have been taken with ctx already done. Nothing is written yet.
 	if err := ctx.Err(); err != nil {
-		a.poisonLocked()
-		return 0, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return 0, fmt.Errorf("%w: %w", ErrSkipped, err)
 	}
 
 	clean := sanitize(in)
@@ -175,7 +195,7 @@ func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict,
 	return resp.Verdict, nil
 }
 
-// poisonLocked marks the adapter dead. Must be called with a.mu held.
+// poisonLocked marks the adapter dead. Must be called with a.sem held.
 // Sends SIGKILL to the child so the OS can reap it via Close's Wait.
 func (a *Adapter) poisonLocked() {
 	if a.poisoned {
@@ -200,11 +220,11 @@ func (a *Adapter) poisonLocked() {
 //
 // Idempotent: a second Close call is a no-op and returns nil. Safe to
 // call on a poisoned adapter. Safe to call from any goroutine; takes
-// a.mu to serialize with Classify, so Close blocks until any in-flight
+// a.sem to serialize with Classify, so Close blocks until any in-flight
 // Classify returns.
 func (a *Adapter) Close() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.sem <- struct{}{}
+	defer func() { <-a.sem }()
 	if a.cmd == nil {
 		return nil
 	}
