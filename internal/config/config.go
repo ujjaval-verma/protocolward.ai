@@ -4,8 +4,11 @@
 package config
 
 import (
+	"bytes"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -205,8 +208,44 @@ func exportUpstreams(in []Upstream) []configexport.Upstream {
 	return out
 }
 
+// ErrMultipleDocuments is wrapped by the *ParseError Load returns when the
+// file holds a second non-empty YAML document.
+var ErrMultipleDocuments = errors.New("multiple YAML documents")
+
+// MultipleDocumentsError carries the line where the extra document starts.
+// It matches ErrMultipleDocuments under errors.Is.
+type MultipleDocumentsError struct{ Line int }
+
+func (e *MultipleDocumentsError) Error() string {
+	return fmt.Sprintf("%s: another document starts at line %d", ErrMultipleDocuments, e.Line)
+}
+
+// Is reports whether target is ErrMultipleDocuments.
+func (e *MultipleDocumentsError) Is(target error) bool { return target == ErrMultipleDocuments }
+
+// rejectExtraDocuments drains dec after the first document. Later documents
+// whose only content is a null scalar (a trailing "---") are ignored; any
+// other content, or a syntax error, is a *ParseError.
+func rejectExtraDocuments(path string, dec *yaml.Decoder) error {
+	for {
+		var n yaml.Node
+		err := dec.Decode(&n)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return &ParseError{Path: path, Err: err}
+		}
+		if len(n.Content) == 1 && n.Content[0].Kind == yaml.ScalarNode && n.Content[0].Tag == "!!null" {
+			continue
+		}
+		return &ParseError{Path: path, Err: &MultipleDocumentsError{Line: n.Line}}
+	}
+}
+
 // Load reads the YAML file at path, applies defaults, validates, and returns
-// a Config. Errors are one of: *MissingFileError, *ParseError, *ValidationError.
+// a Config. Errors are one of: *MissingFileError, *ParseError, *UnknownKeyError,
+// *ValidationError.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -217,8 +256,16 @@ func Load(path string) (Config, error) {
 	}
 
 	var raw rawConfig
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return Config{}, &ParseError{Path: path, Err: err}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil && !errors.Is(err, io.EOF) {
+		return Config{}, classifyDecodeError(path, err)
+	}
+	if keys := nullKeys(data); len(keys) > 0 {
+		return Config{}, &UnknownKeyError{Path: path, Keys: keys}
+	}
+	if err := rejectExtraDocuments(path, dec); err != nil {
+		return Config{}, err
 	}
 
 	// Apply behavioral defaults. listen has no default — network bind address

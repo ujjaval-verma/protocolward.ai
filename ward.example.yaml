@@ -1,3 +1,4 @@
+# Unknown keys are rejected at load: a typo (e.g. "blocklist:" for "blocklists:") fails with the key and line instead of being ignored.
 listen: "127.0.0.1:5354"        # unprivileged dev default (5353 collides with mDNS / Bonjour on macOS); use ":53" with CAP_NET_BIND_SERVICE / launchd for prod
 log_level: "info"                # debug|info|warn|error
 
