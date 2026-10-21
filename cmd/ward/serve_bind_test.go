@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -97,4 +99,38 @@ func TestServe_UDPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
 
 func TestServe_TCPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
 	assertBindFailureExit(t, takeTCPPortWithFreeUDP(t))
+}
+
+// In-process: serveRun returns the bind error and does not leave the
+// dashboard listener bound behind it.
+func TestServeRun_DNSPortTaken_ReturnsBindErrorAndClosesDashboard(t *testing.T) {
+	held, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pre-bind udp: %v", err)
+	}
+	defer held.Close()
+	addr := held.LocalAddr().String()
+	dashAddr := freeTCPAddr(t)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serveRun(context.Background(), serveOpts{configPath: writeBindTestConfig(t, addr), dashListenAddr: dashAddr})
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveRun did not return within 2s with the DNS port taken")
+	}
+	var se *serveError
+	if !errors.As(err, &se) || se.Code != 1 {
+		t.Fatalf("serveRun = %v; want *serveError with Code 1", err)
+	}
+	if want := "port already in use at " + addr; !strings.Contains(se.Remediation, want) {
+		t.Errorf("Remediation = %q; want it to contain %q", se.Remediation, want)
+	}
+	ln, err := net.Listen("tcp", dashAddr)
+	if err != nil {
+		t.Fatalf("dashboard %s still bound after serveRun returned: %v", dashAddr, err)
+	}
+	_ = ln.Close()
 }

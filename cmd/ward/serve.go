@@ -448,6 +448,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			}
 		}()
 	case err := <-serveErr:
+		// The dataplane has already stopped both DNS listeners and drained
+		// in-flight queries. Close the dashboard too, so an early exit
+		// (e.g. the DNS port is taken) leaves no listener behind.
+		_ = dashSrv.Close()
 		if err != nil {
 			msg := fmt.Sprintf("listener error: %v", err)
 			rem := bindErrRemediation(err, cfg.Listen)
