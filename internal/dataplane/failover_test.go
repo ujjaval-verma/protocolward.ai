@@ -5,12 +5,14 @@ package dataplane_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 
 	"protocolward.ai/ward/internal/dataplane"
+	"protocolward.ai/ward/internal/obs"
 )
 
 // failoverBudget is the QueryTimeout used by the failover tests. It is long
@@ -163,5 +165,133 @@ func TestServer_PrimaryHangs_FallbackAnswersWithinBudget(t *testing.T) {
 	}
 	if elapsed >= failoverBudget+failoverSlack {
 		t.Errorf("answered after %s; want under budget %s (+%s slack)", elapsed, failoverBudget, failoverSlack)
+	}
+}
+
+// The primary hangs and the fallback needs 30% of the budget. The primary
+// is capped at half, so the fallback still has 50% left and answers. A
+// primary cap above 70% would starve it (guards the query/2 split).
+func TestServer_PrimaryHangs_FallbackNeedingThirtyPercentAnswers(t *testing.T) {
+	t.Parallel()
+	primary := hangingResolver(t, "10.0.0.1:853")
+	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess, delay: failoverBudget * 3 / 10}
+	addr := startPolicyServer(t, dataplane.Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []dataplane.Resolver{primary, fallback},
+		CounterSeed:     0,
+		QueryTimeout:    failoverBudget,
+		ShutdownTimeout: 2 * time.Second,
+	})
+
+	resp, elapsed := exchangeTimed(t, addr, "slowfallback2.example.com.")
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s after %s; want NOERROR (fallback had half the budget left)", dns.RcodeToString[resp.Rcode], elapsed)
+	}
+}
+
+// runLoggedQuery serves one A query through resolvers with slog captured,
+// drains the handler via Shutdown, and returns the response and records.
+// It replaces slog.Default, so callers must not be parallel.
+func runLoggedQuery(t *testing.T, resolvers []dataplane.Resolver, qname string) (*dns.Msg, []map[string]any) {
+	t.Helper()
+	restore := obs.Capture(t)
+	defer restore()
+	srv, err := dataplane.NewServer(dataplane.Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       resolvers,
+		CounterSeed:     0,
+		QueryTimeout:    failoverBudget,
+		ShutdownTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go srv.Serve()
+	addr, err := waitForAddr(srv, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, _ := exchangeTimed(t, addr, qname)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	return resp, obs.Captured(t)
+}
+
+func findRecord(records []map[string]any, level, msgPart string) map[string]any {
+	for _, r := range records {
+		if r["level"] == level {
+			if m, _ := r["msg"].(string); strings.Contains(m, msgPart) {
+				return r
+			}
+		}
+	}
+	return nil
+}
+
+// A rescued query must not hide the dead primary: a WARN names it, says
+// whether it timed out, and carries a remediation.
+func TestServer_PrimaryHangs_FallbackAnswers_WarnsAboutPrimary(t *testing.T) {
+	primary := hangingResolver(t, "10.0.0.1:853")
+	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
+	resp, records := runLoggedQuery(t, []dataplane.Resolver{primary, fallback}, "warn.example.com.")
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s; want NOERROR", dns.RcodeToString[resp.Rcode])
+	}
+	rec := findRecord(records, "WARN", "upstream attempt failed")
+	if rec == nil {
+		t.Fatalf("no WARN record for the failed primary attempt; records: %v", records)
+	}
+	if rec["upstream"] != "10.0.0.1:853" {
+		t.Errorf("upstream = %v; want the primary 10.0.0.1:853", rec["upstream"])
+	}
+	if rec["timed_out"] != true {
+		t.Errorf("timed_out = %v; want true for a hung primary", rec["timed_out"])
+	}
+	if rem, _ := rec["remediation"].(string); rem == "" {
+		t.Errorf("remediation missing or empty: %v", rec)
+	}
+}
+
+// A fast primary failure is not a timeout.
+func TestServer_PrimaryFailsFast_WarnNotTimedOut(t *testing.T) {
+	primary := &fakeResolver{addr: "10.0.0.1:853", err: errors.New("connection refused")}
+	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
+	_, records := runLoggedQuery(t, []dataplane.Resolver{primary, fallback}, "fastfail.example.com.")
+	rec := findRecord(records, "WARN", "upstream attempt failed")
+	if rec == nil {
+		t.Fatalf("no WARN record; records: %v", records)
+	}
+	if rec["timed_out"] != false {
+		t.Errorf("timed_out = %v; want false for a fast failure", rec["timed_out"])
+	}
+}
+
+// Both fail: `upstream` names the upstream whose error is in `error` (the
+// last tried); the primary is in first_upstream / first_error.
+func TestServer_BothFail_LogNamesLastTriedUpstream(t *testing.T) {
+	primary := hangingResolver(t, "10.0.0.1:853")
+	fallback := &fakeResolver{addr: "10.0.0.2:853", err: errors.New("fake upstream 10.0.0.2:853: connection refused")}
+	resp, records := runLoggedQuery(t, []dataplane.Resolver{primary, fallback}, "bothfail.example.com.")
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s; want SERVFAIL", dns.RcodeToString[resp.Rcode])
+	}
+	rec := findRecord(records, "ERROR", "all upstream resolvers failed")
+	if rec == nil {
+		t.Fatalf("no ERROR record; records: %v", records)
+	}
+	if rec["upstream"] != "10.0.0.2:853" {
+		t.Errorf("upstream = %v; want the last tried 10.0.0.2:853", rec["upstream"])
+	}
+	if e, _ := rec["error"].(string); !strings.Contains(e, "10.0.0.2:853") {
+		t.Errorf("error = %q; want the last tried upstream's error", e)
+	}
+	if rec["first_upstream"] != "10.0.0.1:853" {
+		t.Errorf("first_upstream = %v; want 10.0.0.1:853", rec["first_upstream"])
+	}
+	if e, _ := rec["first_error"].(string); !strings.Contains(e, "10.0.0.1:853") {
+		t.Errorf("first_error = %q; want the primary's error", e)
 	}
 }

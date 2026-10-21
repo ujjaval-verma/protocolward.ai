@@ -681,12 +681,29 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 		if n > 1 {
 			nextIdx := (idx + 1) % n
 			nextResolver := s.cfg.Resolvers[nextIdx]
+			firstResolver, firstErr := resolver, err
+			slog.Warn("upstream attempt failed; retrying on next resolver",
+				"qname", req.Question[0].Name,
+				"upstream", firstResolver.Address(),
+				"next", nextResolver.Address(),
+				"timed_out", errors.Is(firstErr, context.DeadlineExceeded),
+				"error", firstErr.Error(),
+				"remediation", "check connectivity to this upstream resolver, or remove it from upstreams in ward.yaml; if the link is slow, raise timeouts.query",
+			)
 			resp, err = nextResolver.Query(ctx, req)
-			if err == nil {
-				resolver = nextResolver
+			resolver = nextResolver
+			if err != nil {
+				slog.Error("all upstream resolvers failed",
+					"qname", req.Question[0].Name,
+					"qtype", dns.TypeToString[req.Question[0].Qtype],
+					"upstream", resolver.Address(),
+					"error", err.Error(),
+					"first_upstream", firstResolver.Address(),
+					"first_error", firstErr.Error(),
+					"remediation", "check upstream resolver connectivity and ward.yaml configuration",
+				)
 			}
-		}
-		if err != nil {
+		} else {
 			slog.Error("all upstream resolvers failed",
 				"qname", req.Question[0].Name,
 				"qtype", dns.TypeToString[req.Question[0].Qtype],
@@ -694,6 +711,8 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 				"error", err.Error(),
 				"remediation", "check upstream resolver connectivity and ward.yaml configuration",
 			)
+		}
+		if err != nil {
 			servfail := new(dns.Msg)
 			servfail.SetRcode(req, dns.RcodeServerFailure)
 			_ = w.WriteMsg(servfail)
