@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -164,5 +165,27 @@ func TestDoctorRun_UpstreamUnreachable_ExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "[FAIL]") {
 		t.Errorf("output missing '[FAIL]'; got:\n%s", buf.String())
+	}
+}
+
+func TestDoctorRun_UnknownKey_ExitsCode2(t *testing.T) {
+	p := writeExampleWithBogusKey(t)
+	var buf bytes.Buffer
+	err := doctorRun(&buf, doctorOpts{configPath: p})
+	var se *serveError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %T %v; want *serveError", err, err)
+	}
+	if se.Code != 2 {
+		t.Errorf("Code = %d want 2", se.Code)
+	}
+	if !strings.Contains(se.Message, `unknown key "bogus_typo_field"`) {
+		t.Errorf("Message = %q", se.Message)
+	}
+	if se.Remediation != unknownKeyRemediation {
+		t.Errorf("Remediation = %q", se.Remediation)
+	}
+	if strings.Contains(buf.String(), "[FAIL]") || strings.Contains(buf.String(), "[OK]") {
+		t.Errorf("doctor probed upstreams: %q", buf.String())
 	}
 }

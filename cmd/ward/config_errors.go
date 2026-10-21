@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"protocolward.ai/ward/internal/config"
 )
@@ -22,6 +23,28 @@ func mapConfigLoadError(cfgPath string, err error) *serveError {
 	if errors.As(err, &missingErr) {
 		msg := fmt.Sprintf("config file not found: %s", cfgPath)
 		rem := "create the file or pass --config with the correct path; see ward.example.yaml for a template"
+		printStartupError("config error", msg, rem)
+		return &serveError{Code: 2, Message: msg, Remediation: rem}
+	}
+	var ukErr *config.UnknownKeyError
+	if errors.As(err, &ukErr) {
+		parts := make([]string, len(ukErr.Keys))
+		for i, k := range ukErr.Keys {
+			parts[i] = k.String()
+		}
+		msg := fmt.Sprintf("config error in %s: %s", cfgPath, strings.Join(parts, "; "))
+		rem := "fix the spelling or remove the key in ward.yaml; see ward.example.yaml for a template"
+		printStartupError("config error", msg, rem)
+		return &serveError{Code: 2, Message: msg, Remediation: rem}
+	}
+	if errors.Is(err, config.ErrMultipleDocuments) {
+		detail := err.Error()
+		var pe *config.ParseError
+		if errors.As(err, &pe) {
+			detail = strings.TrimPrefix(pe.Err.Error(), config.ErrMultipleDocuments.Error()+": ")
+		}
+		msg := fmt.Sprintf("config error in %s: %s", cfgPath, detail)
+		rem := "ward.yaml holds exactly one YAML document; delete the extra document or merge its keys into the first"
 		printStartupError("config error", msg, rem)
 		return &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
