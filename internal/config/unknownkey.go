@@ -203,6 +203,10 @@ func nullKeys(data []byte) []UnknownKey {
 					}
 					continue
 				}
+				if k.ShortTag() == "!!merge" {
+					walk(v, section) // mapping or sequence of mappings, same section
+					continue
+				}
 				if child, ok := childSection(section, k.Value); ok {
 					walk(v, child)
 				}

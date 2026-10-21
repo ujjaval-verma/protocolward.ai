@@ -12,7 +12,7 @@ import (
 
 // mapConfigLoadError converts a config.Load error into a *serveError with a
 // consistent error envelope used by every cmd/ward subcommand (ward serve,
-// ward config export, ward doctor). Emits the startup-error stderr line and
+// ward doctor, ward config export, ward eval). Emits the startup-error stderr line and
 // returns the typed error so the cobra layer can exit with the right code.
 //
 // Extracted from per-subcommand duplication (Ralph N1 ward-doctor slice).
