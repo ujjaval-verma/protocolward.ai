@@ -316,7 +316,14 @@ func (s *Server) bind() (net.PacketConn, net.Listener, error) {
 }
 
 // Serve binds the UDP and TCP listeners on one port, then serves both.
-// A bind failure returns at once; the error wraps the net error.
+//
+// A bind failure returns at once; the error wraps the net error, so
+// errors.Is(err, syscall.EADDRINUSE) holds for a taken port. Once both
+// listeners are bound, Serve blocks until both have stopped. It returns nil
+// when they stopped because of Shutdown. If either listener stops with an
+// error, Serve stops the other, drains in-flight queries (bounded by
+// Config.ShutdownTimeout) and returns that first error.
+//
 // A second concurrent or sequential call to Serve on the same *Server
 // returns ErrAlreadyServing immediately without blocking.
 func (s *Server) Serve() error {
@@ -329,25 +336,41 @@ func (s *Server) Serve() error {
 	if err != nil {
 		return err
 	}
+	local := pc.LocalAddr().String()
 	s.udpSrv.PacketConn = pc
 	s.tcpSrv.Listener = ln
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if err := s.udpSrv.ActivateAndServe(); err != nil {
-			slog.Debug("udp server stopped", "error", err)
+	type stopped struct {
+		transport string
+		err       error
+	}
+	done := make(chan stopped, 2)
+	go func() { done <- stopped{"udp", s.udpSrv.ActivateAndServe()} }()
+	go func() { done <- stopped{"tcp", s.tcpSrv.ActivateAndServe()} }()
+
+	var first error
+	for range 2 {
+		r := <-done
+		if r.err == nil || first != nil {
+			continue // clean stop, or the peer we are already aborting
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		if err := s.tcpSrv.ActivateAndServe(); err != nil {
-			slog.Debug("tcp server stopped", "error", err)
-		}
-	}()
-	wg.Wait()
-	return nil
+		first = fmt.Errorf("dataplane: %s listener on %s stopped: %w", r.transport, local, r.err)
+		s.abort(pc, ln)
+	}
+	return first
+}
+
+// abort stops both listeners after one of them failed. Closing the sockets
+// first unblocks a peer that has not reached its serve loop yet (miekg's
+// ShutdownContext returns "server not started" and would leave it running).
+// Shutdown then drains in-flight queries, including classifyAsync goroutines,
+// before Serve returns.
+func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
+	_ = pc.Close()
+	_ = ln.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	defer cancel()
+	_ = s.Shutdown(ctx)
 }
 
 // Shutdown gracefully stops the server within the context deadline. In-flight
