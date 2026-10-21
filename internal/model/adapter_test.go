@@ -251,12 +251,17 @@ func TestAdapter_ContextDoneBeforeCall_SkipsWithoutPoison(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
-	if !errors.Is(err, model.ErrSkipped) || !errors.Is(err, context.Canceled) {
-		t.Errorf("Classify err = %v; want ErrSkipped wrapping context.Canceled", err)
-	}
-	if errors.Is(err, model.ErrUnavailable) {
-		t.Errorf("Classify err = %v; a ctx that ended before the call must not be ErrUnavailable", err)
+	// With a free slot and a done ctx, Classify's select picks either case
+	// at random. Looping covers the post-acquire ctx check on every run
+	// (the chance of missing it in 40 tries is 2^-40).
+	for i := range 40 {
+		_, err = a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+		if !errors.Is(err, model.ErrSkipped) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d: Classify err = %v; want ErrSkipped wrapping context.Canceled", i, err)
+		}
+		if errors.Is(err, model.ErrUnavailable) {
+			t.Fatalf("call %d: Classify err = %v; a ctx that ended before the call must not be ErrUnavailable", i, err)
+		}
 	}
 
 	got, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
@@ -313,7 +318,7 @@ func TestAdapter_Burst_WaitersSkipAdapterStaysUsable(t *testing.T) {
 }
 
 // TestAdapter_ConcurrentClassify is the T-CC row: 32 goroutines call
-// Classify concurrently; mutex serializes; no race; all return Benign.
+// Classify concurrently; the one-slot semaphore serializes; no race; all return Benign.
 // Run with -race in make ci.
 func TestAdapter_ConcurrentClassify(t *testing.T) {
 	a, err := model.New(context.Background(), fakeChildConfig(t, "benign"))
