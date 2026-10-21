@@ -10,12 +10,14 @@ upstreams:
 
 # timeouts.query is the end-to-end budget for one client query, failover
 # included: worst case before SERVFAIL is `query` (2s here), not `query` per
-# upstream. With two or more upstreams the first try gets at most half of it
-# (1s here) and the next upstream gets the rest, so a hung resolver fails over
-# in query/2. A cold connection (TCP + TLS) must fit in that half too: on a
-# link with RTT above ~300 ms, raise `query`.
+# upstream. Each query tries at most two upstreams: the round-robin pick, then
+# the next one in the list (with 3+ upstreams, not every one is tried). The
+# first try gets at most half of the budget (1s here) and the next upstream
+# gets the rest, so a hung resolver fails over in query/2. A cold connection
+# (TCP + TLS) must fit in that half too: on a link with RTT above ~250 ms (a
+# cold attempt needs 3-4 round trips inside query/2), raise `query`.
 timeouts:
-  dial: "3s"                     # TCP connect + TLS handshake to upstream (capped by the query budget)
+  dial: "3s"                     # TCP connect + TLS handshake to upstream (capped by the attempt's share of `query`; see above)
   query: "2s"                    # per-query end-to-end budget, failover included (see above)
   shutdown: "5s"                 # drain budget on SIGTERM
 
