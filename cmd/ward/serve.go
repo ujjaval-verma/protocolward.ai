@@ -448,6 +448,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			}
 		}()
 	case err := <-serveErr:
+		// The dataplane has already stopped both DNS listeners and drained
+		// in-flight queries. Close the dashboard too, so an early exit
+		// (e.g. the DNS port is taken) leaves no listener behind.
+		_ = dashSrv.Close()
 		if err != nil {
 			msg := fmt.Sprintf("listener error: %v", err)
 			rem := bindErrRemediation(err, cfg.Listen)
@@ -522,6 +526,9 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 // error and listen address. Specialises on ":53" permission-denied to name
 // the setcap recipe.
 func bindErrRemediation(err error, listenAddr string) string {
+	if errors.Is(err, dataplane.ErrListenerStopped) {
+		return "the DNS listener stopped unexpectedly; check the log above and restart ward"
+	}
 	errStr := err.Error()
 	if containsAny(errStr, "permission denied", "operation not permitted") {
 		_, port, _ := splitHostPort(listenAddr)

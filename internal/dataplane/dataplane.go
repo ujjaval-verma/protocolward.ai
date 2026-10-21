@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -39,6 +40,11 @@ import (
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
 )
+
+// ErrListenerStopped is wrapped by the error Serve returns when a listener
+// that was bound successfully later stops with an error (as opposed to a
+// bind failure). Test with errors.Is.
+var ErrListenerStopped = errors.New("stopped")
 
 // ErrAlreadyServing is returned by a second call to Serve() on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
@@ -198,10 +204,19 @@ type Server struct {
 	udpSrv *dns.Server
 	tcpSrv *dns.Server
 
-	// addr is the resolved listen address, set once the UDP server is ready.
-	addrOnce sync.Once
-	addr     string
-	addrCh   chan struct{} // closed when addr is set
+	// addr is the resolved listen address. It is set once BOTH listeners
+	// are serving (listenersUp reaches 2), so a non-empty Addr() means
+	// Shutdown stops both transports.
+	addrOnce    sync.Once
+	addr        string
+	addrCh      chan struct{} // closed when addr is set
+	listenersUp atomic.Int32
+
+	// listenUDP and listenTCP bind the sockets in Serve. NewServer sets them
+	// to net.ListenPacket and net.Listen; internal tests replace them to
+	// force bind errors.
+	listenUDP func(network, address string) (net.PacketConn, error)
+	listenTCP func(network, address string) (net.Listener, error)
 
 	// serveStarted is set true (via CompareAndSwap) by the first Serve call.
 	// Any subsequent call returns ErrAlreadyServing immediately without blocking.
@@ -248,37 +263,30 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.ClassifyTimeout = 4 * time.Second
 	}
 
-	s := &Server{
-		cfg:    cfg,
-		addrCh: make(chan struct{}),
-	}
+	s := &Server{cfg: cfg, addrCh: make(chan struct{}), listenUDP: net.ListenPacket, listenTCP: net.Listen}
 	s.counter.Store(cfg.CounterSeed)
 
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", s.handleQuery)
 
 	s.udpSrv = &dns.Server{
-		Addr:    cfg.ListenAddr,
-		Net:     "udp",
-		Handler: mux,
-		NotifyStartedFunc: func() {
-			s.addrOnce.Do(func() {
-				s.addr = s.udpSrv.PacketConn.LocalAddr().String()
-				close(s.addrCh)
-			})
-		},
+		Addr:              cfg.ListenAddr,
+		Net:               "udp",
+		Handler:           mux,
+		NotifyStartedFunc: s.listenerStarted,
 	}
 	s.tcpSrv = &dns.Server{
-		Addr:    cfg.ListenAddr,
-		Net:     "tcp",
-		Handler: mux,
+		Addr:              cfg.ListenAddr,
+		Net:               "tcp",
+		Handler:           mux,
+		NotifyStartedFunc: s.listenerStarted,
 	}
 
 	return s, nil
 }
 
-// Addr returns the UDP listen address once the server is started, or "" if the
-// server has not yet started.
+// Addr returns the shared UDP/TCP listen address once both listeners are
+// serving, or "" before that. It is not cleared when Serve returns.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -288,53 +296,109 @@ func (s *Server) Addr() string {
 	}
 }
 
-// Serve starts the UDP and TCP listeners. It blocks until both servers have
-// stopped. Call Shutdown to initiate a graceful stop. A second concurrent or
-// sequential call to Serve on the same *Server returns ErrAlreadyServing
-// immediately without blocking.
+// listenerStarted runs from each miekg server's NotifyStartedFunc. The
+// second call means both transports are serving: it publishes the address.
+func (s *Server) listenerStarted() {
+	if s.listenersUp.Add(1) == 2 {
+		s.addrOnce.Do(func() {
+			s.addr = s.udpSrv.PacketConn.LocalAddr().String()
+			close(s.addrCh)
+		})
+	}
+}
+
+// bindAttempts bounds the retry in bind when ListenAddr asks for an
+// ephemeral port (":0"). The kernel picks the UDP port; the TCP listener must
+// take the same number, which another socket may already hold.
+const bindAttempts = 8
+
+// bind opens the UDP socket on cfg.ListenAddr, then the TCP listener on the
+// same host and port. On a TCP failure it closes the UDP socket. When the
+// configured port is 0 and the TCP twin is taken (EADDRINUSE), it retries
+// with a fresh UDP port, up to bindAttempts times. A fixed port is never
+// retried. Errors wrap the net error, so errors.Is(err, syscall.EADDRINUSE)
+// holds for a taken port.
+func (s *Server) bind() (net.PacketConn, net.Listener, error) {
+	attempts := 1
+	if _, port, err := net.SplitHostPort(s.cfg.ListenAddr); err == nil && port == "0" {
+		attempts = bindAttempts
+	}
+	var err error
+	for range attempts {
+		var pc net.PacketConn
+		pc, err = s.listenUDP("udp", s.cfg.ListenAddr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dataplane: %w", err)
+		}
+		var ln net.Listener
+		ln, err = s.listenTCP("tcp", pc.LocalAddr().String())
+		if err == nil {
+			return pc, ln, nil
+		}
+		_ = pc.Close()
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
+	return nil, nil, fmt.Errorf("dataplane: %w", err)
+}
+
+// Serve binds the UDP and TCP listeners on one port, then serves both.
+//
+// A bind failure returns at once; the error wraps the net error, so
+// errors.Is(err, syscall.EADDRINUSE) holds for a taken port. Once both
+// listeners are bound, Serve blocks until both have stopped. It returns nil
+// when they stopped because of Shutdown. If either listener stops with an
+// error, Serve stops the other, drains in-flight queries (bounded by
+// Config.ShutdownTimeout) and returns that first error.
+//
+// A second concurrent or sequential call to Serve on the same *Server
+// returns ErrAlreadyServing immediately without blocking.
 func (s *Server) Serve() error {
 	// CompareAndSwap false→true: only the first caller proceeds.
-	// Any subsequent call (concurrent or sequential) gets false and returns
-	// ErrAlreadyServing immediately.
 	if !s.serveStarted.CompareAndSwap(false, true) {
 		return ErrAlreadyServing
 	}
 
-	// We need both servers to share the same port. Bind UDP first (port 0 picks
-	// a random port), then reuse that port for TCP.
-	// Start UDP first, wait for the address, then start TCP on the same addr.
-
-	udpReady := make(chan struct{})
-	origNotify := s.udpSrv.NotifyStartedFunc
-	s.udpSrv.NotifyStartedFunc = func() {
-		origNotify()
-		close(udpReady)
+	pc, ln, err := s.bind()
+	if err != nil {
+		return err
 	}
+	local := pc.LocalAddr().String()
+	s.udpSrv.PacketConn = pc
+	s.tcpSrv.Listener = ln
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	type stopped struct {
+		transport string
+		err       error
+	}
+	done := make(chan stopped, 2)
+	go func() { done <- stopped{"udp", s.udpSrv.ActivateAndServe()} }()
+	go func() { done <- stopped{"tcp", s.tcpSrv.ActivateAndServe()} }()
 
-	go func() {
-		defer wg.Done()
-		if err := s.udpSrv.ListenAndServe(); err != nil {
-			// Ignore error on shutdown (dns.Server.ShutdownContext closes the conn).
-			slog.Debug("udp server stopped", "error", err)
+	var first error
+	for range 2 {
+		r := <-done
+		if r.err == nil || first != nil {
+			continue // clean stop, or the peer we are already aborting
 		}
-	}()
+		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
+		s.abort(pc, ln)
+	}
+	return first
+}
 
-	// Wait for UDP to bind so we can reuse the same port for TCP.
-	<-udpReady
-	s.tcpSrv.Addr = s.addr
-
-	go func() {
-		defer wg.Done()
-		if err := s.tcpSrv.ListenAndServe(); err != nil {
-			slog.Debug("tcp server stopped", "error", err)
-		}
-	}()
-
-	wg.Wait()
-	return nil
+// abort stops both listeners after one of them failed. Closing the sockets
+// first unblocks a peer that has not reached its serve loop yet (miekg's
+// ShutdownContext returns "server not started" and would leave it running).
+// Shutdown then drains in-flight queries, including classifyAsync goroutines,
+// before Serve returns.
+func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
+	_ = pc.Close()
+	_ = ln.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	defer cancel()
+	_ = s.Shutdown(ctx)
 }
 
 // Shutdown gracefully stops the server within the context deadline. In-flight
