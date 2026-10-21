@@ -13,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	adapter "protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/obs"
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
@@ -208,5 +209,53 @@ func TestClassify_PanicReleasesSlot(t *testing.T) {
 	}
 	if got := srv.classifyDropped.Load(); got != 0 {
 		t.Errorf("classifyDropped = %d; want 0", got)
+	}
+}
+
+// skippingClassifier returns what internal/model.Adapter returns when the
+// per-call timeout ends while an earlier call holds the child.
+type skippingClassifier struct{ calls atomic.Int64 }
+
+func (s *skippingClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	s.calls.Add(1)
+	return 0, fmt.Errorf("%w: %w", adapter.ErrSkipped, context.DeadlineExceeded)
+}
+
+// T-SKIP: ErrSkipped is a drop, not a failure: counted, one rate-limited
+// line, no per-call `policy: classify error`, and no unavailable latch, so
+// later forwards are still classified.
+func TestClassify_ErrSkipped_CountedNoLatchNoWarnFlood(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	sc := &skippingClassifier{}
+	srv := newBoundTestServer(t, sc)
+
+	const n = 5
+	for i := range n {
+		forwardOnce(srv, i)
+		srv.inFlight.Wait() // sequential: never at capacity
+	}
+
+	if got := sc.calls.Load(); got != n {
+		t.Errorf("classify calls = %d; want %d (ErrSkipped must not latch)", got, n)
+	}
+	if srv.classifierDead.Load() {
+		t.Error("classifierDead latched on ErrSkipped; only ErrUnavailable may latch")
+	}
+	if got := srv.classifyDropped.Load(); got != n {
+		t.Errorf("classifyDropped = %d; want %d", got, n)
+	}
+	records := obs.Captured(t)
+	for _, r := range records {
+		if r["msg"] == "policy: classify error" || r["msg"] == "policy: model unavailable" {
+			t.Errorf("unexpected %q line for ErrSkipped: %v", r["msg"], r)
+		}
+	}
+	lines, rec := countDropLines(records)
+	if lines != 1 {
+		t.Fatalf("policy: classify dropped lines = %d; want 1", lines)
+	}
+	if rec["reason"] != "classifier busy past the classify timeout" {
+		t.Errorf("reason = %v; want %q", rec["reason"], "classifier busy past the classify timeout")
 	}
 }

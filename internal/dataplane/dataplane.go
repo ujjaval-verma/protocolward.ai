@@ -184,7 +184,9 @@ type Config struct {
 	// D7 and invariant 1).
 	Classifier SlowPathClassifier
 
-	// ClassifyTimeout bounds each Classify or Assess call. Defaults to 4s — the Tier 2
+	// ClassifyTimeout bounds each Classify or Assess call, including time spent
+	// waiting for a busy sibling adapter (a call still waiting when it ends is
+	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
 	// upper bound per architecture.md. The slow-path context is decoupled
 	// from the request context because the request has already been answered
 	// when the fork fires; cancellation flows from Server.Shutdown via the
@@ -847,6 +849,13 @@ func (s *Server) classifyAsync(qname, client string) {
 				"qname", qname,
 				"reason", "not a scorable hostname",
 			)
+			return
+		}
+		if errors.Is(err, adapter.ErrSkipped) {
+			// The sibling was busy with earlier calls until this call's
+			// timeout ended; nothing was sent to it. A drop, not a failure:
+			// no latch, no per-call Warn.
+			s.noteClassifyDropped(qname, "classifier busy past the classify timeout")
 			return
 		}
 		if errors.Is(err, adapter.ErrUnavailable) {
