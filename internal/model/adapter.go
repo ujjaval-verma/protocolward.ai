@@ -108,6 +108,10 @@ type Adapter struct {
 	sem      chan struct{}
 	poisoned bool // once set, every Classify returns ErrUnavailable
 	closed   bool // set by Close; every later Classify returns ErrSkipped+ErrClosed
+	// waitDone receives the child's single cmd.Wait result. nil until
+	// reapLocked starts that Wait (on poison or in Close); Close is its
+	// only reader.
+	waitDone chan error
 }
 
 // Compile-time assertion: *Adapter satisfies pkg/model.Classifier. Mirrors
@@ -294,22 +298,40 @@ func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict,
 }
 
 // poisonLocked marks the adapter dead. Must be called with a.sem held.
-// Sends SIGKILL to the child so the OS can reap it via Close's Wait.
+// Sends SIGKILL to the child and reaps it at once (reapLocked), so a
+// killed child is not left a zombie until Close; Close collects the
+// result.
 func (a *Adapter) poisonLocked() {
 	if a.poisoned {
 		return
 	}
 	a.poisoned = true
 	// Best-effort: if the child is already dead Kill returns an error
-	// we intentionally swallow. Close's Wait is the canonical reap site.
+	// we intentionally swallow. The Wait in reapLocked is the reap.
 	if a.cmd != nil && a.cmd.Process != nil {
 		_ = a.cmd.Process.Kill()
+		a.reapLocked()
 	}
+}
+
+// reapLocked starts the child's one cmd.Wait on its own goroutine, unless
+// it is already running, and delivers the result on a.waitDone. Must be
+// called with a.sem held and a.cmd started. Wait also closes the parent's
+// pipe ends; nothing touches them after a poison, and Close's own
+// stdin.Close tolerates the double close.
+func (a *Adapter) reapLocked() {
+	if a.waitDone != nil {
+		return
+	}
+	cmd, done := a.cmd, make(chan error, 1)
+	a.waitDone = done
+	go func() { done <- cmd.Wait() }()
 }
 
 // Close terminates the child process and waits for it to exit. It closes
 // the child's stdin, waits at most Config.CloseGrace for the child to exit,
-// then kills it.
+// then kills it. A child already killed by a poison was reaped then; Close
+// collects that result.
 //
 // Returns nil for a clean child exit. Returns *exec.ExitError (or another
 // non-nil error wrapping the wait) when the child died from a signal
@@ -336,14 +358,13 @@ func (a *Adapter) Close() error {
 	if a.stdin != nil {
 		_ = a.stdin.Close()
 	}
-	done := make(chan error, 1)
-	go func() { done <- a.cmd.Wait() }()
+	a.reapLocked()
 	var err error
 	select {
-	case err = <-done:
+	case err = <-a.waitDone:
 	case <-time.After(a.closeGrace):
 		_ = a.cmd.Process.Kill()
-		err = <-done
+		err = <-a.waitDone
 	}
 	a.cmd = nil // make Close idempotent
 	return err

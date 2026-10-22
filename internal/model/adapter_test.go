@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,6 +22,10 @@ import (
 )
 
 const fakeChildEnv = "WARD_TEST_FAKE_CLASSIFIER"
+
+// fakeChildPIDFileEnv, when set, names a file the fake child writes its pid
+// to before reading any request.
+const fakeChildPIDFileEnv = "WARD_TEST_FAKE_CLASSIFIER_PIDFILE"
 
 // TestMain re-execs the test binary as the fake classifier child when
 // fakeChildEnv is set. This is the standard Go pattern for testing
@@ -45,6 +51,9 @@ func runFakeChild(mode string) {
 
 	if mode == "die-on-start" {
 		os.Exit(0)
+	}
+	if path := os.Getenv(fakeChildPIDFileEnv); path != "" {
+		_ = os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
 	}
 
 	first := true
@@ -371,6 +380,49 @@ func TestAdapter_HungReply_PoisonsWithinReplyTimeout(t *testing.T) {
 	case <-closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close did not return within 2s after a hung reply")
+	}
+}
+
+// TestAdapter_HungReply_KilledChildReapedBeforeClose is the T-HZ row: the
+// child killed on a missed reply is reaped at once, not left a zombie
+// (holding a pid and two fds) until Close. Close still returns.
+func TestAdapter_HungReply_KilledChildReapedBeforeClose(t *testing.T) {
+	pidFile := t.TempDir() + "/child.pid"
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.Env = append(cfg.Env, fakeChildPIDFileEnv+"="+pidFile)
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if err := classifyWithin(t, a, context.Background(), 2*time.Second); !errors.Is(err, model.ErrNoReply) {
+		t.Fatalf("Classify err = %v; want ErrNoReply", err)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	pid, err := strconv.Atoi(string(raw))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", raw, err)
+	}
+
+	// A zombie still answers signal 0; a reaped pid returns ESRCH. The 2 s
+	// limit is a watchdog: the reap follows the kill at once.
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("signal 0 to the killed child = %v; want ESRCH (reaped before Close)", err)
+	}
+
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s after the child was reaped")
 	}
 }
 
