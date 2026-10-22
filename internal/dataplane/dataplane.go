@@ -1011,6 +1011,12 @@ func (s *Server) classifyAsync(qname, client string) {
 	s.logClassified(qname, verdict, d)
 }
 
+// ClassifyDropped returns the number of classifications that did not run
+// since the server was created: no free slot, or the external classifier
+// skipped the call (busy past the classify timeout, or shutting down). It
+// only increases. Safe for concurrent use; read by the /healthz handler.
+func (s *Server) ClassifyDropped() uint64 { return s.classifyDropped.Load() }
+
 // noteClassifyDropped counts one classification that did not run and emits
 // `policy: classify dropped` on the first drop and then at most once per
 // classifyDropLogEvery, so a burst cannot flood the log. Each line carries

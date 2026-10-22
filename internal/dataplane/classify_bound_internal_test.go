@@ -423,6 +423,31 @@ func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
 	}
 }
 
+// T-DROPPED-API: ClassifyDropped reports the running drop total and only
+// increases.
+func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newBoundTestServer(t, bc)
+	const burst = 100
+	for i := range burst {
+		forwardOnce(srv, i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load()+int64(srv.ClassifyDropped()) < burst && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if got := srv.ClassifyDropped(); got != burst-maxClassifyInFlight {
+		t.Fatalf("ClassifyDropped() = %d; want %d", got, burst-maxClassifyInFlight)
+	}
+	srv.noteClassifyDropped("x.example.com", "test")
+	if got := srv.ClassifyDropped(); got != burst-maxClassifyInFlight+1 {
+		t.Errorf("ClassifyDropped() after one more drop = %d; want %d", got, burst-maxClassifyInFlight+1)
+	}
+}
+
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)
