@@ -47,6 +47,11 @@ import (
 // bind failure). Test with errors.Is.
 var ErrListenerStopped = errors.New("stopped")
 
+// ErrDrainTimeout is returned (wrapped) by Shutdown when its context ends
+// before in-flight queries and classifications have drained. The message
+// names how many classifications were still running.
+var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
+
 // ErrAlreadyServing is returned by a second call to Serve() on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
 // need a fresh listener (invariant #8: every error names a remediation).
@@ -458,12 +463,22 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 	_ = ln.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
-	_ = s.Shutdown(ctx)
+	if err := s.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+		// Other Shutdown errors stay discarded: the listener error is what
+		// Serve returns. The stuck work may be a query handler rather than
+		// a classification, so the remediation does not blame the classifier.
+		slog.Warn("dataplane: shutdown drain incomplete",
+			"error", err.Error(),
+			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; raise timeouts.shutdown if this recurs",
+		)
+	}
 }
 
 // Shutdown gracefully stops the server within the context deadline.
 // In-flight queries and in-process classifications are drained before
 // returning; calls still waiting for an external classifier are skipped.
+// If ctx ends first, the error wraps ErrDrainTimeout and names the
+// classifications still running; Shutdown does not log it.
 func (s *Server) Shutdown(ctx context.Context) error {
 	// Cancel queued and future external-classifier calls first so the drain
 	// below waits only for calls already running. Safe to call repeatedly.
@@ -479,18 +494,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.inFlight.Wait()
 		close(drained)
 	}()
+	var errs []error
 	select {
 	case <-drained:
 	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("%w: %d classification(s) still running: %w",
+			ErrDrainTimeout, len(s.classifySlots), ctx.Err()))
 	}
-
 	if udpErr != nil {
-		return fmt.Errorf("dataplane shutdown (udp): %w", udpErr)
+		errs = append(errs, fmt.Errorf("dataplane shutdown (udp): %w", udpErr))
 	}
 	if tcpErr != nil {
-		return fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr)
+		errs = append(errs, fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // handleQuery is the miekg/dns handler for every incoming DNS query.

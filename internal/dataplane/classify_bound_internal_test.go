@@ -4,8 +4,10 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -444,5 +446,124 @@ func TestShutdown_DrainsForkedBuiltinClassification(t *testing.T) {
 func TestAdapter_StaysClassifyOnly(t *testing.T) {
 	if _, ok := any((*adapter.Adapter)(nil)).(model.Assessor); ok {
 		t.Fatal("internal/model.Adapter must stay Classify-only: Shutdown cancels only the Classify branch (#45/#46)")
+	}
+}
+
+// T-DRAIN-TIMEOUT: a classification still running when the Shutdown ctx
+// ends is reported, with the count, instead of being silently abandoned.
+func TestShutdown_DrainTimeout_ReportsUndrainedClassifications(t *testing.T) {
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newBoundTestServer(t, bc)
+	forwardOnce(srv, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := srv.Shutdown(ctx)
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("Shutdown = %v; want an error wrapping ErrDrainTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "1 classification(s) still running") {
+		t.Errorf("Shutdown error %q should name the 1 undrained classification", err)
+	}
+}
+
+// abortWarn runs abort on a server whose drain cannot finish within
+// ShutdownTimeout and returns the "shutdown drain incomplete" log records.
+func abortWarn(t *testing.T, srv *Server) []map[string]any {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.abort(pc, ln)
+	var out []map[string]any
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "dataplane: shutdown drain incomplete" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func newAbortTestServer(t *testing.T, c SlowPathClassifier) *Server {
+	t.Helper()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 50 * time.Millisecond,
+		Classifier:      c,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv
+}
+
+// abort (the listener-failure path) reports a drain that ran out of time
+// instead of discarding Shutdown's error.
+func TestAbort_DrainTimeout_LogsWarn(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newAbortTestServer(t, bc)
+	forwardOnce(srv, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	recs := abortWarn(t, srv)
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if len(recs) != 1 {
+		t.Fatalf("shutdown drain incomplete lines = %d; want 1", len(recs))
+	}
+	if recs[0]["level"] != "WARN" {
+		t.Errorf("level = %v; want WARN", recs[0]["level"])
+	}
+	if e, _ := recs[0]["error"].(string); !strings.Contains(e, "1 classification(s) still running") {
+		t.Errorf("error %q should name the undrained classification", e)
+	}
+	if r, _ := recs[0]["remediation"].(string); r == "" {
+		t.Error("WARN must carry a remediation")
+	}
+}
+
+// With 0 classifications running the stuck work is a query handler, so the
+// remediation must not blame the classifier.
+func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newAbortTestServer(t, &blockingClassifier{release: make(chan struct{})})
+	srv.inFlight.Add(1) // a handler that never finishes within the budget
+	defer srv.inFlight.Done()
+
+	recs := abortWarn(t, srv)
+
+	if len(recs) != 1 {
+		t.Fatalf("shutdown drain incomplete lines = %d; want 1", len(recs))
+	}
+	if e, _ := recs[0]["error"].(string); !strings.Contains(e, "0 classification(s) still running") {
+		t.Errorf("error %q should say 0 classification(s) still running", e)
+	}
+	r, _ := recs[0]["remediation"].(string)
+	if strings.Contains(r, "classifier") {
+		t.Errorf("remediation %q blames the classifier with 0 classifications running", r)
+	}
+	if !strings.Contains(r, "timeouts.shutdown") {
+		t.Errorf("remediation %q should name timeouts.shutdown", r)
 	}
 }
