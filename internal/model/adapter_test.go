@@ -86,6 +86,11 @@ func runFakeChild(mode string) {
 		case "slow50ms":
 			time.Sleep(50 * time.Millisecond)
 			emit("benign")
+		case "hang-after-read":
+			// Took the request, never replies. Exits after 5 s only so a
+			// red run (no reply timeout) ends instead of hanging the package.
+			time.Sleep(5 * time.Second)
+			os.Exit(0)
 		default:
 			os.Exit(1)
 		}
@@ -314,6 +319,118 @@ func TestAdapter_Burst_WaitersSkipAdapterStaysUsable(t *testing.T) {
 	got, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
 	if err != nil || got != schema.VerdictBenign {
 		t.Errorf("Classify after burst = (%v, %v); want (VerdictBenign, nil): only child failures may poison", got, err)
+	}
+}
+
+// classifyWithin runs Classify on its own goroutine and fails the test if
+// it has not returned within limit. The limit is a watchdog, not a timing
+// assertion: it is many times the configured reply timeout.
+func classifyWithin(t *testing.T, a *model.Adapter, ctx context.Context, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("Classify did not return within %s: a hung child must not hold the adapter", limit)
+		return nil
+	}
+}
+
+// TestAdapter_HungReply_PoisonsWithinReplyTimeout is the T-H row. The child
+// reads the request and never replies. The exchange is bounded by
+// ReplyTimeout: Classify returns ErrUnavailable wrapping ErrNoReply, the
+// child is killed (the stream is out of step), later calls fail fast, and
+// Close returns.
+func TestAdapter_HungReply_PoisonsWithinReplyTimeout(t *testing.T) {
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+
+	err = classifyWithin(t, a, context.Background(), 2*time.Second)
+	if !errors.Is(err, model.ErrUnavailable) || !errors.Is(err, model.ErrNoReply) {
+		t.Errorf("Classify err = %v; want ErrUnavailable wrapping ErrNoReply", err)
+	}
+	if err := classifyWithin(t, a, context.Background(), 2*time.Second); !errors.Is(err, model.ErrUnavailable) {
+		t.Errorf("second Classify err = %v; want ErrUnavailable (poisoned)", err)
+	}
+
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s after a hung reply")
+	}
+}
+
+// TestAdapter_HungReply_ReleasesWaiters is the T-HW row: a caller queued
+// behind the hung exchange gets ErrUnavailable once the reply timeout
+// fires, not ErrSkipped after its own (long) deadline.
+func TestAdapter_HungReply_ReleasesWaiters(t *testing.T) {
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+			errs <- err
+		}()
+	}
+	noReply := 0
+	for i := range 2 {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, model.ErrUnavailable) || errors.Is(err, model.ErrSkipped) {
+				t.Errorf("call %d err = %v; want ErrUnavailable, not ErrSkipped", i, err)
+			}
+			if errors.Is(err, model.ErrNoReply) {
+				noReply++
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("call %d did not return within 3s: the waiter is still wedged", i)
+		}
+	}
+	if noReply == 0 {
+		t.Error("no call wrapped ErrNoReply; want the exchange that hit the timeout to say so")
+	}
+}
+
+// TestAdapter_ShortCtx_ExchangeNotBoundedByCtx is the T-HC row, a guard
+// against regressing #16: the exchange is bounded by ReplyTimeout, not by
+// the caller's ctx (which in the dataplane also covers the wait for the
+// slot). A ctx that ends mid-exchange neither interrupts nor poisons.
+func TestAdapter_ShortCtx_ExchangeNotBoundedByCtx(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "slow50ms"))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	got, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Fatalf("Classify with a 25ms ctx against a 50ms child = (%v, %v); want (VerdictBenign, nil)", got, err)
+	}
+	got, err = a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Errorf("next Classify = (%v, %v); want (VerdictBenign, nil): a slow-but-alive child must not be poisoned", got, err)
 	}
 }
 

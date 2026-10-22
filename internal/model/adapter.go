@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"os"
 	"os/exec"
+	"time"
 
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
@@ -28,14 +29,28 @@ type Config struct {
 	// otherwise this slice is used verbatim — callers needing the parent
 	// env should pass append(os.Environ(), ...).
 	Env []string
+	// ReplyTimeout bounds one request/reply exchange with the child, from
+	// the write to the end of the reply line. Zero means
+	// DefaultReplyTimeout. A child that misses it is killed and the adapter
+	// is poisoned (ErrUnavailable wrapping ErrNoReply): the newline-JSON
+	// stream is out of step after a partial exchange. It is deliberately
+	// independent of the Classify ctx, which in the dataplane also covers
+	// the wait for the slot; bounding the exchange by that would poison a
+	// healthy child after a burst.
+	ReplyTimeout time.Duration
 }
+
+// DefaultReplyTimeout is the reply timeout when Config.ReplyTimeout is zero:
+// the Tier 2 upper bound, equal to the dataplane's default classify timeout.
+const DefaultReplyTimeout = 4 * time.Second
 
 // ErrNoCommand is returned by New when Config.Command is empty.
 var ErrNoCommand = errors.New("model: adapter config: command is empty")
 
 // ErrUnavailable is returned by Classify when the child process is not
-// usable — either it exited, it returned a malformed response, or an IO
-// error occurred. Once any of these fires the adapter is poisoned and
+// usable — either it exited, it returned a malformed response, an IO
+// error occurred, or it did not reply within Config.ReplyTimeout (wraps
+// ErrNoReply). Once any of these fires the adapter is poisoned and
 // every subsequent Classify returns ErrUnavailable. A context that ends
 // before the request is written is not a child failure: it returns
 // ErrSkipped instead and leaves the adapter usable. SP10c's dataplane fork
@@ -59,14 +74,21 @@ var ErrUnavailable = errors.New("model: adapter: child unavailable")
 // The error also wraps ctx.Err().
 var ErrSkipped = errors.New("model: adapter: classify skipped, context ended before the call")
 
+// ErrNoReply is wrapped (with ErrUnavailable) when the child took a request
+// but did not finish its reply within Config.ReplyTimeout. The stream is out
+// of step after that, so the child is killed and the adapter is poisoned.
+var ErrNoReply = errors.New("model: adapter: no reply within the reply timeout")
+
 // Adapter implements pkg/model.Classifier by relaying typed Input to a
 // sibling child process over newline-delimited JSON on stdio. Concurrent
 // Classify calls are serialized: one request is on the wire at a time.
 // A caller waiting its turn gives up when its context ends (ErrSkipped).
 type Adapter struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	cmd          *exec.Cmd
+	stdin        *os.File      // deadline-capable; see New
+	stdoutF      *os.File      // the raw read end, for SetReadDeadline
+	stdout       *bufio.Reader // wraps stdoutF
+	replyTimeout time.Duration
 
 	// sem is a one-slot semaphore guarding the fields below and the
 	// stdio pipes. A channel, not a sync.Mutex, so Classify can stop
@@ -102,24 +124,47 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.Env != nil {
 		cmd.Env = cfg.Env
 	}
-	stdin, err := cmd.StdinPipe()
+	stdinW, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("model: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdoutR, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = stdin.Close()
+		_ = stdinW.Close()
 		return nil, fmt.Errorf("model: stdout pipe: %w", err)
+	}
+	// The reply timeout is a deadline on the pipes, so they must support
+	// one. os/exec returns the *os.File from os.Pipe, pollable on darwin
+	// and linux; probe it here so a future toolchain change fails loudly
+	// instead of running every exchange unbounded. Nothing is spawned yet.
+	stdin, inOK := stdinW.(*os.File)
+	stdoutF, outOK := stdoutR.(*os.File)
+	if !inOK || !outOK {
+		_ = stdinW.Close()
+		_ = stdoutR.Close()
+		return nil, fmt.Errorf("model: stdio pipes do not support deadlines: %w",
+			errors.New("pipe is not an *os.File"))
+	}
+	if err := errors.Join(stdin.SetWriteDeadline(time.Time{}), stdoutF.SetReadDeadline(time.Time{})); err != nil {
+		_ = stdin.Close()
+		_ = stdoutF.Close()
+		return nil, fmt.Errorf("model: stdio pipes do not support deadlines: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("model: child start: %w", err)
 	}
+	replyTimeout := cfg.ReplyTimeout
+	if replyTimeout <= 0 {
+		replyTimeout = DefaultReplyTimeout
+	}
 	return &Adapter{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-		sem:    make(chan struct{}, 1),
+		cmd:          cmd,
+		stdin:        stdin,
+		stdoutF:      stdoutF,
+		stdout:       bufio.NewReader(stdoutF),
+		replyTimeout: replyTimeout,
+		sem:          make(chan struct{}, 1),
 	}, nil
 }
 
@@ -140,8 +185,8 @@ type response struct {
 //
 // ctx bounds the wait for an earlier call and is checked once more before
 // the request is written; either way an ended ctx returns ErrSkipped
-// without poisoning. ctx does not interrupt the child round trip once the
-// request is on the wire.
+// without poisoning. Once written, the exchange is bounded by
+// Config.ReplyTimeout, not by ctx.
 func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict, error) {
 	select {
 	case a.sem <- struct{}{}:
@@ -174,14 +219,32 @@ func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict,
 	}
 	payload = append(payload, '\n')
 
+	deadline := time.Now().Add(a.replyTimeout)
+	if err := a.stdin.SetWriteDeadline(deadline); err != nil {
+		a.poisonLocked()
+		return 0, fmt.Errorf("%w: stdin deadline: %w", ErrUnavailable, err)
+	}
+	if err := a.stdoutF.SetReadDeadline(deadline); err != nil {
+		a.poisonLocked()
+		return 0, fmt.Errorf("%w: stdout deadline: %w", ErrUnavailable, err)
+	}
+
+	// A late reply is never read: a poisoned adapter does not touch the
+	// pipes again.
 	if _, err := a.stdin.Write(payload); err != nil {
 		a.poisonLocked()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return 0, fmt.Errorf("%w: %w (%s): stdin write: %w", ErrUnavailable, ErrNoReply, a.replyTimeout, err)
+		}
 		return 0, fmt.Errorf("%w: stdin write: %w", ErrUnavailable, err)
 	}
 
 	line, err := a.stdout.ReadBytes('\n')
 	if err != nil {
 		a.poisonLocked()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return 0, fmt.Errorf("%w: %w (%s): stdout read: %w", ErrUnavailable, ErrNoReply, a.replyTimeout, err)
+		}
 		return 0, fmt.Errorf("%w: stdout read: %w", ErrUnavailable, err)
 	}
 
