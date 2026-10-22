@@ -31,6 +31,7 @@ package upstream
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -40,8 +41,9 @@ import (
 )
 
 // TLSError wraps a TLS handshake failure with a remediation hint.
-// It is returned when the TLS handshake with the upstream fails, which
-// typically indicates a server_name mismatch or an untrusted certificate.
+// It is returned when the TLS handshake with the upstream fails. A timeout
+// is reported with a connectivity remediation; other failures typically
+// indicate a server_name mismatch or an untrusted certificate.
 type TLSError struct {
 	// Upstream is the address of the upstream resolver (host:port).
 	Upstream string
@@ -52,10 +54,26 @@ type TLSError struct {
 }
 
 func (e *TLSError) Error() string {
+	if e.timedOut() {
+		return fmt.Sprintf(
+			"upstream %s: TLS handshake failed (server_name=%q): %v — remediation: the upstream accepted the TCP connection but did not finish the TLS handshake in time; check that it is reachable and not overloaded and that egress on TCP/853 works; the handshake is bounded by the smaller of timeouts.dial and this attempt's share of timeouts.query, so on a slow link raise timeouts.query",
+			e.Upstream, e.ServerName, e.Err,
+		)
+	}
 	return fmt.Sprintf(
 		"upstream %s: TLS handshake failed (server_name=%q): %v — remediation: verify server_name matches the upstream cert; common cause: typo in ward.yaml or upstream certificate rotation",
 		e.Upstream, e.ServerName, e.Err,
 	)
+}
+
+// timedOut reports whether the handshake ran out of time rather than being
+// rejected: a deadline, or a net.Error that says Timeout.
+func (e *TLSError) timedOut() bool {
+	if errors.Is(e.Err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(e.Err, &ne) && ne.Timeout()
 }
 
 // Unwrap implements the errors.Unwrap interface.
