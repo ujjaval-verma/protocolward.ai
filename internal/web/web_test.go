@@ -510,3 +510,33 @@ func getHealthz(t *testing.T, base string) map[string]any {
 	}
 	return body
 }
+
+func TestHandler_Healthz_Classifier_DefaultsToNone(t *testing.T) {
+	srv := httptest.NewServer(web.Handler(web.NewStore()))
+	defer srv.Close()
+	body := getHealthz(t, srv.URL)
+	if v, ok := body["classifier"]; !ok || v != "none" {
+		t.Errorf("classifier = %v (present %v); want \"none\", always present", v, ok)
+	}
+}
+
+// The classifier state is reported as the source gives it; even
+// "unavailable" leaves status "ok" (answers are unaffected).
+func TestHandler_Healthz_Classifier_ReportsSourceStatusStaysOK(t *testing.T) {
+	var state atomic.Value
+	srv := httptest.NewServer(web.HandlerWithOptions(web.NewStore(), web.Options{
+		Classifier: func() string { return state.Load().(string) },
+	}))
+	defer srv.Close()
+
+	for _, want := range []string{"ok", "unavailable"} {
+		state.Store(want)
+		body := getHealthz(t, srv.URL)
+		if body["classifier"] != want {
+			t.Errorf("classifier = %v; want %q", body["classifier"], want)
+		}
+		if body["status"] != "ok" {
+			t.Errorf("status = %v with classifier=%s; want ok", body["status"], want)
+		}
+	}
+}

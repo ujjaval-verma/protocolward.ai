@@ -448,6 +448,31 @@ func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
 	}
 }
 
+// T-CLASSIFIER-STATE: ClassifierState is "none" with no classifier, "ok"
+// with one, and "unavailable" once the model was reported unavailable (the
+// latch has no auto-restart, so it stays there).
+func TestServer_ClassifierState(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+
+	if got := newBoundTestServer(t, nil).ClassifierState(); got != ClassifierStateNone {
+		t.Errorf("no classifier: ClassifierState() = %q; want %q", got, ClassifierStateNone)
+	}
+	if got := newBoundTestServer(t, detect.New()).ClassifierState(); got != ClassifierStateOK {
+		t.Errorf("built-in detector: ClassifierState() = %q; want %q", got, ClassifierStateOK)
+	}
+
+	srv := newBoundTestServer(t, unavailableClassifier{adapter.ErrUnavailable})
+	if got := srv.ClassifierState(); got != ClassifierStateOK {
+		t.Errorf("external classifier before any failure: ClassifierState() = %q; want %q", got, ClassifierStateOK)
+	}
+	forwardOnce(srv, 0)
+	srv.inFlight.Wait()
+	if got := srv.ClassifierState(); got != ClassifierStateUnavailable {
+		t.Errorf("after model unavailable: ClassifierState() = %q; want %q", got, ClassifierStateUnavailable)
+	}
+}
+
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)

@@ -733,16 +733,31 @@ func extractPanel(doc, marker string) string {
 // drop counter into /healthz (0 on an idle server; the dataplane and web
 // tests cover non-zero values).
 func TestServe_Healthz_ReportsClassifyDropped(t *testing.T) {
-	got := serveHealthz(t, "")
+	got := serveHealthz(t, "", nil)
 	if v, ok := got["classify_dropped"]; !ok || v != float64(0) {
 		t.Errorf("/healthz classify_dropped = %v (present %v); want 0", v, ok)
 	}
 }
 
+// TestServe_Healthz_ReportsClassifier proves serve wires the dataplane's
+// classifier state into /healthz: "none" with no model: stanza, "ok" once
+// the server is up with the built-in detector.
+func TestServe_Healthz_ReportsClassifier(t *testing.T) {
+	if got := serveHealthz(t, "", nil); got["classifier"] != "none" {
+		t.Errorf("no model: /healthz classifier = %v; want none", got["classifier"])
+	}
+	isOK := func(b map[string]any) bool { return b["classifier"] == "ok" }
+	if got := serveHealthz(t, "model:\n  builtin: lexical\n", isOK); got["classifier"] != "ok" {
+		t.Errorf("builtin model: /healthz classifier = %v; want ok", got["classifier"])
+	}
+}
+
 // serveHealthz runs serveRun in-process with a minimal config plus extra
-// YAML, waits for the dashboard, and returns the decoded /healthz body.
-// Shutdown is bounded so a wedged serve fails the test instead of hanging.
-func serveHealthz(t *testing.T, extra string) map[string]any {
+// YAML, waits for the dashboard, and returns the decoded /healthz body:
+// the first one, or with until non-nil the first for which until is true
+// (else the last seen at the 5 s deadline). Shutdown is bounded so a
+// wedged serve fails the test instead of hanging.
+func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) map[string]any {
 	t.Helper()
 	dnsAddr := freeUDPAddr(t)
 	dashAddr := freeTCPAddr(t)
@@ -767,9 +782,13 @@ func serveHealthz(t *testing.T, extra string) map[string]any {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get("http://" + dashAddr + "/healthz"); err == nil {
-			_ = json.NewDecoder(resp.Body).Decode(&got)
+			var body map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&body)
 			resp.Body.Close()
-			break
+			got = body
+			if until == nil || until(body) {
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

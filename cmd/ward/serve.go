@@ -311,8 +311,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
 	// dpSrv is set once the dataplane server exists (step 5); until then
-	// /healthz reports classify_dropped 0. The dashboard starts first, so
-	// the handler reads the server through this pointer.
+	// /healthz reports classify_dropped 0 and classifier none. The
+	// dashboard starts first, so the handler reads the server through this
+	// pointer.
 	var dpSrv atomic.Pointer[dataplane.Server]
 	dashSrv := &http.Server{
 		Addr: dashAddr,
@@ -323,6 +324,12 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 					return s.ClassifyDropped()
 				}
 				return 0
+			},
+			Classifier: func() string {
+				if s := dpSrv.Load(); s != nil {
+					return s.ClassifierState()
+				}
+				return dataplane.ClassifierStateNone
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

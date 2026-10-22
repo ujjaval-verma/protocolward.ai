@@ -115,6 +115,9 @@ type healthzResponse struct {
 	// ClassifyDropped is the running count of classifications that did not
 	// run. A counter, not a health signal: Status stays ok.
 	ClassifyDropped uint64 `json:"classify_dropped"`
+	// Classifier is "none", "ok" or "unavailable"; see Options.Classifier.
+	// Status stays ok whatever it says.
+	Classifier string `json:"classifier"`
 }
 
 type healthzLastDecision struct {
@@ -145,11 +148,17 @@ type Options struct {
 	// not an interface or a type from internal/dataplane, because
 	// internal/web must not import internal/dataplane.
 	ClassifyDropped func() uint64
+	// Classifier reports the slow-path classifier's state for /healthz
+	// classifier: "none" (not configured), "ok", or "unavailable" (the
+	// model was reported unavailable; classification is off until ward
+	// restarts). nil reports "none". Like ClassifyDropped, not a health
+	// signal: Status stays ok, because answers are unaffected.
+	Classifier func() string
 }
 
 // HandlerWithOptions returns an http.Handler exposing the dashboard surface:
 //   - GET /        — server-rendered HTML dashboard (flags panel, decisions table, uptime)
-//   - GET /healthz — JSON health probe (last decision summary, uptime, classify_dropped)
+//   - GET /healthz — JSON health probe (last decision summary, uptime, classify_dropped, classifier)
 //
 // Both routes read from the supplied Store; the Flags panel reads from
 // opts.Flags (nil allowed). The server is expected to bind 127.0.0.1 only
@@ -194,6 +203,10 @@ func HandlerWithOptions(store *Store, opts Options) http.Handler {
 		}
 		if opts.ClassifyDropped != nil {
 			resp.ClassifyDropped = opts.ClassifyDropped()
+		}
+		resp.Classifier = "none"
+		if opts.Classifier != nil {
+			resp.Classifier = opts.Classifier()
 		}
 		if d, ok := store.Snapshot(); ok {
 			resp.LastDecision = &healthzLastDecision{

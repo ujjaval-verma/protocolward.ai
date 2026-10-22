@@ -1017,6 +1017,35 @@ func (s *Server) classifyAsync(qname, client string) {
 // only increases. Safe for concurrent use; read by the /healthz handler.
 func (s *Server) ClassifyDropped() uint64 { return s.classifyDropped.Load() }
 
+// Values returned by Server.ClassifierState, reported as /healthz
+// classifier.
+const (
+	// ClassifierStateNone: no slow-path classifier is configured.
+	ClassifierStateNone = "none"
+	// ClassifierStateOK: a classifier is configured and has not been
+	// reported unavailable.
+	ClassifierStateOK = "ok"
+	// ClassifierStateUnavailable: the model was reported unavailable
+	// (`policy: model unavailable`) and classification is off until ward
+	// restarts. Answers are unaffected.
+	ClassifierStateUnavailable = "unavailable"
+)
+
+// ClassifierState reports whether slow-path classification is configured
+// and still running: ClassifierStateNone, ClassifierStateOK or
+// ClassifierStateUnavailable. Once unavailable it stays so (no
+// auto-restart). Safe for concurrent use; read by the /healthz handler.
+func (s *Server) ClassifierState() string {
+	switch {
+	case s.cfg.Classifier == nil:
+		return ClassifierStateNone
+	case s.classifierDead.Load():
+		return ClassifierStateUnavailable
+	default:
+		return ClassifierStateOK
+	}
+}
+
 // noteClassifyDropped counts one classification that did not run and emits
 // `policy: classify dropped` on the first drop and then at most once per
 // classifyDropLogEvery, so a burst cannot flood the log. Each line carries
