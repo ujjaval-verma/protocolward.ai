@@ -5,6 +5,9 @@ package upstream_test
 import (
 	"context"
 	"errors"
+	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,6 +255,64 @@ func TestQuery_SNIMismatch(t *testing.T) {
 	var tlsErr *upstream.TLSError
 	if !errors.As(err, &tlsErr) {
 		t.Errorf("expected *upstream.TLSError in chain, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "verify server_name") {
+		t.Errorf("SNI mismatch should keep the server_name remediation: %v", err)
+	}
+}
+
+// A hung upstream (TCP accepted, TLS never answered) is a connectivity
+// problem, not a certificate one: the remediation must say so.
+func TestQuery_HandshakeTimeout_ConnectivityRemediation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var conns []net.Conn
+	var mu sync.Mutex
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c) // accept, never speak TLS
+			mu.Unlock()
+		}
+	}()
+	client, err := upstream.New(upstream.Config{Address: ln.Addr().String(), ServerName: "hung.test", DialTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	msg := new(dns.Msg)
+	msg.SetQuestion("example.com.", dns.TypeA)
+	_, err = client.Query(ctx, msg)
+
+	var tlsErr *upstream.TLSError
+	if !errors.As(err, &tlsErr) {
+		t.Fatalf("Query = %T %v; want *upstream.TLSError", err, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Query = %v; want it to wrap context.DeadlineExceeded", err)
+	}
+	msgText := err.Error()
+	if strings.Contains(msgText, "verify server_name") {
+		t.Errorf("a handshake timeout must not blame server_name: %s", msgText)
+	}
+	if !strings.Contains(msgText, "did not finish the TLS handshake in time") {
+		t.Errorf("want a connectivity remediation: %s", msgText)
 	}
 }
 

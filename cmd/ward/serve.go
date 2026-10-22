@@ -479,10 +479,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		if shutdownCtx.Err() != nil {
+		if errors.Is(err, dataplane.ErrDrainTimeout) || shutdownCtx.Err() != nil {
 			slog.Warn("ward serve: shutdown drain budget elapsed; forcing close",
 				"error", err.Error(),
-				"remediation", "in-flight queries may have been dropped; increase timeouts.shutdown in ward.yaml if this is common",
+				"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
 			)
 		} else if containsAny(err.Error(), "server not started") {
 			// miekg returns "server not started" if Shutdown races the startup path.

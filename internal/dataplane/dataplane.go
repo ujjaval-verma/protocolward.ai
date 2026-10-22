@@ -47,6 +47,11 @@ import (
 // bind failure). Test with errors.Is.
 var ErrListenerStopped = errors.New("stopped")
 
+// ErrDrainTimeout is returned (wrapped) by Shutdown when its context ends
+// before in-flight queries and classifications have drained. The message
+// names how many classifications were still running.
+var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
+
 // ErrAlreadyServing is returned by a second call to Serve() on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
 // need a fresh listener (invariant #8: every error names a remediation).
@@ -127,8 +132,8 @@ type Config struct {
 	// QueryTimeout, not QueryTimeout per attempt. Defaults to 5s.
 	QueryTimeout time.Duration
 
-	// ShutdownTimeout bounds Shutdown(ctx). The caller's context deadline takes
-	// precedence; this field is used when Shutdown is called without a deadline.
+	// ShutdownTimeout bounds the drain Serve runs after a listener error
+	// (abort). Shutdown(ctx) itself is bounded only by ctx.
 	ShutdownTimeout time.Duration
 
 	// Engine, when non-nil, is consulted for every incoming query before
@@ -189,10 +194,12 @@ type Config struct {
 	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
 	// upper bound per architecture.md. The slow-path context is decoupled
 	// from the request context because the request has already been answered
-	// when the fork fires. It derives from the server's stop context
-	// instead: Server.Shutdown cancels it, so a classification still waiting
-	// for the sibling adapter is skipped at once and the inFlight drain
-	// waits only for calls already running.
+	// when the fork fires. For a Classify-only (external) classifier it
+	// derives from the server's stop context instead: Server.Shutdown
+	// cancels it, so a classification still waiting for the sibling adapter
+	// is skipped at once and the inFlight drain waits only for calls already
+	// running. An Assessor's context derives from context.Background(), so
+	// Shutdown drains it.
 	ClassifyTimeout time.Duration
 
 	// Decoys, when non-nil, is consulted BEFORE Engine.Decide. A decoy hit
@@ -238,6 +245,10 @@ type Server struct {
 	// Slow-path classifyAsync goroutines also Add/Done here so Shutdown
 	// drains them before returning.
 	inFlight sync.WaitGroup
+	// inFlightN mirrors inFlight so Shutdown can tell "nothing left" from
+	// "still running" when its context is already done. Use enterFlight and
+	// leaveFlight, never inFlight directly.
+	inFlightN atomic.Int64
 
 	// classifierDead latches true on the first model.ErrUnavailable from the
 	// slow-path fork. Once latched, classifyAsync returns immediately without
@@ -250,9 +261,10 @@ type Server struct {
 	// dropped, never queued.
 	classifySlots chan struct{}
 
-	// stopCtx is the parent of every classify context. Shutdown cancels it
-	// (stopCancel is idempotent) so queued classifications skip instead of
-	// running out the drain budget.
+	// stopCtx is the parent of every Classify-only (external) classify
+	// context. Shutdown cancels it (stopCancel is idempotent) so queued
+	// external-classifier calls skip instead of running out the drain
+	// budget.
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
 
@@ -353,11 +365,13 @@ func (s *Server) Addr() string {
 }
 
 // listenerStarted runs from each miekg server's NotifyStartedFunc. The
-// second call means both transports are serving: it publishes the address.
+// second call means both transports are serving: it logs `dns: listening`,
+// the post-bind readiness line, and publishes the address.
 func (s *Server) listenerStarted() {
 	if s.listenersUp.Add(1) == 2 {
 		s.addrOnce.Do(func() {
 			s.addr = s.udpSrv.PacketConn.LocalAddr().String()
+			slog.Info("dns: listening", "addr", s.addr, "transports", "udp+tcp")
 			close(s.addrCh)
 		})
 	}
@@ -455,14 +469,25 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 	_ = ln.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
-	_ = s.Shutdown(ctx)
+	if err := s.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+		// Other Shutdown errors stay discarded: the listener error is what
+		// Serve returns. The stuck work may be a query handler rather than
+		// a classification, so the remediation does not blame the classifier.
+		slog.Warn("dataplane: shutdown drain incomplete",
+			"error", err.Error(),
+			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
+		)
+	}
 }
 
-// Shutdown gracefully stops the server within the context deadline. In-flight
-// queries are drained before returning.
+// Shutdown gracefully stops the server within the context deadline.
+// In-flight queries and in-process classifications are drained before
+// returning; calls still waiting for an external classifier are skipped.
+// If ctx ends first, the error wraps ErrDrainTimeout and names the
+// classifications still running; Shutdown does not log it.
 func (s *Server) Shutdown(ctx context.Context) error {
-	// Cancel queued and future classifications first so the drain below
-	// waits only for calls already running. Safe to call repeatedly.
+	// Cancel queued and future external-classifier calls first so the drain
+	// below waits only for calls already running. Safe to call repeatedly.
 	s.stopCancel()
 
 	// Stop accepting new queries.
@@ -475,24 +500,41 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.inFlight.Wait()
 		close(drained)
 	}()
+	var errs []error
 	select {
 	case <-drained:
 	case <-ctx.Done():
+		// ctx may already have been done when the select ran, with nothing
+		// left to drain (select picks among ready cases at random): report
+		// a timeout only when work is really still running.
+		if s.inFlightN.Load() > 0 {
+			errs = append(errs, fmt.Errorf("%w: %d classification(s) still running: %w",
+				ErrDrainTimeout, len(s.classifySlots), ctx.Err()))
+		}
 	}
-
 	if udpErr != nil {
-		return fmt.Errorf("dataplane shutdown (udp): %w", udpErr)
+		errs = append(errs, fmt.Errorf("dataplane shutdown (udp): %w", udpErr))
 	}
 	if tcpErr != nil {
-		return fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr)
+		errs = append(errs, fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr))
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+func (s *Server) enterFlight() {
+	s.inFlightN.Add(1)
+	s.inFlight.Add(1)
+}
+
+func (s *Server) leaveFlight() {
+	s.inFlight.Done()
+	s.inFlightN.Add(-1)
 }
 
 // handleQuery is the miekg/dns handler for every incoming DNS query.
 func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
-	s.inFlight.Add(1)
-	defer s.inFlight.Done()
+	s.enterFlight()
+	defer s.leaveFlight()
 
 	// Invariant #7: catch-all panic recovery. The empty-Question guard below
 	// handles the most predictable case; this defer handles anything else.
@@ -568,7 +610,7 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			client := clientHost(w.RemoteAddr())
 			select {
 			case s.classifySlots <- struct{}{}:
-				s.inFlight.Add(1)
+				s.enterFlight()
 				go s.classifyAsync(qname, client)
 			default:
 				s.noteClassifyDropped(qname, "slow path at capacity")
@@ -809,7 +851,7 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 // builtin detector), Assess is called instead of Classify and a non-benign
 // result is recorded via Config.Flags. Flags are never enforced.
 func (s *Server) classifyAsync(qname, client string) {
-	defer s.inFlight.Done()
+	defer s.leaveFlight()
 	defer func() { <-s.classifySlots }()
 	// DD6: an in-process classifier (model.builtin) has no process boundary,
 	// so contain its panics here. Registered after inFlight.Done so it runs
@@ -830,7 +872,17 @@ func (s *Server) classifyAsync(qname, client string) {
 	if s.classifierDead.Load() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(s.stopCtx, s.cfg.ClassifyTimeout)
+	// Only a call that may wait for the external classifier's slot is
+	// cancelled by Shutdown (stopCtx): that wait is what would otherwise
+	// run out the drain budget. An in-process Assessor has no slot and
+	// finishes in microseconds, so a fork that already started is drained,
+	// not cancelled, and its flag is recorded.
+	parent := s.stopCtx
+	as, isAssessor := s.cfg.Classifier.(model.Assessor)
+	if isAssessor {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, s.cfg.ClassifyTimeout)
 	defer cancel()
 
 	var (
@@ -838,7 +890,7 @@ func (s *Server) classifyAsync(qname, client string) {
 		assessment *schema.Assessment
 		err        error
 	)
-	if as, ok := s.cfg.Classifier.(model.Assessor); ok {
+	if isAssessor {
 		if isConnectivityProbe(qname) {
 			// DD9: an OS connectivity probe from a LAN client — never
 			// assessed, so never flagged.

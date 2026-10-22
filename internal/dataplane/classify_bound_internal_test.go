@@ -4,8 +4,10 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	adapter "protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/obs"
+	"protocolward.ai/ward/pkg/detect"
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
 )
@@ -359,4 +362,225 @@ func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 		}
 	}
 	t.Error("no Debug `policy: classify drop not logged` line naming the suppressed qname")
+}
+
+// lateAssessor stands for a classify fork that was scheduled before
+// Shutdown but has not reached Assess yet: it holds until the stop context
+// is cancelled, then runs the real lexical detector with the ctx it got.
+type lateAssessor struct {
+	srv     *Server
+	real    *detect.Lexical
+	ctxDone atomic.Bool // the ctx Assess received was already done
+}
+
+func (l *lateAssessor) Classify(ctx context.Context, in model.Input) (schema.Verdict, error) {
+	return l.real.Classify(ctx, in)
+}
+
+func (l *lateAssessor) Assess(ctx context.Context, in model.Input) (schema.Assessment, error) {
+	<-l.srv.stopCtx.Done()
+	l.ctxDone.Store(ctx.Err() != nil)
+	return l.real.Assess(ctx, in)
+}
+
+type countingFlags struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingFlags) RecordFlag(string, string, float64, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+}
+
+// T-DRAIN (issue #46): Shutdown cancels only calls waiting for the
+// external classifier. An in-process (Assessor) classification already
+// forked runs to completion and records its flag; it never logs a
+// classify error.
+func TestShutdown_DrainsForkedBuiltinClassification(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	la := &lateAssessor{real: detect.New()}
+	flags := &countingFlags{}
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 2 * time.Second,
+		Classifier:      la,
+		Flags:           flags,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	la.srv = srv
+
+	req := new(dns.Msg)
+	req.SetQuestion("3f9a1c7e5b2d8046af1e9c3b7d5a2e80.info.", dns.TypeA)
+	srv.handleQuery(&stubResponseWriter{remoteAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353}}, req)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx) // listeners were never bound; the drain is what matters
+
+	if la.ctxDone.Load() {
+		t.Error("Assess got a cancelled ctx; a built-in classification must not inherit Shutdown's cancel")
+	}
+	flags.mu.Lock()
+	n := flags.n
+	flags.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("flags = %d, want 1: a fork started before Shutdown must be drained, not cancelled", n)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "policy: classify error" {
+			t.Errorf("unexpected policy: classify error on a clean shutdown: %v", r)
+		}
+	}
+}
+
+// The Shutdown split keys on model.Assessor: only a Classify-only
+// classifier (the external adapter) is cancelled by Shutdown. If the
+// adapter ever gained Assess it would silently lose that cancellation.
+func TestAdapter_StaysClassifyOnly(t *testing.T) {
+	if _, ok := any((*adapter.Adapter)(nil)).(model.Assessor); ok {
+		t.Fatal("internal/model.Adapter must stay Classify-only: Shutdown cancels only the Classify branch (#45/#46)")
+	}
+}
+
+// T-DRAIN-TIMEOUT: a classification still running when the Shutdown ctx
+// ends is reported, with the count, instead of being silently abandoned.
+func TestShutdown_DrainTimeout_ReportsUndrainedClassifications(t *testing.T) {
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newBoundTestServer(t, bc)
+	forwardOnce(srv, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := srv.Shutdown(ctx)
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("Shutdown = %v; want an error wrapping ErrDrainTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "1 classification(s) still running") {
+		t.Errorf("Shutdown error %q should name the 1 undrained classification", err)
+	}
+}
+
+// abortWarn runs abort on a server whose drain cannot finish within
+// ShutdownTimeout and returns the "shutdown drain incomplete" log records.
+func abortWarn(t *testing.T, srv *Server) []map[string]any {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.abort(pc, ln)
+	var out []map[string]any
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "dataplane: shutdown drain incomplete" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func newAbortTestServer(t *testing.T, c SlowPathClassifier) *Server {
+	t.Helper()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 50 * time.Millisecond,
+		Classifier:      c,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv
+}
+
+// abort (the listener-failure path) reports a drain that ran out of time
+// instead of discarding Shutdown's error.
+func TestAbort_DrainTimeout_LogsWarn(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newAbortTestServer(t, bc)
+	forwardOnce(srv, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	recs := abortWarn(t, srv)
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if len(recs) != 1 {
+		t.Fatalf("shutdown drain incomplete lines = %d; want 1", len(recs))
+	}
+	if recs[0]["level"] != "WARN" {
+		t.Errorf("level = %v; want WARN", recs[0]["level"])
+	}
+	if e, _ := recs[0]["error"].(string); !strings.Contains(e, "1 classification(s) still running") {
+		t.Errorf("error %q should name the undrained classification", e)
+	}
+	if r, _ := recs[0]["remediation"].(string); r == "" {
+		t.Error("WARN must carry a remediation")
+	}
+}
+
+// With 0 classifications running the stuck work is a query handler, so the
+// remediation must not blame the classifier.
+func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newAbortTestServer(t, &blockingClassifier{release: make(chan struct{})})
+	srv.enterFlight() // a handler that never finishes within the budget
+	defer srv.leaveFlight()
+
+	recs := abortWarn(t, srv)
+
+	if len(recs) != 1 {
+		t.Fatalf("shutdown drain incomplete lines = %d; want 1", len(recs))
+	}
+	if e, _ := recs[0]["error"].(string); !strings.Contains(e, "0 classification(s) still running") {
+		t.Errorf("error %q should say 0 classification(s) still running", e)
+	}
+	r, _ := recs[0]["remediation"].(string)
+	if strings.Contains(r, "usual cause") || strings.Contains(r, "stays busy") {
+		t.Errorf("remediation %q blames the classifier with 0 classifications running", r)
+	}
+	if !strings.Contains(r, "0 means a query") {
+		t.Errorf("remediation %q should point at the classification count", r)
+	}
+	if !strings.Contains(r, "timeouts.shutdown") {
+		t.Errorf("remediation %q should name timeouts.shutdown", r)
+	}
+}
+
+// An idle server has nothing to drain, so Shutdown with an already-ended
+// ctx must not report a drain timeout (the select would otherwise pick
+// ctx.Done before the waiter goroutine closes the drained channel).
+func TestShutdown_IdleServer_CancelledCtx_NoDrainTimeout(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		srv := newBoundTestServer(t, &blockingClassifier{release: make(chan struct{})})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := srv.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+			t.Fatalf("iteration %d: idle Shutdown = %v; nothing was in flight", i, err)
+		}
+	}
 }

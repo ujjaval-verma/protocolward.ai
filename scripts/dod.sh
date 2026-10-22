@@ -116,10 +116,16 @@ bullet_3_ward_boots() {
   ward_pid=$!
   local waited=0
   while (( waited < 50 )); do
-    # DOD fixture always has both blocklists and allowlists, so the
-    # banner must be the "engine ready" branch. Accepting "not configured"
-    # would mask a fixture misconfiguration (Ralph N1).
-    if grep -q "policy: engine ready" "$WARD_LOG" 2>/dev/null; then
+    # "dns: listening" is logged after both UDP and TCP are bound, so it
+    # is the bind sentinel ("policy: engine ready" is logged before bind).
+    # The DOD fixture always has both blocklists and allowlists, so the
+    # banner must still be the "engine ready" branch. Accepting "not
+    # configured" would mask a fixture misconfiguration (Ralph N1).
+    if grep -q '"msg":"dns: listening".*"addr":"127.0.0.1:5354"' "$WARD_LOG" 2>/dev/null; then
+      if ! grep -q "policy: engine ready" "$WARD_LOG"; then
+        record FAIL 3 "ward serve binds 127.0.0.1:5354 within 5s" "listening, but no 'policy: engine ready' banner (fixture misconfigured?); see $WARD_LOG"
+        return
+      fi
       record PASS 3 "ward serve binds 127.0.0.1:5354 within 5s"
       return
     fi
@@ -131,7 +137,7 @@ bullet_3_ward_boots() {
     sleep 0.1
     waited=$((waited+1))
   done
-  record FAIL 3 "ward serve binds 127.0.0.1:5354 within 5s" "ready banner not seen in 5s; see $WARD_LOG"
+  record FAIL 3 "ward serve binds 127.0.0.1:5354 within 5s" "dns: listening not seen in 5s; see $WARD_LOG"
 }
 
 # ward_ready returns 0 iff bullet 3 left ward running.
@@ -246,7 +252,7 @@ EOF
   local ward5_pid=$!
   waited=0
   while (( waited < 50 )); do
-    if grep -q "policy: engine ready" "$ward5_log" 2>/dev/null; then
+    if grep -q '"msg":"dns: listening".*"addr":"127.0.0.1:5354"' "$ward5_log" 2>/dev/null; then
       break
     fi
     if ! kill -0 "$ward5_pid" 2>/dev/null; then
@@ -260,7 +266,13 @@ EOF
   if (( waited >= 50 )); then
     kill "$ward5_pid" 2>/dev/null || true
     kill "$helper_pid" 2>/dev/null || true
-    record FAIL 5 "DNS: forwarded hostname → upstream answer" "ward (bullet 5 override) ready banner not seen in 5s; see $ward5_log"
+    record FAIL 5 "DNS: forwarded hostname → upstream answer" "ward (bullet 5 override) dns: listening not seen in 5s; see $ward5_log"
+    return
+  fi
+  if ! grep -q "policy: engine ready" "$ward5_log"; then
+    kill "$ward5_pid" 2>/dev/null || true
+    kill "$helper_pid" 2>/dev/null || true
+    record FAIL 5 "DNS: forwarded hostname → upstream answer" "ward (bullet 5 override) listening, but no 'policy: engine ready' banner; see $ward5_log"
     return
   fi
 
@@ -617,7 +629,7 @@ EOF
   ward13_pid=$!
   local waited=0
   while (( waited < 50 )); do
-    if grep -q "policy: engine ready" "$ward13_log" 2>/dev/null; then
+    if grep -q '"msg":"dns: listening".*"addr":"127.0.0.1:5354"' "$ward13_log" 2>/dev/null; then
       break
     fi
     if ! kill -0 "$ward13_pid" 2>/dev/null; then
@@ -629,7 +641,12 @@ EOF
   done
   if (( waited >= 50 )); then
     kill "$ward13_pid" 2>/dev/null || true
-    record FAIL "$bullet_num" "$bullet_desc" "ward ready banner not seen in 5s; see $ward13_log"
+    record FAIL "$bullet_num" "$bullet_desc" "ward dns: listening not seen in 5s; see $ward13_log"
+    return 1
+  fi
+  if ! grep -q "policy: engine ready" "$ward13_log"; then
+    kill "$ward13_pid" 2>/dev/null || true
+    record FAIL "$bullet_num" "$bullet_desc" "listening, but no 'policy: engine ready' banner; see $ward13_log"
     return 1
   fi
 
