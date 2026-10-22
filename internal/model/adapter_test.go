@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,6 +22,10 @@ import (
 )
 
 const fakeChildEnv = "WARD_TEST_FAKE_CLASSIFIER"
+
+// fakeChildPIDFileEnv, when set, names a file the fake child writes its pid
+// to before reading any request.
+const fakeChildPIDFileEnv = "WARD_TEST_FAKE_CLASSIFIER_PIDFILE"
 
 // TestMain re-execs the test binary as the fake classifier child when
 // fakeChildEnv is set. This is the standard Go pattern for testing
@@ -46,11 +52,17 @@ func runFakeChild(mode string) {
 	if mode == "die-on-start" {
 		os.Exit(0)
 	}
+	if path := os.Getenv(fakeChildPIDFileEnv); path != "" {
+		_ = os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	}
 
 	first := true
 	for {
 		line, err := in.ReadString('\n')
 		if err != nil {
+			if mode == "ignore-eof" {
+				time.Sleep(5 * time.Second) // ignores EOF; bounded so a red run ends
+			}
 			return
 		}
 		// Parse the request just enough to extract hostname for "echo" mode.
@@ -60,7 +72,7 @@ func runFakeChild(mode string) {
 		_ = json.Unmarshal([]byte(strings.TrimRight(line, "\n")), &req)
 
 		switch mode {
-		case "benign":
+		case "benign", "ignore-eof":
 			emit("benign")
 		case "echo":
 			switch req.Hostname {
@@ -86,6 +98,11 @@ func runFakeChild(mode string) {
 		case "slow50ms":
 			time.Sleep(50 * time.Millisecond)
 			emit("benign")
+		case "hang-after-read":
+			// Took the request, never replies. Exits after 5 s only so a
+			// red run (no reply timeout) ends instead of hanging the package.
+			time.Sleep(5 * time.Second)
+			os.Exit(0)
 		default:
 			os.Exit(1)
 		}
@@ -317,6 +334,161 @@ func TestAdapter_Burst_WaitersSkipAdapterStaysUsable(t *testing.T) {
 	}
 }
 
+// classifyWithin runs Classify on its own goroutine and fails the test if
+// it has not returned within limit. The limit is a watchdog, not a timing
+// assertion: it is many times the configured reply timeout.
+func classifyWithin(t *testing.T, a *model.Adapter, ctx context.Context, limit time.Duration) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(limit):
+		t.Fatalf("Classify did not return within %s: a hung child must not hold the adapter", limit)
+		return nil
+	}
+}
+
+// TestAdapter_HungReply_PoisonsWithinReplyTimeout is the T-H row. The child
+// reads the request and never replies. The exchange is bounded by
+// ReplyTimeout: Classify returns ErrUnavailable wrapping ErrNoReply, the
+// child is killed (the stream is out of step), later calls fail fast, and
+// Close returns.
+func TestAdapter_HungReply_PoisonsWithinReplyTimeout(t *testing.T) {
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+
+	err = classifyWithin(t, a, context.Background(), 2*time.Second)
+	if !errors.Is(err, model.ErrUnavailable) || !errors.Is(err, model.ErrNoReply) {
+		t.Errorf("Classify err = %v; want ErrUnavailable wrapping ErrNoReply", err)
+	}
+	if err := classifyWithin(t, a, context.Background(), 2*time.Second); !errors.Is(err, model.ErrUnavailable) {
+		t.Errorf("second Classify err = %v; want ErrUnavailable (poisoned)", err)
+	}
+
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s after a hung reply")
+	}
+}
+
+// TestAdapter_HungReply_KilledChildReapedBeforeClose is the T-HZ row: the
+// child killed on a missed reply is reaped at once, not left a zombie
+// (holding a pid and two fds) until Close. Close still returns.
+func TestAdapter_HungReply_KilledChildReapedBeforeClose(t *testing.T) {
+	pidFile := t.TempDir() + "/child.pid"
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.Env = append(cfg.Env, fakeChildPIDFileEnv+"="+pidFile)
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if err := classifyWithin(t, a, context.Background(), 2*time.Second); !errors.Is(err, model.ErrNoReply) {
+		t.Fatalf("Classify err = %v; want ErrNoReply", err)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	pid, err := strconv.Atoi(string(raw))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", raw, err)
+	}
+
+	// A zombie still answers signal 0; a reaped pid returns ESRCH. The 2 s
+	// limit is a watchdog: the reap follows the kill at once.
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("signal 0 to the killed child = %v; want ESRCH (reaped before Close)", err)
+	}
+
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s after the child was reaped")
+	}
+}
+
+// TestAdapter_HungReply_ReleasesWaiters is the T-HW row: a caller queued
+// behind the hung exchange gets ErrUnavailable once the reply timeout
+// fires, not ErrSkipped after its own (long) deadline.
+func TestAdapter_HungReply_ReleasesWaiters(t *testing.T) {
+	cfg := fakeChildConfig(t, "hang-after-read")
+	cfg.ReplyTimeout = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+			errs <- err
+		}()
+	}
+	noReply := 0
+	for i := range 2 {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, model.ErrUnavailable) || errors.Is(err, model.ErrSkipped) {
+				t.Errorf("call %d err = %v; want ErrUnavailable, not ErrSkipped", i, err)
+			}
+			if errors.Is(err, model.ErrNoReply) {
+				noReply++
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("call %d did not return within 3s: the waiter is still wedged", i)
+		}
+	}
+	if noReply == 0 {
+		t.Error("no call wrapped ErrNoReply; want the exchange that hit the timeout to say so")
+	}
+}
+
+// TestAdapter_ShortCtx_ExchangeNotBoundedByCtx is the T-HC row, a guard
+// against regressing #16: the exchange is bounded by ReplyTimeout, not by
+// the caller's ctx (which in the dataplane also covers the wait for the
+// slot). A ctx that ends mid-exchange neither interrupts nor poisons.
+func TestAdapter_ShortCtx_ExchangeNotBoundedByCtx(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "slow50ms"))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	got, err := a.Classify(ctx, pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Fatalf("Classify with a 25ms ctx against a 50ms child = (%v, %v); want (VerdictBenign, nil)", got, err)
+	}
+	got, err = a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+	if err != nil || got != schema.VerdictBenign {
+		t.Errorf("next Classify = (%v, %v); want (VerdictBenign, nil): a slow-but-alive child must not be poisoned", got, err)
+	}
+}
+
 // TestAdapter_ConcurrentClassify is the T-CC row: 32 goroutines call
 // Classify concurrently; the one-slot semaphore serializes; no race; all return Benign.
 // Run with -race in make ci.
@@ -362,6 +534,48 @@ func TestAdapter_Close_Idempotent(t *testing.T) {
 	}
 	if err := a.Close(); err != nil {
 		t.Errorf("second Close = %v, want nil (idempotent)", err)
+	}
+}
+
+// TestAdapter_Close_ChildIgnoresEOF_KilledAfterGrace is the T-CG row: a
+// child that does not exit on stdin EOF is killed after CloseGrace, so
+// Close (and ward serve shutdown) is bounded.
+func TestAdapter_Close_ChildIgnoresEOF_KilledAfterGrace(t *testing.T) {
+	cfg := fakeChildConfig(t, "ignore-eof")
+	cfg.CloseGrace = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if _, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"}); err != nil {
+		t.Fatalf("Classify = %v", err)
+	}
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s: a child ignoring EOF must be killed after CloseGrace")
+	}
+}
+
+// TestAdapter_ClassifyAfterClose_SkipsWithoutTouchingChild is the T-AC
+// row: after Close, Classify returns ErrSkipped wrapping ErrClosed and
+// never writes to the closed stdin, so it is never ErrUnavailable (which
+// the dataplane would log as `policy: model unavailable`).
+func TestAdapter_ClassifyAfterClose_SkipsWithoutTouchingChild(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "benign"))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	for i := range 2 {
+		_, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+		if !errors.Is(err, model.ErrSkipped) || !errors.Is(err, model.ErrClosed) || errors.Is(err, model.ErrUnavailable) {
+			t.Errorf("call %d after Close: err = %v; want ErrSkipped wrapping ErrClosed, never ErrUnavailable", i, err)
+		}
 	}
 }
 

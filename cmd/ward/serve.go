@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -309,9 +310,35 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
+	// dpSrv is set once the dataplane server exists (step 5); until then
+	// /healthz reports classify_dropped 0 and classifier none. The
+	// dashboard starts first, so the handler reads the server through this
+	// pointer. modelStartFailed is set in step 4e when a configured model
+	// fails to start: the server then runs with no classifier (and would
+	// say none), but classification is off until ward restarts, so
+	// /healthz reports classifier unavailable. It is checked first.
+	var dpSrv atomic.Pointer[dataplane.Server]
+	var modelStartFailed atomic.Bool
 	dashSrv := &http.Server{
-		Addr:              dashAddr,
-		Handler:           web.HandlerWithFlags(dashStore, flagLog),
+		Addr: dashAddr,
+		Handler: web.HandlerWithOptions(dashStore, web.Options{
+			Flags: flagLog,
+			ClassifyDropped: func() uint64 {
+				if s := dpSrv.Load(); s != nil {
+					return s.ClassifyDropped()
+				}
+				return 0
+			},
+			Classifier: func() string {
+				if modelStartFailed.Load() {
+					return dataplane.ClassifierStateUnavailable
+				}
+				if s := dpSrv.Load(); s != nil {
+					return s.ClassifierState()
+				}
+				return dataplane.ClassifierStateNone
+			},
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	dashListener, err := dashListen(dashAddr)
@@ -357,6 +384,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			Env:     cfg.Model.Env,
 		})
 		if mErr != nil {
+			modelStartFailed.Store(true)
 			// Continue with nil classifier — ward runs fast-path-only.
 			// Single canonical `policy: model unavailable` slog line so
 			// operators see one event, not two (Ralph N3). stderr still
@@ -417,6 +445,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
+	dpSrv.Store(srv)
 
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)

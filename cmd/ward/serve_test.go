@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -726,4 +727,87 @@ func extractPanel(doc, marker string) string {
 		return doc[i : i+len(marker)+j]
 	}
 	return doc[i:]
+}
+
+// TestServe_Healthz_ReportsClassifyDropped proves serve wires the dataplane
+// drop counter into /healthz (0 on an idle server; the dataplane and web
+// tests cover non-zero values).
+func TestServe_Healthz_ReportsClassifyDropped(t *testing.T) {
+	got := serveHealthz(t, "", nil)
+	if v, ok := got["classify_dropped"]; !ok || v != float64(0) {
+		t.Errorf("/healthz classify_dropped = %v (present %v); want 0", v, ok)
+	}
+}
+
+// TestServe_Healthz_ReportsClassifier proves serve wires the dataplane's
+// classifier state into /healthz: "none" with no model: stanza, "ok" once
+// the server is up with the built-in detector.
+func TestServe_Healthz_ReportsClassifier(t *testing.T) {
+	if got := serveHealthz(t, "", nil); got["classifier"] != "none" {
+		t.Errorf("no model: /healthz classifier = %v; want none", got["classifier"])
+	}
+	isOK := func(b map[string]any) bool { return b["classifier"] == "ok" }
+	if got := serveHealthz(t, "model:\n  builtin: lexical\n", isOK); got["classifier"] != "ok" {
+		t.Errorf("builtin model: /healthz classifier = %v; want ok", got["classifier"])
+	}
+}
+
+// TestServe_Healthz_ModelStartFailed_ClassifierUnavailable: a configured
+// model that fails to start leaves classification off until restart, so
+// /healthz says "unavailable", not "none"; status stays "ok".
+func TestServe_Healthz_ModelStartFailed_ClassifierUnavailable(t *testing.T) {
+	isUnavailable := func(b map[string]any) bool { return b["classifier"] == "unavailable" }
+	got := serveHealthz(t, "model:\n  command: [\"/nonexistent/ward-test-model\"]\n", isUnavailable)
+	if got["classifier"] != "unavailable" {
+		t.Errorf("model start failed: /healthz classifier = %v; want unavailable", got["classifier"])
+	}
+	if got["status"] != "ok" {
+		t.Errorf("model start failed: /healthz status = %v; want ok", got["status"])
+	}
+}
+
+// serveHealthz runs serveRun in-process with a minimal config plus extra
+// YAML, waits for the dashboard, and returns the decoded /healthz body:
+// the first one, or with until non-nil the first for which until is true
+// (else the last seen at the 5 s deadline). Shutdown is bounded so a
+// wedged serve fails the test instead of hanging.
+func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) map[string]any {
+	t.Helper()
+	dnsAddr := freeUDPAddr(t)
+	dashAddr := freeTCPAddr(t)
+	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
+	body := fmt.Sprintf("upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: %q\ntimeouts:\n  shutdown: \"50ms\"\n", dnsAddr) + extra
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: dashAddr}) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("serveRun did not return within 5s of cancel")
+		}
+	}()
+
+	var got map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resp, err := http.Get("http://" + dashAddr + "/healthz"); err == nil {
+			var body map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&body)
+			resp.Body.Close()
+			got = body
+			if until == nil || until(body) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got == nil {
+		t.Fatal("/healthz did not answer within 5s")
+	}
+	return got
 }

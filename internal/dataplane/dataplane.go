@@ -189,12 +189,16 @@ type Config struct {
 	// D7 and invariant 1).
 	Classifier SlowPathClassifier
 
-	// ClassifyTimeout bounds each Classify or Assess call, including time spent
-	// waiting for a busy sibling adapter (a call still waiting when it ends is
-	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
-	// upper bound per architecture.md. The slow-path context is decoupled
-	// from the request context because the request has already been answered
-	// when the fork fires. For a Classify-only (external) classifier it
+	// ClassifyTimeout bounds each Assess call, and for a Classify-only
+	// (external) classifier the wait for the adapter's slot plus its check
+	// before the request is written (a call still waiting when it ends is
+	// dropped and counted, not a failure). An exchange already on the wire
+	// is bounded by the adapter's reply timeout
+	// (internal/model.DefaultReplyTimeout) instead, so one call can hold its
+	// slow-path slot for up to ClassifyTimeout plus that timeout. Defaults
+	// to 4s — the Tier 2 upper bound per architecture.md. The slow-path
+	// context is decoupled from the request context because the request has
+	// already been answered when the fork fires. For a Classify-only (external) classifier it
 	// derives from the server's stop context instead: Server.Shutdown
 	// cancels it, so a classification still waiting for the sibling adapter
 	// is skipped at once and the inFlight drain waits only for calls already
@@ -937,10 +941,14 @@ func (s *Server) classifyAsync(qname, client string) {
 		}
 		if errors.Is(err, adapter.ErrUnavailable) {
 			if s.classifierDead.CompareAndSwap(false, true) {
+				remediation := "restart ward to reload the adapter — SP10c does not auto-restart the sibling"
+				if errors.Is(err, adapter.ErrNoReply) {
+					remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang, overload, or a reply that is not flushed as one newline-terminated line, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
+				}
 				slog.Error("policy: model unavailable",
 					"qname", qname,
 					"error", err.Error(),
-					"remediation", "restart ward to reload the adapter — SP10c does not auto-restart the sibling",
+					"remediation", remediation,
 				)
 			}
 			return
@@ -1001,6 +1009,41 @@ func (s *Server) classifyAsync(qname, client string) {
 	}
 	d := s.cfg.Engine.DecideWithVerdict(qname, verdict)
 	s.logClassified(qname, verdict, d)
+}
+
+// ClassifyDropped returns the number of classifications that did not run
+// since the server was created: no free slot, or the external classifier
+// skipped the call (busy past the classify timeout, or shutting down). It
+// only increases. Safe for concurrent use; read by the /healthz handler.
+func (s *Server) ClassifyDropped() uint64 { return s.classifyDropped.Load() }
+
+// Values returned by Server.ClassifierState, reported as /healthz
+// classifier.
+const (
+	// ClassifierStateNone: no slow-path classifier is configured.
+	ClassifierStateNone = "none"
+	// ClassifierStateOK: a classifier is configured and has not been
+	// reported unavailable.
+	ClassifierStateOK = "ok"
+	// ClassifierStateUnavailable: the model was reported unavailable
+	// (`policy: model unavailable`) and classification is off until ward
+	// restarts. Answers are unaffected.
+	ClassifierStateUnavailable = "unavailable"
+)
+
+// ClassifierState reports whether slow-path classification is configured
+// and still running: ClassifierStateNone, ClassifierStateOK or
+// ClassifierStateUnavailable. Once unavailable it stays so (no
+// auto-restart). Safe for concurrent use; read by the /healthz handler.
+func (s *Server) ClassifierState() string {
+	switch {
+	case s.cfg.Classifier == nil:
+		return ClassifierStateNone
+	case s.classifierDead.Load():
+		return ClassifierStateUnavailable
+	default:
+		return ClassifierStateOK
+	}
 }
 
 // noteClassifyDropped counts one classification that did not run and emits

@@ -349,6 +349,135 @@ func TestShutdown_ClassifyAfterStopIsSkipped(t *testing.T) {
 	}
 }
 
+// closedClassifier returns what internal/model.Adapter returns after Close.
+type closedClassifier struct{}
+
+func (closedClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return 0, fmt.Errorf("%w: %w", adapter.ErrSkipped, adapter.ErrClosed)
+}
+
+// T-CLOSED: a classification that reaches a closed adapter during shutdown
+// is a counted, Debug-only skip: no `policy: model unavailable`, no
+// `policy: classify error`, no latch.
+func TestShutdown_ClosedAdapterIsQuietSkip(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newBoundTestServer(t, closedClassifier{})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+
+	forwardOnce(srv, 0)
+	srv.inFlight.Wait()
+
+	if srv.classifierDead.Load() {
+		t.Error("classifierDead latched on a closed adapter")
+	}
+	if got := srv.classifyDropped.Load(); got != 1 {
+		t.Errorf("classifyDropped = %d; want 1", got)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "policy: model unavailable" || r["msg"] == "policy: classify error" {
+			t.Errorf("unexpected %q line after Close: %v", r["msg"], r)
+		}
+	}
+}
+
+type unavailableClassifier struct{ err error }
+
+func (u unavailableClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return 0, u.err
+}
+
+// T-NOREPLY: a model that missed its reply timeout is reported once with a
+// remediation that says so, and names the common sibling bug of a reply
+// not flushed as one newline-terminated line; other unavailable causes
+// keep the generic text.
+func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"no reply", fmt.Errorf("%w: %w", adapter.ErrUnavailable, adapter.ErrNoReply), []string{"did not reply within", "newline-terminated line"}},
+		{"other", adapter.ErrUnavailable, []string{"restart ward to reload the adapter"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := obs.Capture(t)
+			defer restore()
+			srv := newBoundTestServer(t, unavailableClassifier{tc.err})
+			forwardOnce(srv, 0)
+			srv.inFlight.Wait()
+
+			var lines []map[string]any
+			for _, r := range obs.Captured(t) {
+				if r["msg"] == "policy: model unavailable" {
+					lines = append(lines, r)
+				}
+			}
+			if len(lines) != 1 {
+				t.Fatalf("policy: model unavailable lines = %d; want 1", len(lines))
+			}
+			rem, _ := lines[0]["remediation"].(string)
+			for _, want := range tc.want {
+				if !strings.Contains(rem, want) {
+					t.Errorf("remediation = %q; want it to contain %q", rem, want)
+				}
+			}
+		})
+	}
+}
+
+// T-DROPPED-API: ClassifyDropped reports the running drop total and only
+// increases.
+func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
+	bc := &blockingClassifier{release: make(chan struct{})}
+	srv := newBoundTestServer(t, bc)
+	const burst = 100
+	for i := range burst {
+		forwardOnce(srv, i)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for bc.entered.Load()+int64(srv.ClassifyDropped()) < burst && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(bc.release)
+	srv.inFlight.Wait()
+
+	if got := srv.ClassifyDropped(); got != burst-maxClassifyInFlight {
+		t.Fatalf("ClassifyDropped() = %d; want %d", got, burst-maxClassifyInFlight)
+	}
+	srv.noteClassifyDropped("x.example.com", "test")
+	if got := srv.ClassifyDropped(); got != burst-maxClassifyInFlight+1 {
+		t.Errorf("ClassifyDropped() after one more drop = %d; want %d", got, burst-maxClassifyInFlight+1)
+	}
+}
+
+// T-CLASSIFIER-STATE: ClassifierState is "none" with no classifier, "ok"
+// with one, and "unavailable" once the model was reported unavailable (the
+// latch has no auto-restart, so it stays there).
+func TestServer_ClassifierState(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+
+	if got := newBoundTestServer(t, nil).ClassifierState(); got != ClassifierStateNone {
+		t.Errorf("no classifier: ClassifierState() = %q; want %q", got, ClassifierStateNone)
+	}
+	if got := newBoundTestServer(t, detect.New()).ClassifierState(); got != ClassifierStateOK {
+		t.Errorf("built-in detector: ClassifierState() = %q; want %q", got, ClassifierStateOK)
+	}
+
+	srv := newBoundTestServer(t, unavailableClassifier{adapter.ErrUnavailable})
+	if got := srv.ClassifierState(); got != ClassifierStateOK {
+		t.Errorf("external classifier before any failure: ClassifierState() = %q; want %q", got, ClassifierStateOK)
+	}
+	forwardOnce(srv, 0)
+	srv.inFlight.Wait()
+	if got := srv.ClassifierState(); got != ClassifierStateUnavailable {
+		t.Errorf("after model unavailable: ClassifierState() = %q; want %q", got, ClassifierStateUnavailable)
+	}
+}
+
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)
