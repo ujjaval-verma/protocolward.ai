@@ -752,6 +752,20 @@ func TestServe_Healthz_ReportsClassifier(t *testing.T) {
 	}
 }
 
+// TestServe_Healthz_ModelStartFailed_ClassifierUnavailable: a configured
+// model that fails to start leaves classification off until restart, so
+// /healthz says "unavailable", not "none"; status stays "ok".
+func TestServe_Healthz_ModelStartFailed_ClassifierUnavailable(t *testing.T) {
+	isUnavailable := func(b map[string]any) bool { return b["classifier"] == "unavailable" }
+	got := serveHealthz(t, "model:\n  command: [\"/nonexistent/ward-test-model\"]\n", isUnavailable)
+	if got["classifier"] != "unavailable" {
+		t.Errorf("model start failed: /healthz classifier = %v; want unavailable", got["classifier"])
+	}
+	if got["status"] != "ok" {
+		t.Errorf("model start failed: /healthz status = %v; want ok", got["status"])
+	}
+}
+
 // serveHealthz runs serveRun in-process with a minimal config plus extra
 // YAML, waits for the dashboard, and returns the decoded /healthz body:
 // the first one, or with until non-nil the first for which until is true

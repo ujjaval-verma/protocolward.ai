@@ -313,8 +313,12 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// dpSrv is set once the dataplane server exists (step 5); until then
 	// /healthz reports classify_dropped 0 and classifier none. The
 	// dashboard starts first, so the handler reads the server through this
-	// pointer.
+	// pointer. modelStartFailed is set in step 4e when a configured model
+	// fails to start: the server then runs with no classifier (and would
+	// say none), but classification is off until ward restarts, so
+	// /healthz reports classifier unavailable. It is checked first.
 	var dpSrv atomic.Pointer[dataplane.Server]
+	var modelStartFailed atomic.Bool
 	dashSrv := &http.Server{
 		Addr: dashAddr,
 		Handler: web.HandlerWithOptions(dashStore, web.Options{
@@ -326,6 +330,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 				return 0
 			},
 			Classifier: func() string {
+				if modelStartFailed.Load() {
+					return dataplane.ClassifierStateUnavailable
+				}
 				if s := dpSrv.Load(); s != nil {
 					return s.ClassifierState()
 				}
@@ -377,6 +384,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			Env:     cfg.Model.Env,
 		})
 		if mErr != nil {
+			modelStartFailed.Store(true)
 			// Continue with nil classifier — ward runs fast-path-only.
 			// Single canonical `policy: model unavailable` slog line so
 			// operators see one event, not two (Ralph N3). stderr still

@@ -150,8 +150,8 @@ type Options struct {
 	ClassifyDropped func() uint64
 	// Classifier reports the slow-path classifier's state for /healthz
 	// classifier: "none" (not configured), "ok", or "unavailable" (the
-	// model was reported unavailable; classification is off until ward
-	// restarts). nil reports "none". Like ClassifyDropped, not a health
+	// model failed to start or was reported unavailable; classification is
+	// off until ward restarts). nil reports "none". Like ClassifyDropped, not a health
 	// signal: Status stays ok, because answers are unaffected.
 	Classifier func() string
 }
