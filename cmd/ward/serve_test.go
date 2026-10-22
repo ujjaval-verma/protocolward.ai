@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -726,4 +727,54 @@ func extractPanel(doc, marker string) string {
 		return doc[i : i+len(marker)+j]
 	}
 	return doc[i:]
+}
+
+// TestServe_Healthz_ReportsClassifyDropped proves serve wires the dataplane
+// drop counter into /healthz (0 on an idle server; the dataplane and web
+// tests cover non-zero values).
+func TestServe_Healthz_ReportsClassifyDropped(t *testing.T) {
+	got := serveHealthz(t, "")
+	if v, ok := got["classify_dropped"]; !ok || v != float64(0) {
+		t.Errorf("/healthz classify_dropped = %v (present %v); want 0", v, ok)
+	}
+}
+
+// serveHealthz runs serveRun in-process with a minimal config plus extra
+// YAML, waits for the dashboard, and returns the decoded /healthz body.
+// Shutdown is bounded so a wedged serve fails the test instead of hanging.
+func serveHealthz(t *testing.T, extra string) map[string]any {
+	t.Helper()
+	dnsAddr := freeUDPAddr(t)
+	dashAddr := freeTCPAddr(t)
+	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
+	body := fmt.Sprintf("upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: %q\ntimeouts:\n  shutdown: \"50ms\"\n", dnsAddr) + extra
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: dashAddr}) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("serveRun did not return within 5s of cancel")
+		}
+	}()
+
+	var got map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if resp, err := http.Get("http://" + dashAddr + "/healthz"); err == nil {
+			_ = json.NewDecoder(resp.Body).Decode(&got)
+			resp.Body.Close()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got == nil {
+		t.Fatal("/healthz did not answer within 5s")
+	}
+	return got
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -309,9 +310,21 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
+	// dpSrv is set once the dataplane server exists (step 5); until then
+	// /healthz reports classify_dropped 0. The dashboard starts first, so
+	// the handler reads the server through this pointer.
+	var dpSrv atomic.Pointer[dataplane.Server]
 	dashSrv := &http.Server{
-		Addr:              dashAddr,
-		Handler:           web.HandlerWithFlags(dashStore, flagLog),
+		Addr: dashAddr,
+		Handler: web.HandlerWithOptions(dashStore, web.Options{
+			Flags: flagLog,
+			ClassifyDropped: func() uint64 {
+				if s := dpSrv.Load(); s != nil {
+					return s.ClassifyDropped()
+				}
+				return 0
+			},
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	dashListener, err := dashListen(dashAddr)
@@ -417,6 +430,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
+	dpSrv.Store(srv)
 
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
