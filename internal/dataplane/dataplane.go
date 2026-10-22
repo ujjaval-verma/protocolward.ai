@@ -361,11 +361,13 @@ func (s *Server) Addr() string {
 }
 
 // listenerStarted runs from each miekg server's NotifyStartedFunc. The
-// second call means both transports are serving: it publishes the address.
+// second call means both transports are serving: it logs `dns: listening`,
+// the post-bind readiness line, and publishes the address.
 func (s *Server) listenerStarted() {
 	if s.listenersUp.Add(1) == 2 {
 		s.addrOnce.Do(func() {
 			s.addr = s.udpSrv.PacketConn.LocalAddr().String()
+			slog.Info("dns: listening", "addr", s.addr, "transports", "udp+tcp")
 			close(s.addrCh)
 		})
 	}

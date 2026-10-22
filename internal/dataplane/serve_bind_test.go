@@ -14,6 +14,7 @@ import (
 	"github.com/miekg/dns"
 
 	"protocolward.ai/ward/internal/dataplane"
+	"protocolward.ai/ward/internal/obs"
 )
 
 // newBindTestServer returns an unstarted Server on listenAddr.
@@ -137,4 +138,49 @@ func rebindUDP(addr string) (net.PacketConn, error) {
 		pc, err = net.ListenPacket("udp", addr)
 	}
 	return pc, err
+}
+
+func listeningLines(t *testing.T) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "dns: listening" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// The readiness line is logged once, after both UDP and TCP serve, with the
+// bound address. Scripts key on it instead of a line logged before bind.
+func TestServe_LogsListeningOnceBothListenersServe(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newBindTestServer(t, "127.0.0.1:0")
+	go func() { _ = srv.Serve() }()
+	addr, err := waitForAddr(srv, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	defer func() { _ = srv.Shutdown(ctx) }()
+
+	lines := listeningLines(t)
+	if len(lines) != 1 {
+		t.Fatalf("dns: listening lines = %d; want 1", len(lines))
+	}
+	if lines[0]["addr"] != addr {
+		t.Errorf("dns: listening addr = %v; want %s", lines[0]["addr"], addr)
+	}
+}
+
+func TestServe_BindFailure_NoListeningLine(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	addr := takeTCPPortWithFreeUDP(t)
+	_ = serveWithin(t, newBindTestServer(t, addr), 2*time.Second)
+	if n := len(listeningLines(t)); n != 0 {
+		t.Errorf("dns: listening lines = %d after a bind failure; want 0", n)
+	}
 }
