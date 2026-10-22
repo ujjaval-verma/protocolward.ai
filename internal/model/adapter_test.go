@@ -51,6 +51,9 @@ func runFakeChild(mode string) {
 	for {
 		line, err := in.ReadString('\n')
 		if err != nil {
+			if mode == "ignore-eof" {
+				time.Sleep(5 * time.Second) // ignores EOF; bounded so a red run ends
+			}
 			return
 		}
 		// Parse the request just enough to extract hostname for "echo" mode.
@@ -60,7 +63,7 @@ func runFakeChild(mode string) {
 		_ = json.Unmarshal([]byte(strings.TrimRight(line, "\n")), &req)
 
 		switch mode {
-		case "benign":
+		case "benign", "ignore-eof":
 			emit("benign")
 		case "echo":
 			switch req.Hostname {
@@ -479,6 +482,28 @@ func TestAdapter_Close_Idempotent(t *testing.T) {
 	}
 	if err := a.Close(); err != nil {
 		t.Errorf("second Close = %v, want nil (idempotent)", err)
+	}
+}
+
+// TestAdapter_Close_ChildIgnoresEOF_KilledAfterGrace is the T-CG row: a
+// child that does not exit on stdin EOF is killed after CloseGrace, so
+// Close (and ward serve shutdown) is bounded.
+func TestAdapter_Close_ChildIgnoresEOF_KilledAfterGrace(t *testing.T) {
+	cfg := fakeChildConfig(t, "ignore-eof")
+	cfg.CloseGrace = 100 * time.Millisecond
+	a, err := model.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if _, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"}); err != nil {
+		t.Fatalf("Classify = %v", err)
+	}
+	closed := make(chan struct{})
+	go func() { _ = a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return within 2s: a child ignoring EOF must be killed after CloseGrace")
 	}
 }
 

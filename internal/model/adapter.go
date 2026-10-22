@@ -38,11 +38,17 @@ type Config struct {
 	// the wait for the slot; bounding the exchange by that would poison a
 	// healthy child after a burst.
 	ReplyTimeout time.Duration
+	// CloseGrace is how long Close waits for the child to exit after
+	// closing its stdin before killing it. Zero means DefaultCloseGrace.
+	CloseGrace time.Duration
 }
 
 // DefaultReplyTimeout is the reply timeout when Config.ReplyTimeout is zero:
 // the Tier 2 upper bound, equal to the dataplane's default classify timeout.
 const DefaultReplyTimeout = 4 * time.Second
+
+// DefaultCloseGrace is the close grace when Config.CloseGrace is zero.
+const DefaultCloseGrace = 2 * time.Second
 
 // ErrNoCommand is returned by New when Config.Command is empty.
 var ErrNoCommand = errors.New("model: adapter config: command is empty")
@@ -89,6 +95,7 @@ type Adapter struct {
 	stdoutF      *os.File      // the raw read end, for SetReadDeadline
 	stdout       *bufio.Reader // wraps stdoutF
 	replyTimeout time.Duration
+	closeGrace   time.Duration
 
 	// sem is a one-slot semaphore guarding the fields below and the
 	// stdio pipes. A channel, not a sync.Mutex, so Classify can stop
@@ -158,12 +165,17 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if replyTimeout <= 0 {
 		replyTimeout = DefaultReplyTimeout
 	}
+	closeGrace := cfg.CloseGrace
+	if closeGrace <= 0 {
+		closeGrace = DefaultCloseGrace
+	}
 	return &Adapter{
 		cmd:          cmd,
 		stdin:        stdin,
 		stdoutF:      stdoutF,
 		stdout:       bufio.NewReader(stdoutF),
 		replyTimeout: replyTimeout,
+		closeGrace:   closeGrace,
 		sem:          make(chan struct{}, 1),
 	}, nil
 }
@@ -272,7 +284,9 @@ func (a *Adapter) poisonLocked() {
 	}
 }
 
-// Close terminates the child process and waits for it to exit.
+// Close terminates the child process and waits for it to exit. It closes
+// the child's stdin, waits at most Config.CloseGrace for the child to exit,
+// then kills it.
 //
 // Returns nil for a clean child exit. Returns *exec.ExitError (or another
 // non-nil error wrapping the wait) when the child died from a signal
@@ -284,7 +298,8 @@ func (a *Adapter) poisonLocked() {
 // Idempotent: a second Close call is a no-op and returns nil. Safe to
 // call on a poisoned adapter. Safe to call from any goroutine; takes
 // a.sem to serialize with Classify, so Close blocks until any in-flight
-// Classify returns.
+// Classify returns: at most Config.ReplyTimeout behind each call ahead of
+// it.
 func (a *Adapter) Close() error {
 	a.sem <- struct{}{}
 	defer func() { <-a.sem }()
@@ -297,7 +312,15 @@ func (a *Adapter) Close() error {
 	if a.stdin != nil {
 		_ = a.stdin.Close()
 	}
-	err := a.cmd.Wait()
+	done := make(chan error, 1)
+	go func() { done <- a.cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(a.closeGrace):
+		_ = a.cmd.Process.Kill()
+		err = <-done
+	}
 	a.cmd = nil // make Close idempotent
 	return err
 }
