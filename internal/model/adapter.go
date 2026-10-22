@@ -137,6 +137,15 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.Env != nil {
 		cmd.Env = cfg.Env
 	}
+	// closeChildEnds closes the child's ends of the pipes. exec.Cmd closes
+	// them only in Start and Wait, so every return before Start must.
+	closeChildEnds := func() {
+		for _, end := range []any{cmd.Stdin, cmd.Stdout} {
+			if f, ok := end.(*os.File); ok {
+				_ = f.Close()
+			}
+		}
+	}
 	stdinW, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("model: stdin pipe: %w", err)
@@ -144,6 +153,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	stdoutR, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdinW.Close()
+		closeChildEnds()
 		return nil, fmt.Errorf("model: stdout pipe: %w", err)
 	}
 	// The reply timeout is a deadline on the pipes, so they must support
@@ -155,12 +165,14 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if !inOK || !outOK {
 		_ = stdinW.Close()
 		_ = stdoutR.Close()
+		closeChildEnds()
 		return nil, fmt.Errorf("model: stdio pipes do not support deadlines: %w",
 			errors.New("pipe is not an *os.File"))
 	}
 	if err := errors.Join(stdin.SetWriteDeadline(time.Time{}), stdoutF.SetReadDeadline(time.Time{})); err != nil {
 		_ = stdin.Close()
 		_ = stdoutF.Close()
+		closeChildEnds()
 		return nil, fmt.Errorf("model: stdio pipes do not support deadlines: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
