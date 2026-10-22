@@ -943,7 +943,7 @@ func (s *Server) classifyAsync(qname, client string) {
 			if s.classifierDead.CompareAndSwap(false, true) {
 				remediation := "restart ward to reload the adapter — SP10c does not auto-restart the sibling"
 				if errors.Is(err, adapter.ErrNoReply) {
-					remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang or overload, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
+					remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang, overload, or a reply that is not flushed as one newline-terminated line, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
 				}
 				slog.Error("policy: model unavailable",
 					"qname", qname,

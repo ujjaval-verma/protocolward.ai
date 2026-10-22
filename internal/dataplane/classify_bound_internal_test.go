@@ -390,15 +390,17 @@ func (u unavailableClassifier) Classify(context.Context, model.Input) (schema.Ve
 }
 
 // T-NOREPLY: a model that missed its reply timeout is reported once with a
-// remediation that says so; other unavailable causes keep the generic text.
+// remediation that says so, and names the common sibling bug of a reply
+// not flushed as one newline-terminated line; other unavailable causes
+// keep the generic text.
 func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		err  error
-		want string
+		want []string
 	}{
-		{"no reply", fmt.Errorf("%w: %w", adapter.ErrUnavailable, adapter.ErrNoReply), "did not reply within"},
-		{"other", adapter.ErrUnavailable, "restart ward to reload the adapter"},
+		{"no reply", fmt.Errorf("%w: %w", adapter.ErrUnavailable, adapter.ErrNoReply), []string{"did not reply within", "newline-terminated line"}},
+		{"other", adapter.ErrUnavailable, []string{"restart ward to reload the adapter"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			restore := obs.Capture(t)
@@ -416,8 +418,11 @@ func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
 			if len(lines) != 1 {
 				t.Fatalf("policy: model unavailable lines = %d; want 1", len(lines))
 			}
-			if rem, _ := lines[0]["remediation"].(string); !strings.Contains(rem, tc.want) {
-				t.Errorf("remediation = %q; want it to contain %q", rem, tc.want)
+			rem, _ := lines[0]["remediation"].(string)
+			for _, want := range tc.want {
+				if !strings.Contains(rem, want) {
+					t.Errorf("remediation = %q; want it to contain %q", rem, want)
+				}
 			}
 		})
 	}
