@@ -77,13 +77,18 @@ var ErrUnavailable = errors.New("model: adapter: child unavailable")
 // written to the child, usually while waiting for an earlier call to
 // finish. Nothing was sent, so the wire protocol is still in step and the
 // adapter is NOT poisoned; the next call with a live context proceeds.
-// The error also wraps ctx.Err().
+// Also returned, wrapping ErrClosed, by any call after Close. The error
+// also wraps the cause: ctx.Err(), or ErrClosed after Close.
 var ErrSkipped = errors.New("model: adapter: classify skipped, context ended before the call")
 
 // ErrNoReply is wrapped (with ErrUnavailable) when the child took a request
 // but did not finish its reply within Config.ReplyTimeout. The stream is out
 // of step after that, so the child is killed and the adapter is poisoned.
 var ErrNoReply = errors.New("model: adapter: no reply within the reply timeout")
+
+// ErrClosed is wrapped (with ErrSkipped) by Classify after Close. Nothing is
+// sent; it is not a child failure.
+var ErrClosed = errors.New("model: adapter: closed")
 
 // Adapter implements pkg/model.Classifier by relaying typed Input to a
 // sibling child process over newline-delimited JSON on stdio. Concurrent
@@ -102,6 +107,7 @@ type Adapter struct {
 	// waiting when its context ends.
 	sem      chan struct{}
 	poisoned bool // once set, every Classify returns ErrUnavailable
+	closed   bool // set by Close; every later Classify returns ErrSkipped+ErrClosed
 }
 
 // Compile-time assertion: *Adapter satisfies pkg/model.Classifier. Mirrors
@@ -207,6 +213,11 @@ func (a *Adapter) Classify(ctx context.Context, in model.Input) (schema.Verdict,
 	}
 	defer func() { <-a.sem }()
 
+	// Closed before poisoned: after Close the answer is a quiet skip, even
+	// for an adapter that was poisoned first.
+	if a.closed {
+		return 0, fmt.Errorf("%w: %w", ErrSkipped, ErrClosed)
+	}
 	if a.poisoned {
 		return 0, ErrUnavailable
 	}
@@ -303,6 +314,7 @@ func (a *Adapter) poisonLocked() {
 func (a *Adapter) Close() error {
 	a.sem <- struct{}{}
 	defer func() { <-a.sem }()
+	a.closed = true
 	if a.cmd == nil {
 		return nil
 	}

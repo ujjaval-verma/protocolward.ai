@@ -507,6 +507,26 @@ func TestAdapter_Close_ChildIgnoresEOF_KilledAfterGrace(t *testing.T) {
 	}
 }
 
+// TestAdapter_ClassifyAfterClose_SkipsWithoutTouchingChild is the T-AC
+// row: after Close, Classify returns ErrSkipped wrapping ErrClosed and
+// never writes to the closed stdin, so it is never ErrUnavailable (which
+// the dataplane would log as `policy: model unavailable`).
+func TestAdapter_ClassifyAfterClose_SkipsWithoutTouchingChild(t *testing.T) {
+	a, err := model.New(context.Background(), fakeChildConfig(t, "benign"))
+	if err != nil {
+		t.Fatalf("New = %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	for i := range 2 {
+		_, err := a.Classify(context.Background(), pkgmodel.Input{Hostname: "ex.com"})
+		if !errors.Is(err, model.ErrSkipped) || !errors.Is(err, model.ErrClosed) || errors.Is(err, model.ErrUnavailable) {
+			t.Errorf("call %d after Close: err = %v; want ErrSkipped wrapping ErrClosed, never ErrUnavailable", i, err)
+		}
+	}
+}
+
 // TestAdapter_New_EmptyCommand_ErrNoCommand is the T-NC row.
 func TestAdapter_New_EmptyCommand_ErrNoCommand(t *testing.T) {
 	_, err := model.New(context.Background(), model.Config{Command: nil})

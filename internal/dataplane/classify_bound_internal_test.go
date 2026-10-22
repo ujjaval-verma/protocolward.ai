@@ -349,6 +349,40 @@ func TestShutdown_ClassifyAfterStopIsSkipped(t *testing.T) {
 	}
 }
 
+// closedClassifier returns what internal/model.Adapter returns after Close.
+type closedClassifier struct{}
+
+func (closedClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return 0, fmt.Errorf("%w: %w", adapter.ErrSkipped, adapter.ErrClosed)
+}
+
+// T-CLOSED: a classification that reaches a closed adapter during shutdown
+// is a counted, Debug-only skip: no `policy: model unavailable`, no
+// `policy: classify error`, no latch.
+func TestShutdown_ClosedAdapterIsQuietSkip(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newBoundTestServer(t, closedClassifier{})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+
+	forwardOnce(srv, 0)
+	srv.inFlight.Wait()
+
+	if srv.classifierDead.Load() {
+		t.Error("classifierDead latched on a closed adapter")
+	}
+	if got := srv.classifyDropped.Load(); got != 1 {
+		t.Errorf("classifyDropped = %d; want 1", got)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "policy: model unavailable" || r["msg"] == "policy: classify error" {
+			t.Errorf("unexpected %q line after Close: %v", r["msg"], r)
+		}
+	}
+}
+
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)
