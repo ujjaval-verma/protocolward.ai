@@ -15,6 +15,7 @@ import (
 
 	adapter "protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/obs"
+	"protocolward.ai/ward/pkg/detect"
 	"protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
 )
@@ -359,4 +360,89 @@ func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 		}
 	}
 	t.Error("no Debug `policy: classify drop not logged` line naming the suppressed qname")
+}
+
+// lateAssessor stands for a classify fork that was scheduled before
+// Shutdown but has not reached Assess yet: it holds until the stop context
+// is cancelled, then runs the real lexical detector with the ctx it got.
+type lateAssessor struct {
+	srv     *Server
+	real    *detect.Lexical
+	ctxDone atomic.Bool // the ctx Assess received was already done
+}
+
+func (l *lateAssessor) Classify(ctx context.Context, in model.Input) (schema.Verdict, error) {
+	return l.real.Classify(ctx, in)
+}
+
+func (l *lateAssessor) Assess(ctx context.Context, in model.Input) (schema.Assessment, error) {
+	<-l.srv.stopCtx.Done()
+	l.ctxDone.Store(ctx.Err() != nil)
+	return l.real.Assess(ctx, in)
+}
+
+type countingFlags struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingFlags) RecordFlag(string, string, float64, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+}
+
+// T-DRAIN (issue #46): Shutdown cancels only calls waiting for the
+// external classifier. An in-process (Assessor) classification already
+// forked runs to completion and records its flag; it never logs a
+// classify error.
+func TestShutdown_DrainsForkedBuiltinClassification(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	la := &lateAssessor{real: detect.New()}
+	flags := &countingFlags{}
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 2 * time.Second,
+		Classifier:      la,
+		Flags:           flags,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	la.srv = srv
+
+	req := new(dns.Msg)
+	req.SetQuestion("3f9a1c7e5b2d8046af1e9c3b7d5a2e80.info.", dns.TypeA)
+	srv.handleQuery(&stubResponseWriter{remoteAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353}}, req)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx) // listeners were never bound; the drain is what matters
+
+	if la.ctxDone.Load() {
+		t.Error("Assess got a cancelled ctx; a built-in classification must not inherit Shutdown's cancel")
+	}
+	flags.mu.Lock()
+	n := flags.n
+	flags.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("flags = %d, want 1: a fork started before Shutdown must be drained, not cancelled", n)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "policy: classify error" {
+			t.Errorf("unexpected policy: classify error on a clean shutdown: %v", r)
+		}
+	}
+}
+
+// The Shutdown split keys on model.Assessor: only a Classify-only
+// classifier (the external adapter) is cancelled by Shutdown. If the
+// adapter ever gained Assess it would silently lose that cancellation.
+func TestAdapter_StaysClassifyOnly(t *testing.T) {
+	if _, ok := any((*adapter.Adapter)(nil)).(model.Assessor); ok {
+		t.Fatal("internal/model.Adapter must stay Classify-only: Shutdown cancels only the Classify branch (#45/#46)")
+	}
 }
