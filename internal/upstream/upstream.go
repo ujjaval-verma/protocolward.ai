@@ -56,7 +56,7 @@ type TLSError struct {
 func (e *TLSError) Error() string {
 	if e.timedOut() {
 		return fmt.Sprintf(
-			"upstream %s: TLS handshake failed (server_name=%q): %v — remediation: the upstream accepted the TCP connection but did not finish the TLS handshake in time; check that it is reachable and not overloaded and that egress on TCP/853 works; the handshake is bounded by the smaller of timeouts.dial and this attempt's share of timeouts.query, so on a slow link raise timeouts.query",
+			"upstream %s: TLS handshake failed (server_name=%q): %v — remediation: the upstream accepted the TCP connection but did not finish the TLS handshake in time; check that it is reachable and not overloaded and that egress on TCP/853 works; the handshake is bounded by the smaller of timeouts.dial and this attempt's share of timeouts.query, so on a slow link raise whichever is smaller (timeouts.query under the defaults)",
 			e.Upstream, e.ServerName, e.Err,
 		)
 	}

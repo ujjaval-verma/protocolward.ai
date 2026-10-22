@@ -548,8 +548,8 @@ func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
 	srv := newAbortTestServer(t, &blockingClassifier{release: make(chan struct{})})
-	srv.inFlight.Add(1) // a handler that never finishes within the budget
-	defer srv.inFlight.Done()
+	srv.enterFlight() // a handler that never finishes within the budget
+	defer srv.leaveFlight()
 
 	recs := abortWarn(t, srv)
 
@@ -560,10 +560,27 @@ func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
 		t.Errorf("error %q should say 0 classification(s) still running", e)
 	}
 	r, _ := recs[0]["remediation"].(string)
-	if strings.Contains(r, "classifier") {
+	if strings.Contains(r, "usual cause") || strings.Contains(r, "stays busy") {
 		t.Errorf("remediation %q blames the classifier with 0 classifications running", r)
+	}
+	if !strings.Contains(r, "0 means a query") {
+		t.Errorf("remediation %q should point at the classification count", r)
 	}
 	if !strings.Contains(r, "timeouts.shutdown") {
 		t.Errorf("remediation %q should name timeouts.shutdown", r)
+	}
+}
+
+// An idle server has nothing to drain, so Shutdown with an already-ended
+// ctx must not report a drain timeout (the select would otherwise pick
+// ctx.Done before the waiter goroutine closes the drained channel).
+func TestShutdown_IdleServer_CancelledCtx_NoDrainTimeout(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		srv := newBoundTestServer(t, &blockingClassifier{release: make(chan struct{})})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := srv.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+			t.Fatalf("iteration %d: idle Shutdown = %v; nothing was in flight", i, err)
+		}
 	}
 }

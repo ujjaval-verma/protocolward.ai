@@ -132,8 +132,8 @@ type Config struct {
 	// QueryTimeout, not QueryTimeout per attempt. Defaults to 5s.
 	QueryTimeout time.Duration
 
-	// ShutdownTimeout bounds Shutdown(ctx). The caller's context deadline takes
-	// precedence; this field is used when Shutdown is called without a deadline.
+	// ShutdownTimeout bounds the drain Serve runs after a listener error
+	// (abort). Shutdown(ctx) itself is bounded only by ctx.
 	ShutdownTimeout time.Duration
 
 	// Engine, when non-nil, is consulted for every incoming query before
@@ -245,6 +245,10 @@ type Server struct {
 	// Slow-path classifyAsync goroutines also Add/Done here so Shutdown
 	// drains them before returning.
 	inFlight sync.WaitGroup
+	// inFlightN mirrors inFlight so Shutdown can tell "nothing left" from
+	// "still running" when its context is already done. Use enterFlight and
+	// leaveFlight, never inFlight directly.
+	inFlightN atomic.Int64
 
 	// classifierDead latches true on the first model.ErrUnavailable from the
 	// slow-path fork. Once latched, classifyAsync returns immediately without
@@ -471,7 +475,7 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 		// a classification, so the remediation does not blame the classifier.
 		slog.Warn("dataplane: shutdown drain incomplete",
 			"error", err.Error(),
-			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; raise timeouts.shutdown if this recurs",
+			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
 		)
 	}
 }
@@ -500,8 +504,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	select {
 	case <-drained:
 	case <-ctx.Done():
-		errs = append(errs, fmt.Errorf("%w: %d classification(s) still running: %w",
-			ErrDrainTimeout, len(s.classifySlots), ctx.Err()))
+		// ctx may already have been done when the select ran, with nothing
+		// left to drain (select picks among ready cases at random): report
+		// a timeout only when work is really still running.
+		if s.inFlightN.Load() > 0 {
+			errs = append(errs, fmt.Errorf("%w: %d classification(s) still running: %w",
+				ErrDrainTimeout, len(s.classifySlots), ctx.Err()))
+		}
 	}
 	if udpErr != nil {
 		errs = append(errs, fmt.Errorf("dataplane shutdown (udp): %w", udpErr))
@@ -512,10 +521,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func (s *Server) enterFlight() {
+	s.inFlightN.Add(1)
+	s.inFlight.Add(1)
+}
+
+func (s *Server) leaveFlight() {
+	s.inFlight.Done()
+	s.inFlightN.Add(-1)
+}
+
 // handleQuery is the miekg/dns handler for every incoming DNS query.
 func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
-	s.inFlight.Add(1)
-	defer s.inFlight.Done()
+	s.enterFlight()
+	defer s.leaveFlight()
 
 	// Invariant #7: catch-all panic recovery. The empty-Question guard below
 	// handles the most predictable case; this defer handles anything else.
@@ -591,7 +610,7 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 			client := clientHost(w.RemoteAddr())
 			select {
 			case s.classifySlots <- struct{}{}:
-				s.inFlight.Add(1)
+				s.enterFlight()
 				go s.classifyAsync(qname, client)
 			default:
 				s.noteClassifyDropped(qname, "slow path at capacity")
@@ -832,7 +851,7 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 // builtin detector), Assess is called instead of Classify and a non-benign
 // result is recorded via Config.Flags. Flags are never enforced.
 func (s *Server) classifyAsync(qname, client string) {
-	defer s.inFlight.Done()
+	defer s.leaveFlight()
 	defer func() { <-s.classifySlots }()
 	// DD6: an in-process classifier (model.builtin) has no process boundary,
 	// so contain its panics here. Registered after inFlight.Done so it runs
