@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"protocolward.ai/ward/internal/web"
@@ -467,4 +468,45 @@ func TestHandler_Flags_EscapesHostileHostname(t *testing.T) {
 	if !strings.Contains(flagsPanel(t, body), "&lt;script&gt;alert(1)&lt;/script&gt;.evil.test") {
 		t.Errorf("escaped hostname not found in flags panel:\n%s", body)
 	}
+}
+
+func TestHandler_Healthz_ClassifyDropped_DefaultsToZero(t *testing.T) {
+	srv := httptest.NewServer(web.Handler(web.NewStore()))
+	defer srv.Close()
+	body := getHealthz(t, srv.URL)
+	if v, ok := body["classify_dropped"]; !ok || v != float64(0) {
+		t.Errorf("classify_dropped = %v (present %v); want 0, always present", v, ok)
+	}
+}
+
+// The count is a counter, not a health signal: status stays "ok".
+func TestHandler_Healthz_ClassifyDropped_ReportsSourceStatusStaysOK(t *testing.T) {
+	var n atomic.Uint64
+	srv := httptest.NewServer(web.HandlerWithOptions(web.NewStore(), web.Options{ClassifyDropped: n.Load}))
+	defer srv.Close()
+
+	for _, want := range []uint64{0, 7} {
+		n.Store(want)
+		body := getHealthz(t, srv.URL)
+		if body["classify_dropped"] != float64(want) {
+			t.Errorf("classify_dropped = %v; want %d", body["classify_dropped"], want)
+		}
+		if body["status"] != "ok" {
+			t.Errorf("status = %v with classify_dropped=%d; want ok", body["status"], want)
+		}
+	}
+}
+
+func getHealthz(t *testing.T, base string) map[string]any {
+	t.Helper()
+	resp, err := http.Get(base + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return body
 }

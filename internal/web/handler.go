@@ -112,6 +112,9 @@ type healthzResponse struct {
 	Status        string               `json:"status"`
 	UptimeSeconds int64                `json:"uptime_seconds"`
 	LastDecision  *healthzLastDecision `json:"last_decision"`
+	// ClassifyDropped is the running count of classifications that did not
+	// run. A counter, not a health signal: Status stays ok.
+	ClassifyDropped uint64 `json:"classify_dropped"`
 }
 
 type healthzLastDecision struct {
@@ -124,19 +127,37 @@ type healthzLastDecision struct {
 // Handler returns the dashboard handler without a flag source; the Flags
 // panel renders its empty state. Equivalent to HandlerWithFlags(store, nil).
 // It exists for flag-less callers and tests; production wiring
-// (cmd/ward serve) uses HandlerWithFlags.
+// (cmd/ward serve) uses HandlerWithOptions.
 func Handler(store *Store) http.Handler { return HandlerWithFlags(store, nil) }
 
-// HandlerWithFlags returns an http.Handler exposing the dashboard surface:
+// HandlerWithFlags returns the dashboard handler with a flag source and no
+// other options. Equivalent to HandlerWithOptions(store, Options{Flags: flags}).
+func HandlerWithFlags(store *Store, flags *FlagLog) http.Handler {
+	return HandlerWithOptions(store, Options{Flags: flags})
+}
+
+// Options are the optional sources HandlerWithOptions reads.
+type Options struct {
+	// Flags feeds the dashboard's Flags panel. nil renders the empty state.
+	Flags *FlagLog
+	// ClassifyDropped reports the running count of classifications that
+	// did not run, for /healthz classify_dropped. nil reports 0. A func,
+	// not an interface or a type from internal/dataplane, because
+	// internal/web must not import internal/dataplane.
+	ClassifyDropped func() uint64
+}
+
+// HandlerWithOptions returns an http.Handler exposing the dashboard surface:
 //   - GET /        — server-rendered HTML dashboard (flags panel, decisions table, uptime)
-//   - GET /healthz — JSON health probe (last decision summary + uptime)
+//   - GET /healthz — JSON health probe (last decision summary, uptime, classify_dropped)
 //
 // Both routes read from the supplied Store; the Flags panel reads from
-// flags (nil allowed). The server is expected to bind 127.0.0.1 only (see
-// the Store package comment for the invariant 4 reasoning); no
+// opts.Flags (nil allowed). The server is expected to bind 127.0.0.1 only
+// (see the Store package comment for the invariant 4 reasoning); no
 // authentication is performed. All values reach HTML via html/template
 // contextual escaping — qnames are attacker-influenced.
-func HandlerWithFlags(store *Store, flags *FlagLog) http.Handler {
+func HandlerWithOptions(store *Store, opts Options) http.Handler {
+	flags := opts.Flags
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -170,6 +191,9 @@ func HandlerWithFlags(store *Store, flags *FlagLog) http.Handler {
 		resp := healthzResponse{
 			Status:        "ok",
 			UptimeSeconds: int64(time.Since(store.StartedAt()).Seconds()),
+		}
+		if opts.ClassifyDropped != nil {
+			resp.ClassifyDropped = opts.ClassifyDropped()
 		}
 		if d, ok := store.Snapshot(); ok {
 			resp.LastDecision = &healthzLastDecision{
