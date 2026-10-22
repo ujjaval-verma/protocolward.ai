@@ -189,12 +189,16 @@ type Config struct {
 	// D7 and invariant 1).
 	Classifier SlowPathClassifier
 
-	// ClassifyTimeout bounds each Classify or Assess call, including time spent
-	// waiting for a busy sibling adapter (a call still waiting when it ends is
-	// dropped and counted, not a failure). Defaults to 4s — the Tier 2
-	// upper bound per architecture.md. The slow-path context is decoupled
-	// from the request context because the request has already been answered
-	// when the fork fires. For a Classify-only (external) classifier it
+	// ClassifyTimeout bounds each Assess call, and for a Classify-only
+	// (external) classifier the wait for the adapter's slot plus its check
+	// before the request is written (a call still waiting when it ends is
+	// dropped and counted, not a failure). An exchange already on the wire
+	// is bounded by the adapter's reply timeout
+	// (internal/model.DefaultReplyTimeout) instead, so one call can hold its
+	// slow-path slot for up to ClassifyTimeout plus that timeout. Defaults
+	// to 4s — the Tier 2 upper bound per architecture.md. The slow-path
+	// context is decoupled from the request context because the request has
+	// already been answered when the fork fires. For a Classify-only (external) classifier it
 	// derives from the server's stop context instead: Server.Shutdown
 	// cancels it, so a classification still waiting for the sibling adapter
 	// is skipped at once and the inFlight drain waits only for calls already
@@ -937,10 +941,14 @@ func (s *Server) classifyAsync(qname, client string) {
 		}
 		if errors.Is(err, adapter.ErrUnavailable) {
 			if s.classifierDead.CompareAndSwap(false, true) {
+				remediation := "restart ward to reload the adapter — SP10c does not auto-restart the sibling"
+				if errors.Is(err, adapter.ErrNoReply) {
+					remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang or overload, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
+				}
 				slog.Error("policy: model unavailable",
 					"qname", qname,
 					"error", err.Error(),
-					"remediation", "restart ward to reload the adapter — SP10c does not auto-restart the sibling",
+					"remediation", remediation,
 				)
 			}
 			return

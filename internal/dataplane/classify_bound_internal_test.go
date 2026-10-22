@@ -383,6 +383,46 @@ func TestShutdown_ClosedAdapterIsQuietSkip(t *testing.T) {
 	}
 }
 
+type unavailableClassifier struct{ err error }
+
+func (u unavailableClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return 0, u.err
+}
+
+// T-NOREPLY: a model that missed its reply timeout is reported once with a
+// remediation that says so; other unavailable causes keep the generic text.
+func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"no reply", fmt.Errorf("%w: %w", adapter.ErrUnavailable, adapter.ErrNoReply), "did not reply within"},
+		{"other", adapter.ErrUnavailable, "restart ward to reload the adapter"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := obs.Capture(t)
+			defer restore()
+			srv := newBoundTestServer(t, unavailableClassifier{tc.err})
+			forwardOnce(srv, 0)
+			srv.inFlight.Wait()
+
+			var lines []map[string]any
+			for _, r := range obs.Captured(t) {
+				if r["msg"] == "policy: model unavailable" {
+					lines = append(lines, r)
+				}
+			}
+			if len(lines) != 1 {
+				t.Fatalf("policy: model unavailable lines = %d; want 1", len(lines))
+			}
+			if rem, _ := lines[0]["remediation"].(string); !strings.Contains(rem, tc.want) {
+				t.Errorf("remediation = %q; want it to contain %q", rem, tc.want)
+			}
+		})
+	}
+}
+
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)
