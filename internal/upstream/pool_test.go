@@ -558,6 +558,52 @@ func TestQuery_ReleaseBeforeSlotFree(t *testing.T) {
 	}
 }
 
+// endsAfterPrecheckCtx is live for its first Err call and cancelled from
+// then on, with Done already closed: a ctx that ends between Query's
+// precheck and its slot wait.
+type endsAfterPrecheckCtx struct {
+	context.Context
+	calls *atomic.Int32
+	done  chan struct{}
+}
+
+func newEndsAfterPrecheckCtx() endsAfterPrecheckCtx {
+	done := make(chan struct{})
+	close(done)
+	return endsAfterPrecheckCtx{Context: context.Background(), calls: new(atomic.Int32), done: done}
+}
+
+func (c endsAfterPrecheckCtx) Done() <-chan struct{} { return c.done }
+
+func (c endsAfterPrecheckCtx) Err() error {
+	if c.calls.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+
+// A free slot is always taken, even when the ctx has also ended: the query
+// then gets the plain context error from the post-slot re-check, never the
+// wait error that claims every connection is in use.
+func TestQuery_FreeSlot_CtxEnded_NoWaitError(t *testing.T) {
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	defer client.Close()
+
+	for i := 0; i < 64; i++ {
+		_, err := client.Query(newEndsAfterPrecheckCtx(), newMsg())
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("try %d: err = %v, want context.Canceled", i, err)
+		}
+		if strings.Contains(err.Error(), "no free connection") {
+			t.Fatalf("try %d: err = %v, want the plain context error (the slot was free)", i, err)
+		}
+	}
+	if got := srv.Conns(); got != 0 {
+		t.Errorf("server accepted %d connections, want 0 (nothing dialled after the ctx ended)", got)
+	}
+}
+
 // pastDeadlineCtx has a deadline that has passed while its Err is still nil,
 // as when the context's own timer has not fired yet.
 type pastDeadlineCtx struct{ context.Context }

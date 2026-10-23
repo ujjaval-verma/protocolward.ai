@@ -41,8 +41,15 @@ func closeAll(pcs []*pconn) {
 
 // acquireSlot waits for the right to run one exchange. It honours ctx: a
 // query whose ctx ends while every connection is busy returns at once,
-// without having been sent.
+// without having been sent. A free slot is taken first, before the blocking
+// select, so it never loses the select's random pick to an ended ctx and the
+// wait error never claims every connection is in use when one was free.
 func (c *Client) acquireSlot(ctx context.Context) error {
+	select {
+	case c.slots <- struct{}{}:
+		return nil
+	default:
+	}
 	select {
 	case c.slots <- struct{}{}:
 		return nil
