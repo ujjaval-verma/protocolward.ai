@@ -965,20 +965,29 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 // A NOERROR responder holds the port ward is told to bind. ward must exit with
 // its own bind diagnosis, and the test must never mistake the squatter for
 // ward: startup sends the squatter no query at all.
-func TestStartWard_SquattedListenPort_FailsFast(t *testing.T) {
+func TestLaunchWard_SquattedListenPort_ExitsBeforeReady(t *testing.T) {
 	held, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var queries atomic.Int32
-	sq := &dns.Server{PacketConn: held, Handler: dns.HandlerFunc(func(rw dns.ResponseWriter, r *dns.Msg) {
+	started := make(chan struct{})
+	sq := &dns.Server{PacketConn: held, NotifyStartedFunc: func() { close(started) }, Handler: dns.HandlerFunc(func(rw dns.ResponseWriter, r *dns.Msg) {
 		queries.Add(1)
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = rw.WriteMsg(m)
 	})}
 	go func() { _ = sq.ActivateAndServe() }()
-	t.Cleanup(func() { _ = sq.Shutdown() })
+	t.Cleanup(func() {
+		_ = sq.Shutdown()
+		_ = held.Close()
+	})
+	select {
+	case <-started:
+	case <-time.After(wardWaitBound):
+		t.Fatal("squatter did not start serving")
+	}
 	heldAddr := held.LocalAddr().String()
 
 	w := launchWard(t, deadUpstreamCfg, heldAddr)
@@ -988,6 +997,9 @@ func TestStartWard_SquattedListenPort_FailsFast(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "port already in use at "+heldAddr) {
 		t.Errorf("log missing %q:\n%v", "port already in use at "+heldAddr, err)
+	}
+	if w.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1 (startup error)", w.exitCode)
 	}
 	se, serr := w.waitFor("startup error")
 	if serr != nil {
