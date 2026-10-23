@@ -151,7 +151,7 @@ Protocol Ward is open source under the **Apache License 2.0, everywhere**: the d
 - **Enterprise (commercial add-ons, support and managed services):** SSO/SAML, RBAC, audit log retention, FIPS-validated crypto builds, air-gapped update tooling, SLA support. These are commercial add-ons, support and managed services, not a relicensing of the core; any add-on that cannot be Apache-2.0 ships as a separate module outside this repository, and the core stays Apache-2.0.
 - **Governance:** BDFL; an RFC process will be published, and trusted-committer status after sustained contribution. Foundation formation deferred until commercial viability is proven.
 - **Contribution:** DCO (`git commit -s`), inbound = outbound: contributions are Apache-2.0, like the project, so no CLA is needed. Public credit for responsible disclosures (a Hall of Fame page is planned). Intent to apply for MITRE CNA status once a coordinated-disclosure track record is established across multiple published CVEs.
-- **Security disclosure:** `SECURITY.md` (email `security@protocolward.ai`), 90-day coordinated disclosure, public credit for reporters.
+- **Security disclosure:** `SECURITY.md` (GitHub private vulnerability report, or email `security@protocolward.ai`), 90-day coordinated disclosure, public credit for reporters.
 
 Why Apache-2.0 everywhere: a DNS appliance wins by being embedded by router OEMs, homelab distributions and integrators, and copyleft review blocks exactly those adopters. What earns money here (managed feeds, the relay, support and enterprise operations) is a service that no code licence protects either way. The trade-off is accepted: the permissive release is irreversible, and there is no dual-licensing revenue.
 
