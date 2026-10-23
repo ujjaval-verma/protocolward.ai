@@ -172,4 +172,13 @@ expect_good "      - uses: 'actions/checkout@$sha' # c" 'single quote then comme
 expect_good "      - uses: 'actions/checkout@$sha'  " 'single quote then trailing spaces'
 expect_good $'      - uses: actions/checkout@'"$sha"$'\n        # more indented comment\n        with:\n          x: y' 'sibling key and comment after uses'
 
+# N3: byte semantics. An invalid UTF-8 byte on a uses: line must not hide it, even in a UTF-8 locale.
+newrepo
+printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4 # \377\n' > "$repo/.github/workflows/a.yml"
+git -C "$repo" add -A
+for loc in en_US.UTF-8 C.UTF-8 UTF-8; do
+  out="$(LC_ALL=$loc scan "$repo" 2>&1)" && fail "invalid UTF-8 byte hid a bad uses: (LC_ALL=$loc): $out"
+  grep -qF "check-actions-pinned: .github/workflows/a.yml:4:" <<<"$out" || fail "invalid UTF-8 line not reported (LC_ALL=$loc): $out"
+done
+
 echo "check-actions-pinned selftest: OK (bash $ver)"

@@ -5,6 +5,7 @@
 # Usage: scripts/check-actions-pinned.sh [repo-dir]   (default: this repo)
 # Plain bash 3.2-compatible: regexes live in variables, no mapfile, no associative arrays.
 set -euo pipefail
+export LC_ALL=C   # byte semantics: an invalid UTF-8 byte must not make a regex skip a uses: line
 dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 if [[ "${CHECK_ACTIONS_PINNED_DEBUG:-}" == 1 ]]; then
   echo "check-actions-pinned: debug: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" >&2
