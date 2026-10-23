@@ -1068,3 +1068,19 @@ func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestServe_DashboardReady_LogsBoundAddr(t *testing.T) {
+	w := startWard(t, deadUpstreamCfg)
+	_, port, err := net.SplitHostPort(w.dashAddr)
+	if err != nil || port == "0" || port == "" {
+		t.Fatalf("dashboard: ready listen %q must be the bound address with a non-zero port (err=%v)", w.dashAddr, err)
+	}
+	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz on %s: %v\nlog:\n%s", w.dashAddr, err, w.out.String())
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200", resp.StatusCode)
+	}
+}

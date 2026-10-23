@@ -373,7 +373,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			)
 		}
 	}()
-	slog.Info("dashboard: ready", "listen", dashAddr)
+	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
