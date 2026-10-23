@@ -4,7 +4,9 @@
 
 **Do not file public GitHub issues for security vulnerabilities.**
 
-Email **security@protocolward.ai**. Contact details are also published at https://protocolward.ai/.well-known/security.txt.
+Preferred: open **Report a vulnerability** on the repository's Security tab (https://github.com/ujjaval-verma/protocolward.ai/security/advisories/new). The report stays private between you and the maintainers.
+
+Alternatively, email **security@protocolward.ai**. Contact details are also published at https://protocolward.ai/.well-known/security.txt.
 
 Protocol Ward is in public beta. We still treat every report seriously and credit reporters.
 
