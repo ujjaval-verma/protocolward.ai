@@ -529,6 +529,40 @@ func TestQuery_ReusedConnDeadline_NoRetry(t *testing.T) {
 	}
 }
 
+// pastDeadlineCtx has a deadline that has passed while its Err is still nil,
+// as when the context's own timer has not fired yet.
+type pastDeadlineCtx struct{ context.Context }
+
+func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
+
+// A connection deadline that fires before the ctx timer is a deadline outcome
+// in Query too: the query returns the write's deadline error and is not
+// retried on a fresh dial.
+func TestQuery_PastDeadline_LiveErr_NoRetry(t *testing.T) {
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	defer client.Close()
+
+	if _, err := client.Query(context.Background(), newMsg()); err != nil {
+		t.Fatalf("warm query: %v", err)
+	}
+
+	_, err := client.Query(pastDeadlineCtx{context.Background()}, newMsg())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	var dialErr *upstream.DialError
+	if errors.As(err, &dialErr) {
+		t.Errorf("err = %v, want the write's deadline error, not a *DialError from a retry", err)
+	}
+	if !strings.Contains(err.Error(), "write:") {
+		t.Errorf("err = %v, want the write's deadline error", err)
+	}
+	if got := srv.Conns(); got != 1 {
+		t.Errorf("server accepted %d connections, want 1 (no retry dial)", got)
+	}
+}
+
 // main's retry rule is kept: a failure on a freshly dialled connection is
 // retried once, on another fresh dial, never more.
 func TestQuery_FreshConnFailure_RetriedOnce(t *testing.T) {
