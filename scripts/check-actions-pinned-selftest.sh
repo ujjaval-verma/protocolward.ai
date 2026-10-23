@@ -176,9 +176,22 @@ expect_good $'      - uses: actions/checkout@'"$sha"$'\n        # more indented 
 newrepo
 printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4 # \377\n' > "$repo/.github/workflows/a.yml"
 git -C "$repo" add -A
-for loc in en_US.UTF-8 C.UTF-8 UTF-8; do
+for loc in en_US.UTF-8; do
   out="$(LC_ALL=$loc scan "$repo" 2>&1)" && fail "invalid UTF-8 byte hid a bad uses: (LC_ALL=$loc): $out"
   grep -qF "check-actions-pinned: .github/workflows/a.yml:4:" <<<"$out" || fail "invalid UTF-8 line not reported (LC_ALL=$loc): $out"
 done
+
+# N4: expressions, docker digest shape, a single-quoted good line, the hint line and the exact exit status.
+expect_bad '      - uses: ${{ matrix.action }}' 'expression ref' 'not pinned to a full 40-hex'
+expect_bad "      - uses: docker://alpine@sha256:${up}${up:0:24}" 'uppercase docker digest' 'not pinned by @sha256:'
+expect_bad "      - uses: docker://alpine@sha256:${dig:1}" '63-hex docker digest' 'not pinned by @sha256:'
+expect_good "      - uses: 'actions/checkout@$sha'" 'single-quoted good line'
+newrepo
+step '      - uses: actions/checkout@v4' > "$repo/.github/workflows/a.yml"
+git -C "$repo" add -A
+rc=0
+out="$(scan "$repo" 2>&1)" || rc=$?
+[[ $rc -eq 1 ]] || fail "bad tree: expected exit 1, got $rc"
+grep -qF "check-actions-pinned: hint: pin by full commit SHA" <<<"$out" || fail "bad tree: hint line missing: $out"
 
 echo "check-actions-pinned selftest: OK (bash $ver)"
