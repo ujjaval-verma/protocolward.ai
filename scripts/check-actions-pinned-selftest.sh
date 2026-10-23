@@ -9,7 +9,8 @@ unset $(git rev-parse --local-env-vars)
 here="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"
 N="$(mktemp -d)"
-trap 'rm -rf "$T" "${N:-}"' EXIT
+R="$(mktemp -d)"   # parent of the per-case throwaway repos
+trap 'rm -rf "$T" "${N:-}" "${R:-}"' EXIT
 git -C "$T" init -q
 ver="${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"
 scan() { "$BASH" "$here/check-actions-pinned.sh" "$@"; }
@@ -104,4 +105,17 @@ done
 sed 's|actions/checkout@v4|actions/checkout@'"$sha"'  # v1|' "$wf" > "$wf.tmp" && mv "$wf.tmp" "$wf"
 out="$(scan "$T" 2>&1)" || fail "fixed tree should pass: $out"
 grep -qF "check-actions-pinned: OK (6 uses: in 5 files)" <<<"$out" || fail "unexpected OK line (d.yml must not count): $out"
+
+# --- Per-case throwaway repos. ---
+rn=0
+newrepo() { rn=$((rn + 1)); repo="$R/r$rn"; mkdir -p "$repo/.github/workflows"; git -C "$repo" init -q; }
+step() { printf 'jobs:\n  j:\n    steps:\n%s\n' "$1"; }   # a workflow whose only content is line 4
+
+# F1: a non-ASCII file name must be scanned (git quotes it as "d\303\251ploy.yml" without -z).
+newrepo
+step '      - uses: actions/checkout@v4' > "$repo/.github/workflows/déploy.yml"
+git -C "$repo" add -A
+out="$(scan "$repo" 2>&1)" && fail "non-ASCII file name was skipped"
+grep -qF "check-actions-pinned: .github/workflows/déploy.yml:4:" <<<"$out" || fail "déploy.yml:4 not reported: $out"
+
 echo "check-actions-pinned selftest: OK (bash $ver)"

@@ -23,7 +23,7 @@ re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
 bad=0
 uses=0
 files=0
-while IFS= read -r f; do
+while IFS= read -r -d '' f; do
   if [[ ! -f $f ]]; then
     # --cached lists a tracked file deleted from the work tree but not staged; the deletion is what gets committed.
     echo "check-actions-pinned: note: $f: tracked but missing from the work tree; skipped (the deletion is what will be committed)" >&2
@@ -65,7 +65,7 @@ while IFS= read -r f; do
       bad=1
     fi
   done < "$f"
-done < <(git ls-files --cached --others --exclude-standard -- '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+done < <(git ls-files -z --cached --others --exclude-standard -- '.github/workflows/*.yml' '.github/workflows/*.yaml' \
   '.github/actions/action.yml' '.github/actions/action.yaml' \
   '.github/actions/**/action.yml' '.github/actions/**/action.yaml')
 if (( bad )); then
