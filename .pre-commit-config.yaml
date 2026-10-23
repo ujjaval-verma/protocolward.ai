@@ -108,3 +108,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+      # Issue #42: refuse a workflow uses: not pinned to a full commit SHA before the
+      # push (GitHub only rejects it at job setup). Same Make target as `make check`.
+      - id: check-actions-pinned
+        name: check-actions-pinned (Actions SHA-pin gate)
+        entry: make check-actions-pinned
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

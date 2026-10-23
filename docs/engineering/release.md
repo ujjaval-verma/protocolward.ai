@@ -15,7 +15,7 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 
 ## Gate 1 — `make ci && make dod && make audit` (automated; every tag)
 
-- `make ci`: lint, vet, race tests, testing-doc, SPDX, public-content and third-party-licence gates, workflow lint (actionlint), build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
+- `make ci`: lint, vet, race tests, testing-doc, SPDX, public-content, third-party-licence and Actions SHA-pin (`check-actions-pinned`) gates, workflow lint (actionlint), build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
 - `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
 - `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
 - Nightly workflow: `gh api repos/{owner}/{repo}/actions/workflows/nightly.yml --jq .state` prints `active`, and `gh run list --workflow nightly.yml --branch main --limit 1` shows `completed success` (GitHub disables schedules after 60 quiet days; re-enable with `gh workflow enable nightly.yml`).
@@ -48,7 +48,7 @@ Sign-off: date + operator name on each checked item.
 
 This repository is the development repository; there is no separate publish step. The public repository was created on 2026-10-06 from one squashed commit of the earlier private tree (ADR-0007); that was a one-time launch.
 
-1. `make ci` passes before you push. The pre-push hook runs the full race suite plus the SPDX, public-content, testing-doc, third-party-licence and wasm size gates; `make ci` runs `make check` (which includes the workflow lint, actionlint) and adds the build and the wasm gate.
+1. `make ci` passes before you push. The pre-push hook runs the full race suite plus the SPDX, public-content, testing-doc, third-party-licence, Actions SHA-pin (`check-actions-pinned`) and wasm size gates; `make ci` runs `make check` (which includes the workflow lint, actionlint) and adds the build and the wasm gate.
 2. Every commit carries a DCO sign-off (`git commit -s`; `CONTRIBUTING.md`).
 
 ## Tagged release build

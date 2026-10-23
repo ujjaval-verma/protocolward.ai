@@ -158,7 +158,7 @@ Full design: [`docs/engineering/architecture.md`](docs/engineering/architecture.
 
 ## Security
 
-There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). A nightly workflow re-verifies `main` after merge. Pre-push runs `go mod tidy -diff`, lint, vet, race tests, `go mod verify`, `govulncheck` and the public-content, SPDX, testing-doc, third-party licence and wasm size gates. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
+There is no PR CI during the beta; local hooks are the gate ([ADR-0002](docs/engineering/decisions/ADR-0002-security-posture.md)). A nightly workflow re-verifies `main` after merge. Pre-push runs `go mod tidy -diff`, lint, vet, race tests, `go mod verify`, `govulncheck` and the public-content, SPDX, testing-doc, third-party licence, Actions SHA-pin (`check-actions-pinned`) and wasm size gates. Report vulnerabilities privately: [`SECURITY.md`](SECURITY.md).
 
 ## The kestrel
 
