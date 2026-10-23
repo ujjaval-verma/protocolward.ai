@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -85,6 +86,10 @@ type serveOpts struct {
 	// free ephemeral address ("127.0.0.1:0") so parallel test runs don't
 	// collide on the hardcoded production port (Ralph B1).
 	dashListenAddr string
+	// listenAddr overrides listen: from ward.yaml for this run. Empty means
+	// use ward.yaml. Unlike ward.yaml's listen:, port 0 is allowed: the
+	// kernel picks the port and ward holds it (tests rely on this).
+	listenAddr string
 }
 
 // lipgloss styles for startup-error stderr output.
@@ -181,6 +186,18 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return mapConfigLoadError(cfgPath, err)
+	}
+	// The flag is validated here, not in internal/config, because it allows
+	// port 0 while ward.yaml's listen: must keep rejecting it. It runs before
+	// anything binds.
+	if opts.listenAddr != "" {
+		if err := validateListenFlag(opts.listenAddr); err != nil {
+			msg := fmt.Sprintf("invalid --listen-addr %q: %v", opts.listenAddr, err)
+			rem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
+			printStartupError("config error", msg, rem)
+			return &serveError{Code: 2, Message: msg, Remediation: rem}
+		}
+		cfg.Listen = opts.listenAddr
 	}
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
@@ -356,7 +373,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			)
 		}
 	}()
-	slog.Info("dashboard: ready", "listen", dashAddr)
+	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
@@ -441,7 +458,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	if err != nil {
 		// Adapter cleanup runs via the deferred close above.
 		msg := fmt.Sprintf("dataplane init failed: %v", err)
-		rem := bindErrRemediation(err, cfg.Listen)
+		rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
@@ -483,7 +500,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		_ = dashSrv.Close()
 		if err != nil {
 			msg := fmt.Sprintf("listener error: %v", err)
-			rem := bindErrRemediation(err, cfg.Listen)
+			rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
 			printStartupError("startup error", msg, rem)
 			return &serveError{Code: 1, Message: msg, Remediation: rem}
 		}
@@ -551,10 +568,30 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 	}
 }
 
+// validateListenFlag checks a --listen-addr value: host:port with a decimal
+// port in 0-65535 (ParseUint rejects signs and service names).
+func validateListenFlag(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("port %q is not a number from 0 to 65535", port)
+	}
+	return nil
+}
+
 // bindErrRemediation returns a remediation hint appropriate for the given
-// error and listen address. Specialises on ":53" permission-denied to name
-// the setcap recipe.
+// error and listen address (as set in ward.yaml). Specialises on ":53"
+// permission-denied to name the setcap recipe.
 func bindErrRemediation(err error, listenAddr string) string {
+	return bindErrRemediationFor(err, listenAddr, false)
+}
+
+// bindErrRemediationFor is bindErrRemediation with the source of the address
+// made explicit: when fromFlag is true the address came from --listen-addr, so
+// the hint names that flag instead of ward.yaml.
+func bindErrRemediationFor(err error, listenAddr string, fromFlag bool) string {
 	if errors.Is(err, dataplane.ErrListenerStopped) {
 		return "the DNS listener stopped unexpectedly; check the log above and restart ward"
 	}
@@ -562,12 +599,32 @@ func bindErrRemediation(err error, listenAddr string) string {
 	if containsAny(errStr, "permission denied", "operation not permitted") {
 		_, port, _ := splitHostPort(listenAddr)
 		if port == "53" || port == "853" {
+			if fromFlag {
+				return fmt.Sprintf("bind to %s requires CAP_NET_BIND_SERVICE; run `sudo setcap cap_net_bind_service=+ep ./bin/ward` or pass --listen-addr with a port >= 1024", listenAddr)
+			}
 			return fmt.Sprintf("bind to %s requires CAP_NET_BIND_SERVICE; run `sudo setcap cap_net_bind_service=+ep ./bin/ward` or set listen to a port >= 1024 in ward.yaml", listenAddr)
+		}
+		if n, perr := strconv.Atoi(port); perr == nil && n >= 1024 {
+			// The port is already unprivileged, so "use a port >= 1024" is
+			// advice the operator has followed; name what else can block it.
+			if fromFlag {
+				return fmt.Sprintf("bind to %s was refused; check sandbox or firewall rules, or pass --listen-addr with a different address", listenAddr)
+			}
+			return fmt.Sprintf("bind to %s was refused; check sandbox or firewall rules, or change listen in ward.yaml", listenAddr)
+		}
+		if fromFlag {
+			return fmt.Sprintf("bind to %s was refused; ensure ward has permission or pass --listen-addr with a port >= 1024", listenAddr)
 		}
 		return fmt.Sprintf("bind to %s was refused; ensure ward has permission or use a port >= 1024", listenAddr)
 	}
 	if containsAny(errStr, "address already in use", "bind: address already in use") {
+		if fromFlag {
+			return fmt.Sprintf("port already in use at %s; stop the process using that port or change --listen-addr", listenAddr)
+		}
 		return fmt.Sprintf("port already in use at %s; stop the process using that port or change listen in ward.yaml", listenAddr)
+	}
+	if fromFlag {
+		return "check the --listen-addr address and port availability"
 	}
 	return "check listen address and port availability in ward.yaml"
 }
@@ -683,5 +740,6 @@ Config file is located per the following search order:
 
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "path to ward.yaml config file")
 	cmd.Flags().StringVar(&opts.dashListenAddr, "dash-listen-addr", "", "override the dashboard bind (default 127.0.0.1:18987; a dashboard config option is planned). Must bind loopback (127.0.0.1, ::1, or localhost); non-loopback requires invariant 4 re-review (see internal/web package doc)")
+	cmd.Flags().StringVar(&opts.listenAddr, "listen-addr", "", "override listen: from ward.yaml for ward serve only (ward.yaml must still contain a valid listen:; ward doctor still probes listen:). Port 0 lets the kernel pick; the bound address is logged in dns: listening")
 	return cmd
 }
