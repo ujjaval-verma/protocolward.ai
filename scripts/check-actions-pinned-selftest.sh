@@ -44,6 +44,7 @@ bad()  { put "$1"; badl="$badl$fl|$2"$'\n'; }
 good() { put "$1"; goodl="$goodl$fl "; }
 up=0123456789ABCDEF0123456789ABCDEF01234567
 long=0123456789abcdef0123456789abcdef012345678
+dig=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 put 'jobs:'
 bad  '      - uses: "actions/checkout@v4"  # q'                       'not pinned to a full 40-hex'
 bad  "      - uses: 'actions/checkout@$up'"                           'not pinned to a full 40-hex'
@@ -58,6 +59,10 @@ good "      - uses: \"owner/repo@$sha\""
 good "      -   uses: owner/repo@$sha"
 good "    uses: org/repo/.github/workflows/f.yml@$sha"
 good '      # - uses: actions/checkout@v4'
+good '      - uses: ./local-action'
+good '    uses: ./.github/workflows/reuse.yml'
+good "      - uses: docker://alpine@sha256:$dig"
+bad  '      - uses: docker://alpine:3.20'                              'not pinned by @sha256:'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
 git -C "$T" add -A
 out="$(scan "$T" 2>&1)" && fail "expected failure on forms tree"

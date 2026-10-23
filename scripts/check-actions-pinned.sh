@@ -18,6 +18,7 @@ cd "$root"
 re_key='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(.*)$'
 re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
+re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
 re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
 bad=0
 uses=0
@@ -46,6 +47,11 @@ while IFS= read -r f; do
     fi
     if [[ -z $v ]]; then
       reason="(empty)"
+    elif [[ $v == ./* ]]; then
+      ok=1   # local action or reusable workflow: in this repo at the checked-out commit
+    elif [[ $v == docker://* ]]; then
+      reason="not pinned by @sha256:<64 hex> digest"
+      [[ $v =~ $re_docker ]] && ok=1
     elif [[ $v =~ $re_sha ]]; then
       ok=1
     fi
