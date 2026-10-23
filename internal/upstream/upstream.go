@@ -2,14 +2,30 @@
 
 // Package upstream manages DNS-over-TLS (DoT) connections to upstream resolvers.
 //
-// Each Client holds a single persistent TCP/TLS connection to one upstream
-// resolver. Concurrent calls to Query are serialised through the cached
-// *dns.Conn (miekg/dns handles DNS message-ID framing on the wire; however,
-// because a single tls.Conn is not safe for concurrent writes from multiple
-// goroutines without external synchronisation, mu is held across the
-// Write+Read pair so that only one in-flight query exists at a time per
-// connection. This keeps the implementation correct without depending on
-// miekg's internal multiplexer behaviour.)
+// Each Client keeps a small pool of TCP/TLS connections to one upstream
+// resolver, up to 16. Each connection carries one exchange at a time, so the
+// pool is what lets queries run in parallel: throughput is up to 16 per round
+// trip. Connections are dialled lazily, only when a query finds none idle, so
+// a quiet network keeps one.
+//
+//   - A query first takes one of the 16 slots. The wait for a slot honours the
+//     query's context: a query whose context ends while every connection is
+//     busy returns at once, unsent, so a fallback resolver keeps the rest of
+//     the budget. After taking a slot it re-checks, under the pool mutex, that
+//     the client is not closed and its context has not ended.
+//   - Idle connections form a last-in-first-out stack: a query reuses the most
+//     recently used one. Connections other than the most recent one are closed
+//     once they have been idle for 10 s; the most recent idle connection never
+//     expires.
+//   - A connection goes back on the stack only after a clean write and read; on
+//     any error only that connection is closed.
+//   - A failed attempt gets one retry, on a freshly dialled connection, unless
+//     it is a deadline outcome: the context ended or its deadline passed, or a
+//     write or read hit that deadline. A deadline outcome is never retried and
+//     wraps the context error.
+//   - Close closes every connection and makes waiting and later queries
+//     return ErrClosed, as well as an in-flight query that has not yet got
+//     its reply.
 //
 // # TLS roots
 //
@@ -22,10 +38,10 @@
 //
 // # Invariants
 //
-//   - No silent drops: every error path returns a typed error with a remediation
-//     hint (invariant #8).
-//   - Connection eviction on error: any TLS read/write error nils the cached
-//     connection so the next Query call dials fresh.
+//   - No silent drops: every error names the upstream, and every error other
+//     than a context error carries a remediation hint (invariant #8).
+//   - Connection eviction on error: any TLS read/write error closes the
+//     connection it happened on, and no other.
 package upstream
 
 import (
@@ -79,6 +95,11 @@ func (e *TLSError) timedOut() bool {
 // Unwrap implements the errors.Unwrap interface.
 func (e *TLSError) Unwrap() error { return e.Err }
 
+// ErrClosed is returned, wrapped with the upstream address, by a Query that
+// runs into Close: one in flight, one waiting for a connection, or one made
+// after Close.
+var ErrClosed = errors.New("client closed — remediation: expected while ward is shutting down; if it appears while serving, report a bug")
+
 // DialError wraps a TCP dial failure with a remediation hint.
 type DialError struct {
 	// Upstream is the address of the upstream resolver (host:port).
@@ -111,17 +132,29 @@ type Config struct {
 	DialTimeout time.Duration
 }
 
-// Client holds a single persistent DoT connection to one upstream resolver.
-// It is safe for concurrent use; however, only one query can be in-flight at
-// a time on the shared connection (mu is held across write+read).
+// Client holds a pool of up to 16 DoT connections to one upstream resolver,
+// one exchange in flight on each. It is safe for concurrent use. mu guards the
+// idle stack, the busy set and closed; it is never held across a dial or
+// network I/O, and connections are closed only after it is released.
 type Client struct {
-	cfg  Config
-	mu   sync.Mutex
-	conn *dns.Conn // guarded by mu; nil = not yet connected or was evicted
+	cfg         Config
+	maxConns    int           // defaultMaxConns unless a test hook sets it
+	idleTimeout time.Duration // defaultIdleTimeout unless a test hook sets it
+	slots       chan struct{} // cap maxConns; send = acquire, receive = release
+	done        chan struct{} // closed once by Close
+	afterSlot   func()        // test hook; nil in production
+	afterRead   func()        // test hook between ReadMsg and stop; nil in production
+	afterFree   func()        // test hook right after the slot is released; nil in production
+	closeOnce   sync.Once
+
+	mu     sync.Mutex
+	idle   []*pconn            // LIFO; ascending lastUsed (bottom = oldest)
+	busy   map[*pconn]struct{} // checked-out conns, so Close can reach them
+	closed bool
 }
 
-// New creates a Client. The TLS connection is established lazily on the first
-// Query call.
+// New creates a Client. Connections are established lazily, when a Query finds
+// none idle.
 func New(cfg Config) (*Client, error) {
 	if cfg.Address == "" {
 		return nil, fmt.Errorf("upstream.New: Address must not be empty — remediation: set address in ward.yaml upstreams entry")
@@ -132,129 +165,100 @@ func New(cfg Config) (*Client, error) {
 	if cfg.DialTimeout == 0 {
 		cfg.DialTimeout = 3 * time.Second
 	}
-	return &Client{cfg: cfg}, nil
+	return newClient(cfg, defaultMaxConns, defaultIdleTimeout), nil
+}
+
+// newClient builds a Client for a validated cfg.
+func newClient(cfg Config, maxConns int, idleTimeout time.Duration) *Client {
+	return &Client{
+		cfg:         cfg,
+		maxConns:    maxConns,
+		idleTimeout: idleTimeout,
+		slots:       make(chan struct{}, maxConns),
+		done:        make(chan struct{}),
+		busy:        make(map[*pconn]struct{}),
+	}
 }
 
 // Address returns the configured upstream address (host:port).
 func (c *Client) Address() string { return c.cfg.Address }
 
-// Close tears down the cached connection. Safe to call multiple times.
+// Close closes every connection, idle or in use, and makes every later or
+// waiting Query return ErrClosed. It does not wait for in-flight queries: an
+// in-flight query that has not yet got its reply sees its connection fail and
+// returns ErrClosed. Safe to call more than once.
 func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		close(c.done)
+		all := c.idle
+		c.idle = nil
+		for pc := range c.busy {
+			all = append(all, pc)
+		}
+		clear(c.busy)
+		c.mu.Unlock()
+		// The raw TCP connections are closed, not the TLS ones, so Close
+		// never blocks on a close_notify write to an unresponsive peer.
+		closeAll(all)
+	})
+}
+
+// isClosed reports whether Close has run.
+func (c *Client) isClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.closeConnLocked()
+	return c.closed
+}
+
+// closedErr is ErrClosed wrapped with the upstream address.
+func (c *Client) closedErr() error {
+	return fmt.Errorf("upstream %s: %w", c.cfg.Address, ErrClosed)
 }
 
 // Query sends msg to the upstream and returns the response.
 //
-// The context deadline and cancellation are both applied to the query
-// (write + read). On any transport error the cached connection is evicted.
-// A single transparent retry is attempted on write/read failure when the
-// context is still live — this recovers from server-side connection closes
+// The context bounds the wait for a connection as well as the write and read.
+// On any transport error the connection is closed. A failure that is not a
+// deadline outcome is retried once on a freshly dialled connection, on the
+// same slot: this recovers from a server-side close of an idle connection
 // without requiring the caller to re-issue the query.
 func (c *Client) Query(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	resp, err := c.queryOnce(ctx, msg)
-	if err == nil {
-		return resp, nil
-	}
-	// If the context is already done, don't retry — the caller cancelled.
-	if ctx.Err() != nil {
+	if err := c.precheck(ctx); err != nil {
 		return nil, err
 	}
-	// Transparent single retry: the cached conn may have been evicted above;
-	// ensureConnLocked will re-dial.
-	return c.queryOnce(ctx, msg)
-}
-
-// queryOnce performs one attempt at sending msg and reading the response.
-// Must be called with mu held.
-func (c *Client) queryOnce(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
-	conn, err := c.ensureConnLocked(ctx)
-	if err != nil {
+	if err := c.acquireSlot(ctx); err != nil {
 		return nil, err
 	}
+	// The slot is held in this frame for the whole query, retry included.
+	// exchange releases or discards its connection before returning, so a
+	// healthy connection is back on idle before the slot frees.
+	defer c.releaseSlot()
+	if c.afterSlot != nil {
+		c.afterSlot()
+	}
 
-	// Apply context deadline via SetDeadline for the deadline case.
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(deadline); err != nil {
-			c.closeConnLocked()
-			return nil, fmt.Errorf("upstream %s: set deadline: %w — remediation: check system clock; this is unexpected", c.cfg.Address, err)
+	for attempt := 0; ; attempt++ {
+		var timedOut bool
+		pc, err := c.checkout(ctx, attempt > 0)
+		if err == nil {
+			var resp *dns.Msg
+			resp, timedOut, err = c.exchange(ctx, pc, msg)
+			if err == nil {
+				return resp, nil
+			}
+		} else {
+			timedOut = isDeadlineOutcome(ctx, err)
 		}
-	}
-
-	// Register an AfterFunc that fires on context cancellation (cancel() or
-	// deadline expiry) and unblocks any in-progress ReadMsg/WriteMsg by setting
-	// an immediate read deadline. context.AfterFunc spawns a goroutine on
-	// cancellation — this is intentional and expected; the goroutine is
-	// short-lived (sets a deadline and exits) and promptly unblocks the
-	// in-flight ReadMsg without requiring a select loop in the hot path.
-	stopCancel := context.AfterFunc(ctx, func() {
-		conn.SetReadDeadline(time.Now()) //nolint:errcheck // best-effort unblock
-	})
-	defer stopCancel()
-
-	if err := conn.WriteMsg(msg); err != nil {
-		c.closeConnLocked()
-		return nil, fmt.Errorf("upstream %s: write: %w — remediation: upstream may have closed the connection; it will be re-dialed on next query", c.cfg.Address, err)
-	}
-
-	resp, err := conn.ReadMsg()
-	if err != nil {
-		c.closeConnLocked()
-		// Prefer ctx error so callers can errors.Is(err, context.Canceled).
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("upstream %s: read: %w", c.cfg.Address, ctxErr)
+		// A query that ran into Close reports that, and is never retried.
+		if c.isClosed() {
+			return nil, c.closedErr()
 		}
-		return nil, fmt.Errorf("upstream %s: read: %w — remediation: upstream may be unreachable or overloaded; check network egress on TCP/853", c.cfg.Address, err)
-	}
-
-	return resp, nil
-}
-
-// ensureConnLocked dials and performs a TLS handshake if no cached connection
-// exists. Must be called with mu held.
-func (c *Client) ensureConnLocked(ctx context.Context) (*dns.Conn, error) {
-	if c.conn != nil {
-		return c.conn, nil
-	}
-
-	// Build the TLS config. If the caller supplied one, use it as-is (useful
-	// for tests with self-signed certs). Otherwise, build from Config fields so
-	// the ServerName drives SNI + cert verification.
-	tlsCfg := c.cfg.TLSConfig
-	if tlsCfg == nil {
-		tlsCfg = &tls.Config{
-			ServerName: c.cfg.ServerName,
-			MinVersion: tls.VersionTLS12,
-			// System roots — see package-level comment on the pinning rationale.
+		// One retry, on a fresh dial, after any failure that is not a
+		// deadline outcome.
+		if attempt > 0 || timedOut {
+			return nil, err
 		}
-	}
-
-	dialCtx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
-	defer cancel()
-
-	rawConn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", c.cfg.Address)
-	if err != nil {
-		return nil, &DialError{Upstream: c.cfg.Address, Err: err}
-	}
-
-	tlsConn := tls.Client(rawConn, tlsCfg)
-	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
-		rawConn.Close()
-		return nil, &TLSError{Upstream: c.cfg.Address, ServerName: c.cfg.ServerName, Err: err}
-	}
-
-	c.conn = &dns.Conn{Conn: tlsConn}
-	return c.conn, nil
-}
-
-// closeConnLocked closes and nils the cached connection. Must be called with mu held.
-func (c *Client) closeConnLocked() {
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
 	}
 }
