@@ -163,12 +163,17 @@ check-public: ## Fail on content that must not reach the public repo (ADR-0007)
 check-licenses: ## Verify every module linked into ward ships a licence file (release archives carry them)
 	$(Q)scripts/check-third-party-licenses.sh
 
+.PHONY: check-actions-pinned
+check-actions-pinned: ## Fail on a GitHub Actions uses: not pinned to a full commit SHA (ADR-0002)
+	$(Q)scripts/check-actions-pinned-selftest.sh
+	$(Q)scripts/check-actions-pinned.sh
+
 .PHONY: check-workflows
 check-workflows: tools ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
 	$(Q)$(TOOLS_DIR)/actionlint -shellcheck= -pyflakes=
 
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public check-licenses check-workflows ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + workflow-lint gate — the "is everything OK" gate
+check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
