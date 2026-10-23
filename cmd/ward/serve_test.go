@@ -799,6 +799,10 @@ func (b *wakeBuffer) Write(p []byte) (int, error) {
 // wardWaitBound only turns a hang into a failure; nothing passes on a timeout.
 const wardWaitBound = 5 * time.Second
 
+// placeholderListen is the listen: value launchWard writes to ward.yaml; the
+// --listen-addr override must replace it.
+const placeholderListen = "127.0.0.1:5354"
+
 // wardProc is a running `ward serve` subprocess. dnsAddr and dashAddr are
 // filled in by startWard from ward's own readiness log lines.
 type wardProc struct {
@@ -821,7 +825,7 @@ func launchWard(t *testing.T, cfgBody, listenAddr string) *wardProc {
 		t.Fatalf("could not build ward binary: %v", err)
 	}
 	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
-	full := "listen: \"127.0.0.1:5354\"\n" + cfgBody
+	full := "listen: \"" + placeholderListen + "\"\n" + cfgBody
 	if err := os.WriteFile(cfgPath, []byte(full), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -931,6 +935,9 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	_, port, err := net.SplitHostPort(w.dnsAddr)
 	if err != nil || port == "0" || port == "" {
 		t.Fatalf("dns: listening addr %q must carry a kernel-assigned non-zero port (err=%v)", w.dnsAddr, err)
+	}
+	if w.dnsAddr == placeholderListen {
+		t.Fatalf("dns: listening addr %q is the ward.yaml placeholder; --listen-addr was ignored", w.dnsAddr)
 	}
 	c := &dns.Client{Timeout: 2 * time.Second}
 	m := new(dns.Msg)
