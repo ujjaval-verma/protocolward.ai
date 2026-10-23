@@ -23,8 +23,9 @@
 //     it is a deadline outcome: the context ended or its deadline passed, or a
 //     write or read hit that deadline. A deadline outcome is never retried and
 //     wraps the context error.
-//   - Close closes every connection and makes in-flight, waiting and later
-//     queries return ErrClosed.
+//   - Close closes every connection and makes waiting and later queries
+//     return ErrClosed, as well as an in-flight query that has not yet got
+//     its reply.
 //
 // # TLS roots
 //
@@ -37,8 +38,8 @@
 //
 // # Invariants
 //
-//   - No silent drops: every error path returns a typed error with a remediation
-//     hint (invariant #8).
+//   - No silent drops: every error names the upstream, and every error other
+//     than a context error carries a remediation hint (invariant #8).
 //   - Connection eviction on error: any TLS read/write error closes the
 //     connection it happened on, and no other.
 package upstream
@@ -183,9 +184,9 @@ func newClient(cfg Config, maxConns int, idleTimeout time.Duration) *Client {
 func (c *Client) Address() string { return c.cfg.Address }
 
 // Close closes every connection, idle or in use, and makes every later or
-// waiting Query return ErrClosed. It does not wait for in-flight queries:
-// they see their connection fail and return ErrClosed. Safe to call more
-// than once.
+// waiting Query return ErrClosed. It does not wait for in-flight queries: an
+// in-flight query that has not yet got its reply sees its connection fail and
+// returns ErrClosed. Safe to call more than once.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()

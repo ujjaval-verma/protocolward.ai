@@ -16,8 +16,8 @@ func NewWithPool(cfg Config, maxConns int, idle time.Duration) (*Client, error) 
 	return newClient(c.cfg, maxConns, idle), nil
 }
 
-// SetAfterSlotHook sets a function that checkout calls once, right after a
-// slot is acquired and before the post-slot re-check. Set it before the first
+// SetAfterSlotHook sets a function that Query calls once, right after a slot
+// is acquired and before the post-slot re-check. Set it before the first
 // Query and never change it afterwards.
 func SetAfterSlotHook(c *Client, f func()) { c.afterSlot = f }
 
