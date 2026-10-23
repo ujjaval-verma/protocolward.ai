@@ -656,8 +656,11 @@ func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET dashboard: %v\nlog:\n%s", err, w.out.String())
 	}
-	raw, _ := io.ReadAll(hr.Body)
+	raw, err := io.ReadAll(hr.Body)
 	hr.Body.Close()
+	if err != nil {
+		t.Fatalf("read dashboard body: %v\nlog:\n%s", err, w.out.String())
+	}
 	panel := extractPanel(string(raw), `id="flags"`)
 	// (j) Assert strings that exist only in a rendered row — the qname and a
 	// reason code — not the static "flagged, not blocked" note, which the
@@ -910,12 +913,20 @@ func startWard(t *testing.T, cfgBody string) *wardProc {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	w.dnsAddr, _ = m["addr"].(string)
+	addr, ok := m["addr"].(string)
+	if !ok || addr == "" {
+		t.Fatalf("dns: listening has no string addr field: %v\nlog:\n%s", m, w.out.String())
+	}
+	w.dnsAddr = addr
 	m, err = w.waitFor("dashboard: ready")
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	w.dashAddr, _ = m["listen"].(string)
+	listen, ok := m["listen"].(string)
+	if !ok || listen == "" {
+		t.Fatalf("dashboard: ready has no string listen field: %v\nlog:\n%s", m, w.out.String())
+	}
+	w.dashAddr = listen
 	return w
 }
 
