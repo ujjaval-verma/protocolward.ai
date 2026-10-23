@@ -1003,15 +1003,17 @@ func TestServe_ListenAddrOverride_Invalid_ExitsCode2(t *testing.T) {
 }
 
 func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
-	const addr = "127.0.0.1:53"
+	const (
+		addr      = "127.0.0.1:53"
+		inUseWant = "port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr"
+	)
 	cases := []struct {
 		name string
 		err  error
 		addr string
 		want string
 	}{
-		{"in use", errors.New("listen udp: bind: address already in use"), addr,
-			"port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr"},
+		{"in use", errors.New("listen udp: bind: address already in use"), addr, inUseWant},
 		{"eacces low port", errors.New("listen udp: bind: permission denied"), addr, "--listen-addr"},
 		{"eacces high port", errors.New("listen udp: bind: permission denied"), "127.0.0.1:5353", "--listen-addr"},
 		{"fallback", errors.New("something odd"), addr, "--listen-addr"},
