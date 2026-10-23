@@ -10,6 +10,7 @@
 - **Amended:** 2026-10-20 — pre-push runs the full race suite; lint, vet, tests and the wasm gate run concurrently; the 20 s budget is defined cold (§2)
 - **Amended:** 2026-10-20 — nightly post-merge verification of `main` on GitHub Actions (`nightly.yml`); replaces the local launchd step of the re-evaluation ladder (§1, §2; issue #11)
 - **Amended:** 2026-10-21 — GitHub repository settings: secret scanning and push protection on; Actions restricted to an allowlist with SHA pinning required (§1; issue #12)
+- **Amended:** 2026-10-23 — Actions SHA-pin gate (check-actions-pinned) in make check and on pre-push (§1, §2; issue #42)
 
 ## Context
 
@@ -31,7 +32,7 @@ This ADR captures the policies that determine when and how code is validated aga
 
 - Secret scanning and push protection are enabled (`security_and_analysis.secret_scanning` and `secret_scanning_push_protection`). A push that contains a detected provider secret is blocked; bypassing it records a reason. Non-provider patterns and validity checks stay off.
 - Actions may run only selected actions (`allowed_actions: selected`): actions owned by GitHub (`github_owned_allowed: true`) plus `sigstore/cosign-installer@*` and `goreleaser/goreleaser-action@*`, which `release.yml` uses. Actions from Marketplace verified creators are not allowed (`verified_allowed: false`).
-- SHA pinning is required (`sha_pinning_required: true`): a `uses:` reference that is not a full commit SHA fails at job setup. This turns the existing practice of pinning by SHA into a rule GitHub enforces.
+- SHA pinning is required (`sha_pinning_required: true`): a `uses:` reference that is not a full commit SHA fails at job setup. This turns the existing practice of pinning by SHA into a rule GitHub enforces. The `check-actions-pinned` gate (issue #42) now catches an unpinned `uses:` in `make check` and on pre-push, before the push, rather than only at job setup.
 - The default `GITHUB_TOKEN` permission stays read-only and cannot approve pull requests (unchanged).
 
 Neither workflow needed a change. Every `uses:` was already a full commit SHA and every action is on the allowlist. A `workflow_dispatch` run of `nightly.yml` with `force_full=true` on `main` after the go1.26.10 toolchain bump (run 39665246214) succeeded in every job, including the full verify job, under the policy. `release.yml` runs only on tags, so it could not be dispatched. Reading it shows its four actions (`actions/checkout`, `actions/setup-go`, `sigstore/cosign-installer`, `goreleaser/goreleaser-action`) are all pinned by full SHA and matched by the allowlist. The first real tag is the live proof. The patterns allow any ref, so bumping a pinned SHA needs no settings change, while adding an action does.
@@ -43,7 +44,7 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 | Stage | Budget | Contents |
 |---|---|---|
 | pre-commit | ≤5s | trailing-ws, eof-fix, check-yaml/json, large-file, merge-conflict, mixed-line-ending, go-fmt, codespell |
-| pre-push | ≤20s cold | go mod tidy -diff, golangci-lint + go vet + full `go test -race` (`make test`) + wasm compile and 5 MB size gate (one hook, `make -j4`), go mod verify, **`govulncheck`**, check-public, check-spdx, check-testing-doc, check-licenses |
+| pre-push | ≤20s cold | go mod tidy -diff, golangci-lint + go vet + full `go test -race` (`make test`) + wasm compile and 5 MB size gate (one hook, `make -j4`), go mod verify, **`govulncheck`**, check-public, check-spdx, check-testing-doc, check-licenses, check-actions-pinned |
 | `make audit` (manual, pre-release) | unbounded | full `go test -race`, future syft+grype SBOM, future cosign verify of update-channel artifacts, pnpm audit signatures (when web exists) |
 
 Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `goreleaser check`; the full race suite runs in `make ci`, and pnpm audit runs in `make audit` once a lockfile exists, not on pre-push.
@@ -51,6 +52,8 @@ Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `gor
 Note (2026-10-20): the invariant gates run on pre-push through the same Make targets `make check`/`make ci` use, so the two cannot drift. Measured warm cost is about 2 s. They check the checked-out working tree (including untracked files), not the pushed commits; `make ci` on the commit you push remains the gate.
 
 Note (2026-10-20, issue #25): the pre-push budget is measured cold, meaning empty Go build and golangci-lint caches (equivalent to `go clean -cache` plus `golangci-lint cache clean`), with the module cache and hook environments warm, on the maintainer's Apple M5 Pro. Measured 17.3/17.5/18.4 s cold, 8.8/9.0 s warm (was about 27 s cold). The hook runs the full race suite through `make test`, so the hook and `make ci` share one test timeout (`TEST_TIMEOUT`).
+
+Note (2026-10-23, issue #42): `check-actions-pinned` is a pre-push hook through the same Make target `make check` uses (`make check-actions-pinned`: its self-test, then the scan of `.github/workflows` and `.github/actions` for a `uses:` that is not a full commit SHA). Measured warm cost is 0.46 to 0.47 s. Cold pre-push, same definition as the issue #25 note and taken on the same machine, three runs each: 18.4/17.5/18.5 s before the hook, 17.9/17.7/18.1 s with it. The difference is inside run-to-run variance, because the gate needs no Go build or lint cache, so it costs the same cold as warm; it stays under the 20 s budget.
 
 Re-evaluation ladder if pre-push exceeds 20s sustainably:
 
@@ -94,6 +97,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 ## Consequences
 
 - Pre-push becomes mildly slower (about 9 s warm and 18 s cold as of 2026-10-20, ≤20s cold budget) — acceptable for the supply-chain guarantee.
+- The `check-actions-pinned` gate adds about 0.5 s to pre-push (a few lines of bash over the workflow files, no build cache involved) and means an unpinned `uses:` is caught before the push instead of only at job setup.
 - Solo dev can choose to bypass with `--no-verify`; that is a documented policy violation, not an accident.
 - No green-checkmark hygiene burden on GitHub; contributors run `make ci` locally.
 - A nightly workflow re-verifies `main` after merge. It costs a few runner-minutes on days `main` changed and a minute or two otherwise (free for a public repository). A failure surfaces as one open `ci:nightly-failure` issue, not as a red check on a pull request, so a break can sit on `main` for up to a day.
