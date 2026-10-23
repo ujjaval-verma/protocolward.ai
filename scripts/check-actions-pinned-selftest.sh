@@ -127,4 +127,18 @@ out="$(scan "$repo" 2>&1)" && fail "corrupt index: scanner exited 0: $out"
 grep -qF "check-actions-pinned: git ls-files failed" <<<"$out" || fail "corrupt index: no labelled message: $out"
 if grep -qF "OK" <<<"$out"; then fail "corrupt index: printed OK: $out"; fi
 
+# F3: `uses :` and a `!!str` tag on the key name the same key; tag-pinned is reported, SHA-pinned passes.
+newrepo
+for form in 'uses :' '- !!str uses:' '!!str uses :'; do
+  case "$form" in -*) pre="      " ;; *) pre="    " ;; esac
+  step "$pre$form actions/checkout@v4" > "$repo/.github/workflows/bad.yml"
+  git -C "$repo" add -A
+  out="$(scan "$repo" 2>&1)" && fail "'$form' tag-pinned passed: $out"
+  grep -qF "check-actions-pinned: .github/workflows/bad.yml:4:" <<<"$out" || fail "'$form' not reported: $out"
+  step "$pre$form actions/checkout@$sha" > "$repo/.github/workflows/bad.yml"
+  git -C "$repo" add -A
+  out="$(scan "$repo" 2>&1)" || fail "'$form' SHA-pinned failed: $out"
+  grep -qF "OK (1 uses: in 1 files)" <<<"$out" || fail "'$form' SHA-pinned not counted: $out"
+done
+
 echo "check-actions-pinned selftest: OK (bash $ver)"

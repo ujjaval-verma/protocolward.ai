@@ -24,7 +24,7 @@ git ls-files -z --cached --others --exclude-standard -- '.github/workflows/*.yml
   echo "check-actions-pinned: git ls-files failed" >&2
   exit 1
 }
-re_key='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(.*)$'
+re_key='^[[:space:]]*(-[[:space:]]+)?([!&][^[:space:]]*[[:space:]]+)*uses[[:space:]]*:[[:space:]]*(.*)$'
 re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
 re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
@@ -44,7 +44,7 @@ while IFS= read -r -d '' f; do
     n=$((n + 1))
     [[ $line =~ $re_key ]] || continue
     uses=$((uses + 1))
-    v="${BASH_REMATCH[2]}"
+    v="${BASH_REMATCH[3]}"
     v="${v%$'\r'}"
     reason="not pinned to a full 40-hex lowercase commit SHA"
     ok=0
