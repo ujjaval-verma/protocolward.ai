@@ -1,5 +1,6 @@
 # Hook tiering — see docs/engineering/decisions/ADR-0002-security-posture.md
-# pre-commit ≤5s; pre-push ≤20s cold (empty Go build + lint caches). govulncheck on pre-push is the supply-chain enforcement point.
+# pre-commit is the fast tier; pre-push carries the heavy gates and has a cold-run time budget
+# (empty Go build + lint caches). govulncheck on pre-push is the supply-chain enforcement point.
 
 default_stages: [pre-commit]
 
@@ -41,78 +42,28 @@ repos:
         # go.sum holds base64 hashes, which codespell reads as misspellings.
         exclude: ^(testdata/eval/lexical-v1\.jsonl|go\.sum)$
 
-  # --- pre-push (heavier; ≤20s cold budget) ---
+  # --- pre-push (heavier; cold-run time budget in ADR-0002) ---
 
   - repo: local
     hooks:
-      - id: go-mod-tidy
-        name: go mod tidy -diff
-        entry: go mod tidy -diff
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-      # lint, vet, the full race suite (make test: one TEST_TIMEOUT) and the
-      # js/wasm compile + 5 MB size gate, run concurrently through the same Make
-      # targets `make check`/`make ci` use. pre-commit runs hooks one at a time;
-      # overlapping these keeps cold pre-push inside the 20 s budget (issue #25).
+      # Every pre-push gate is one Make target, `make pre-push`, run concurrently
+      # (issue #25). pre-commit runs hooks one at a time, so separate hooks would
+      # serialise the cheap gates behind the heavy ones; one -j8 target overlaps them all.
+      # The gates are lint, vet, the full race suite (make test: one TEST_TIMEOUT),
+      # the js/wasm compile + 5 MB size gate, go mod tidy -diff, go mod verify and
+      # govulncheck, plus the invariant gates below. -k lets every gate finish when
+      # one fails, and Make names each failing gate ("[check-spdx] Error 1").
+      # Invariant gates (issue #10): check-public, check-spdx, check-testing-doc,
+      # check-licenses and check-actions-pinned are the same Make targets
+      # `make check`/`make ci` run, so the hook and the manual gate cannot drift;
+      # they scan the whole tree, not the files being pushed.
+      # Issue #42: check-actions-pinned refuses a workflow uses: not pinned to a full
+      # commit SHA before the push (GitHub only rejects it at job setup).
       # `make lint` uses the pinned .tools/ golangci-lint, built with the repo's
       # own Go toolchain (the upstream pre-commit golang env cannot read its export data).
-      - id: go-heavy
-        name: lint + vet + race tests + wasm gate (make -j4)
-        entry: make -j4 lint vet test wasm
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: go-mod-verify
-        name: go mod verify
-        entry: go mod verify
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-      - id: govulncheck
-        name: govulncheck
-        entry: .tools/govulncheck ./...
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-
-      # Invariant gates (issue #10): the same Make targets `make check`/`make ci`
-      # run, so the hook and the manual gate cannot drift. always_run because
-      # they scan the whole tree, not the files being pushed.
-      - id: check-public
-        name: check-public (public-content gate)
-        entry: make check-public
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: check-spdx
-        name: check-spdx (SPDX header gate)
-        entry: make check-spdx
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: check-testing-doc
-        name: check-testing-doc (testing.md row gate)
-        entry: make check-testing-doc
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      - id: check-licenses
-        name: check-licenses (third-party licence gate)
-        entry: make check-licenses
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-push]
-      # Issue #42: refuse a workflow uses: not pinned to a full commit SHA before the
-      # push (GitHub only rejects it at job setup). Same Make target as `make check`.
-      - id: check-actions-pinned
-        name: check-actions-pinned (Actions SHA-pin gate)
-        entry: make check-actions-pinned
+      - id: pre-push-gates
+        name: pre-push gates (make -k -j8 pre-push)
+        entry: make -k -j8 pre-push
         language: system
         pass_filenames: false
         always_run: true

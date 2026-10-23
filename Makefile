@@ -145,6 +145,14 @@ vet: ## go vet
 tidy: ## go mod tidy
 	$(Q)$(GO) mod tidy
 
+.PHONY: tidy-check
+tidy-check: ## Fail when go.mod/go.sum are not tidy (prints the diff; changes nothing)
+	$(Q)$(GO) mod tidy -diff
+
+.PHONY: mod-verify
+mod-verify: ## go mod verify (module cache matches go.sum)
+	$(Q)$(GO) mod verify
+
 .PHONY: check-testing-doc
 check-testing-doc: ## Verify every internal/pkg package has a row in docs/engineering/testing.md
 	$(Q)scripts/check-testing-doc.sh
@@ -178,6 +186,13 @@ check: lint vet test check-testing-doc check-spdx check-public check-licenses ch
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
 
+# The pre-push hook runs this one target as `make -k -j8 pre-push` (issue #25): every
+# gate runs concurrently through the same targets `make check`/`make ci` use, and -k
+# lets the rest finish when one fails, so Make names each failing gate.
+.PHONY: pre-push
+pre-push: lint vet test wasm tidy-check mod-verify vuln check-public check-spdx check-testing-doc check-licenses check-actions-pinned ## Every pre-push gate (run by the hook with -k -j8)
+	@printf "$(C_OK)pre-push gates passed$(C_OFF)\n"
+
 ## === Audit ===
 
 .PHONY: vuln
@@ -185,9 +200,7 @@ vuln: tools ## Run govulncheck against the module
 	$(Q)$(TOOLS_DIR)/govulncheck $(PKG)
 
 .PHONY: audit
-audit: tools ## Pre-release audit: module verify + vuln scan + goreleaser config lint + pnpm audit + signatures when a pnpm lockfile exists
-	$(Q)$(GO) mod verify
-	$(Q)$(TOOLS_DIR)/govulncheck $(PKG)
+audit: tools mod-verify vuln ## Pre-release audit: module verify + vuln scan + goreleaser config lint + pnpm audit + signatures when a pnpm lockfile exists
 	$(Q)$(TOOLS_DIR)/goreleaser check
 	$(Q)test ! -f pnpm-lock.yaml || { command -v pnpm >/dev/null && pnpm audit --audit-level=moderate && pnpm audit signatures; }
 	@printf "$(C_OK)audit clean$(C_OFF)\n"
