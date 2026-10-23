@@ -349,11 +349,13 @@ func TestQuery_HalfClosedIdle(t *testing.T) {
 		{"rst", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			arm := make(chan struct{})
 			srv := newFakeDoT(t, FakeDoTOptions{
-				Rcode:        dns.RcodeSuccess,
-				Latency:      20 * time.Millisecond,
-				IdleClose:    50 * time.Millisecond,
-				ResetOnClose: tc.reset,
+				Rcode:          dns.RcodeSuccess,
+				Latency:        20 * time.Millisecond,
+				IdleClose:      150 * time.Millisecond,
+				IdleCloseAfter: arm,
+				ResetOnClose:   tc.reset,
 			})
 			client, err := upstream.New(fakeConfig(srv))
 			if err != nil {
@@ -368,7 +370,13 @@ func TestQuery_HalfClosedIdle(t *testing.T) {
 				t.Fatalf("scheduling precondition, not a pool result: 4 concurrent queries opened %d connections, want 4", got)
 			}
 
-			time.Sleep(150 * time.Millisecond) // the server closes all 4
+			// Armed only now, so the precondition's handshakes and the
+			// queries below never race the idle window.
+			close(arm)
+			time.Sleep(400 * time.Millisecond) // the server closes all 4
+			if got := srv.Open(); got != 0 {
+				t.Fatalf("scheduling precondition, not a pool result: the server still holds %d connections open 400ms after arming its 150ms idle close, want 0", got)
+			}
 
 			for i := 0; i < 4; i++ {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -36,6 +36,10 @@ type FakeDoTOptions struct {
 	// closes a connection that has been idle this long (a full close:
 	// close_notify then FIN, which leaves the client socket half-closed).
 	IdleClose time.Duration
+	// IdleCloseAfter, when non-nil, arms IdleClose only once it is closed:
+	// until then every read has the 3 s deadline. On arming, a connection
+	// that is waiting for a query gets the IdleClose deadline from then on.
+	IdleCloseAfter <-chan struct{}
 	// ResetOnClose makes every server-side close a bare RST: SO_LINGER is set
 	// to 0 and the TCP connection is closed directly, with no close_notify.
 	ResetOnClose bool
@@ -175,12 +179,42 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 	if s.opts.CloseOnHandshake {
 		return
 	}
-	idle := 3 * time.Second
-	if s.opts.IdleClose > 0 {
-		idle = s.opts.IdleClose
+	// dlMu orders the loop's deadline against the arming one, so a read
+	// that started before IdleCloseAfter closed still gets IdleClose.
+	var dlMu sync.Mutex
+	armed := func() bool {
+		if s.opts.IdleCloseAfter == nil {
+			return true
+		}
+		select {
+		case <-s.opts.IdleCloseAfter:
+			return true
+		default:
+			return false
+		}
+	}
+	if s.opts.IdleClose > 0 && s.opts.IdleCloseAfter != nil {
+		handlerDone := make(chan struct{})
+		defer close(handlerDone)
+		go func() {
+			select {
+			case <-s.opts.IdleCloseAfter:
+				dlMu.Lock()
+				_ = conn.SetReadDeadline(time.Now().Add(s.opts.IdleClose))
+				dlMu.Unlock()
+			case <-handlerDone:
+			}
+		}()
 	}
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
+		dlMu.Lock()
+		idle := 3 * time.Second
+		if s.opts.IdleClose > 0 && armed() {
+			idle = s.opts.IdleClose
+		}
+		err := conn.SetReadDeadline(time.Now().Add(idle))
+		dlMu.Unlock()
+		if err != nil {
 			return
 		}
 		// Read 2-byte length prefix.
