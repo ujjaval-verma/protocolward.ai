@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -810,4 +812,259 @@ func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) m
 		t.Fatal("/healthz did not answer within 5s")
 	}
 	return got
+}
+
+// wakeBuffer is a safeBuffer that signals a channel on every Write, so a
+// reader can wait for new output without sleep polling.
+type wakeBuffer struct {
+	safeBuffer
+	wake chan struct{} // capacity 1; a pending token means "output changed"
+}
+
+func newWakeBuffer() *wakeBuffer { return &wakeBuffer{wake: make(chan struct{}, 1)} }
+
+func (b *wakeBuffer) Write(p []byte) (int, error) {
+	n, err := b.safeBuffer.Write(p)
+	select {
+	case b.wake <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+// wardWaitBound only turns a hang into a failure; nothing passes on a timeout.
+const wardWaitBound = 5 * time.Second
+
+// wardProc is a running `ward serve` subprocess. dnsAddr and dashAddr are
+// filled in by startWard from ward's own readiness log lines.
+type wardProc struct {
+	dnsAddr  string
+	dashAddr string
+	out      *wakeBuffer
+	exited   chan struct{} // closed once cmd.Wait returned (pipe fully copied)
+	exitCode int           // valid once exited is closed
+}
+
+// launchWard writes cfgBody (which must NOT contain a listen: key; launchWard
+// adds a placeholder one that --listen-addr overrides) to a temp ward.yaml and
+// starts `ward serve` with --listen-addr listenAddr and a kernel-assigned
+// dashboard port. It does not wait for readiness. stdout and stderr share one
+// capture buffer.
+func launchWard(t *testing.T, cfgBody, listenAddr string) *wardProc {
+	t.Helper()
+	bin, err := buildWardBin()
+	if err != nil {
+		t.Fatalf("could not build ward binary: %v", err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
+	full := "listen: \"127.0.0.1:5354\"\n" + cfgBody
+	if err := os.WriteFile(cfgPath, []byte(full), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "serve", "--config", cfgPath,
+		"--listen-addr", listenAddr, "--dash-listen-addr", "127.0.0.1:0")
+	w := &wardProc{out: newWakeBuffer(), exited: make(chan struct{})}
+	cmd.Stdout, cmd.Stderr = w.out, w.out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start ward: %v", err)
+	}
+	go func() {
+		_ = cmd.Wait()
+		w.exitCode = cmd.ProcessState.ExitCode()
+		close(w.exited)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-w.exited:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-w.exited
+		}
+	})
+	return w
+}
+
+// scan decodes the newline-terminated JSON lines captured so far and returns
+// the first whose msg field equals msg. A partly written line is never decoded;
+// lines that are not JSON objects (the lipgloss stderr lines) are skipped.
+func (w *wardProc) scan(msg string) map[string]any {
+	log := w.out.String()
+	for {
+		i := strings.IndexByte(log, '\n')
+		if i < 0 {
+			return nil
+		}
+		line := strings.TrimSpace(log[:i])
+		log = log[i+1:]
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) != nil {
+			continue
+		}
+		if m["msg"] == msg {
+			return m
+		}
+	}
+}
+
+// waitFor blocks until ward logs a JSON line whose msg is msg and returns it.
+// It returns an error at once if ward exits first (after one last scan of the
+// complete log) and after wardWaitBound if neither happens.
+func (w *wardProc) waitFor(msg string) (map[string]any, error) {
+	timer := time.NewTimer(wardWaitBound)
+	defer timer.Stop()
+	for {
+		if m := w.scan(msg); m != nil {
+			return m, nil
+		}
+		select {
+		case <-w.out.wake:
+		case <-w.exited:
+			if m := w.scan(msg); m != nil {
+				return m, nil
+			}
+			return nil, fmt.Errorf("ward exited before %s (exit code %d)\nlog:\n%s", msg, w.exitCode, w.out.String())
+		case <-timer.C:
+			return nil, fmt.Errorf("timed out after %s waiting for %s\nlog:\n%s", wardWaitBound, msg, w.out.String())
+		}
+	}
+}
+
+// startWard launches ward on a kernel-assigned DNS port (which ward itself
+// holds) and waits for its own readiness lines to learn the real addresses.
+func startWard(t *testing.T, cfgBody string) *wardProc {
+	t.Helper()
+	w := launchWard(t, cfgBody, "127.0.0.1:0")
+	m, err := w.waitFor("dns: listening")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	w.dnsAddr, _ = m["addr"].(string)
+	m, err = w.waitFor("dashboard: ready")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	w.dashAddr, _ = m["listen"].(string)
+	return w
+}
+
+// deadUpstreamCfg is a ward.yaml body (no listen:) whose only upstream refuses
+// connections at once, so every forwarded query SERVFAILs.
+const deadUpstreamCfg = `upstreams:
+  - address: "127.0.0.1:1"
+    server_name: "unreachable.test"
+timeouts:
+  dial: "300ms"
+  query: "500ms"
+  shutdown: "2s"
+`
+
+func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
+	w := startWard(t, deadUpstreamCfg)
+	_, port, err := net.SplitHostPort(w.dnsAddr)
+	if err != nil || port == "0" || port == "" {
+		t.Fatalf("dns: listening addr %q must carry a kernel-assigned non-zero port (err=%v)", w.dnsAddr, err)
+	}
+	c := &dns.Client{Timeout: 2 * time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("example.test.", dns.TypeA)
+	resp, _, err := c.Exchange(m, w.dnsAddr)
+	if err != nil {
+		t.Fatalf("query %s: %v\nlog:\n%s", w.dnsAddr, err, w.out.String())
+	}
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Errorf("rcode = %s, want SERVFAIL (dead upstream)", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// A NOERROR responder holds the port ward is told to bind. ward must exit with
+// its own bind diagnosis, and the test must never mistake the squatter for
+// ward: startup sends the squatter no query at all.
+func TestStartWard_SquattedListenPort_FailsFast(t *testing.T) {
+	held, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queries atomic.Int32
+	sq := &dns.Server{PacketConn: held, Handler: dns.HandlerFunc(func(rw dns.ResponseWriter, r *dns.Msg) {
+		queries.Add(1)
+		m := new(dns.Msg)
+		m.SetReply(r)
+		_ = rw.WriteMsg(m)
+	})}
+	go func() { _ = sq.ActivateAndServe() }()
+	t.Cleanup(func() { _ = sq.Shutdown() })
+	heldAddr := held.LocalAddr().String()
+
+	w := launchWard(t, deadUpstreamCfg, heldAddr)
+	_, err = w.waitFor("dns: listening")
+	if err == nil || !strings.Contains(err.Error(), "ward exited before dns: listening") {
+		t.Fatalf("want error %q, got %v", "ward exited before dns: listening", err)
+	}
+	if !strings.Contains(err.Error(), "port already in use at "+heldAddr) {
+		t.Errorf("log missing %q:\n%v", "port already in use at "+heldAddr, err)
+	}
+	se, serr := w.waitFor("startup error")
+	if serr != nil {
+		t.Fatalf("no startup error line: %v", serr)
+	}
+	rem, _ := se["remediation"].(string)
+	if !strings.Contains(rem, "--listen-addr") || strings.Contains(rem, "ward.yaml") {
+		t.Errorf("remediation must name --listen-addr, not ward.yaml; got %q", rem)
+	}
+	if n := queries.Load(); n != 0 {
+		t.Errorf("squatter received %d queries; startup must never query it", n)
+	}
+}
+
+func TestServe_ListenAddrOverride_Invalid_ExitsCode2(t *testing.T) {
+	for _, bad := range []string{"nonsense", "127.0.0.1:70000", "127.0.0.1:+53"} {
+		t.Run(bad, func(t *testing.T) {
+			w := launchWard(t, deadUpstreamCfg, bad)
+			_, err := w.waitFor("dashboard: ready")
+			if err == nil || !strings.Contains(err.Error(), "ward exited before dashboard: ready") {
+				t.Fatalf("want ward to exit before dashboard: ready, got %v", err)
+			}
+			if w.exitCode != 2 {
+				t.Errorf("exit code = %d, want 2 (config error)\n%v", w.exitCode, err)
+			}
+			if !strings.Contains(err.Error(), "config error") || !strings.Contains(err.Error(), "host:port") {
+				t.Errorf("want a config error whose remediation names host:port:\n%v", err)
+			}
+		})
+	}
+}
+
+func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
+	const addr = "127.0.0.1:53"
+	cases := []struct {
+		name string
+		err  error
+		addr string
+		want string
+	}{
+		{"in use", errors.New("listen udp: bind: address already in use"), addr,
+			"port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr"},
+		{"eacces low port", errors.New("listen udp: bind: permission denied"), addr, "--listen-addr"},
+		{"eacces high port", errors.New("listen udp: bind: permission denied"), "127.0.0.1:5353", "--listen-addr"},
+		{"fallback", errors.New("something odd"), addr, "--listen-addr"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := bindErrRemediationFor(c.err, c.addr, true)
+			if !strings.Contains(got, c.want) {
+				t.Errorf("remediation %q does not contain %q", got, c.want)
+			}
+			if strings.Contains(got, "ward.yaml") {
+				t.Errorf("remediation %q must not point at ward.yaml when the flag set the address", got)
+			}
+			// The ward.yaml source keeps the existing text.
+			if bindErrRemediationFor(c.err, c.addr, false) != bindErrRemediation(c.err, c.addr) {
+				t.Errorf("bindErrRemediation must equal bindErrRemediationFor(..., false)")
+			}
+		})
+	}
 }
