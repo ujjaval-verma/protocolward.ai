@@ -33,6 +33,7 @@ func newBindTestServer(t *testing.T, listenAddr string) *dataplane.Server {
 }
 
 func TestServe_ShutdownAfterReady_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	srv := newBindTestServer(t, "127.0.0.1:0")
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
@@ -96,6 +97,7 @@ func takeTCPPortWithFreeUDP(t *testing.T) string {
 }
 
 func TestServe_UDPPortTaken_ReturnsBindError(t *testing.T) {
+	t.Parallel()
 	held, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("pre-bind udp: %v", err)
@@ -112,6 +114,7 @@ func TestServe_UDPPortTaken_ReturnsBindError(t *testing.T) {
 	}
 }
 
+// Serial: needs a TCP port whose UDP twin stays free, then rebinds it; a parallel test's bind could take either.
 func TestServe_TCPPortTaken_ReturnsBindErrorAndReleasesUDP(t *testing.T) {
 	addr := takeTCPPortWithFreeUDP(t)
 
@@ -153,6 +156,7 @@ func listeningLines(t *testing.T) []map[string]any {
 
 // The readiness line is logged once, after both UDP and TCP serve, with the
 // bound address. Scripts key on it instead of a line logged before bind.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServe_LogsListeningOnceBothListenersServe(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -175,6 +179,7 @@ func TestServe_LogsListeningOnceBothListenersServe(t *testing.T) {
 	}
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServe_BindFailure_NoListeningLine(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

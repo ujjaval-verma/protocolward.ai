@@ -82,6 +82,7 @@ func countDropLines(records []map[string]any) (n int, last map[string]any) {
 // T-BOUND: a burst of 100 forwarded queries never runs more than
 // maxClassifyInFlight classifications at once; the rest are dropped,
 // counted, and reported by one rate-limited WARN line. Slots are returned.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestClassify_Burst_InFlightBounded_DropsCounted(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -155,6 +156,7 @@ func TestClassify_Burst_InFlightBounded_DropsCounted(t *testing.T) {
 
 // T-RATE: the drop line is emitted on the first drop, then at most once per
 // classifyDropLogEvery, and always carries the running total.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestNoteClassifyDropped_RateLimitedWithRunningTotal(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -196,6 +198,7 @@ func (p *panickingClassifier) Classify(context.Context, model.Input) (schema.Ver
 
 // T-PANIC: a recovered classifier panic still returns its slot, so panics
 // cannot leak capacity until every forward is dropped.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestClassify_PanicReleasesSlot(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -227,6 +230,7 @@ func (s *skippingClassifier) Classify(context.Context, model.Input) (schema.Verd
 // T-SKIP: ErrSkipped is a drop, not a failure: counted, one rate-limited
 // line, no per-call `policy: classify error`, and no unavailable latch, so
 // later forwards are still classified.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestClassify_ErrSkipped_CountedNoLatchNoWarnFlood(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -291,6 +295,7 @@ func (s *serialClassifier) Classify(ctx context.Context, _ model.Input) (schema.
 // T-SHUTDOWN: Shutdown cancels classifications still waiting for the
 // adapter, so the drain takes one call, not one per waiter. Skips caused by
 // shutdown are counted but do not produce the drop WARN.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestShutdown_CancelsQueuedClassifications(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -333,6 +338,7 @@ func TestShutdown_CancelsQueuedClassifications(t *testing.T) {
 }
 
 // A classification that starts after Shutdown is skipped at once.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestShutdown_ClassifyAfterStopIsSkipped(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -359,6 +365,7 @@ func (closedClassifier) Classify(context.Context, model.Input) (schema.Verdict, 
 // T-CLOSED: a classification that reaches a closed adapter during shutdown
 // is a counted, Debug-only skip: no `policy: model unavailable`, no
 // `policy: classify error`, no latch.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestShutdown_ClosedAdapterIsQuietSkip(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -393,6 +400,7 @@ func (u unavailableClassifier) Classify(context.Context, model.Input) (schema.Ve
 // remediation that says so, and names the common sibling bug of a reply
 // not flushed as one newline-terminated line; other unavailable causes
 // keep the generic text.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -431,6 +439,7 @@ func TestClassify_NoReply_RemediationNamesTimeout(t *testing.T) {
 // T-DROPPED-API: ClassifyDropped reports the running drop total and only
 // increases.
 func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
+	t.Parallel()
 	bc := &blockingClassifier{release: make(chan struct{})}
 	srv := newBoundTestServer(t, bc)
 	const burst = 100
@@ -456,6 +465,7 @@ func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
 // T-CLASSIFIER-STATE: ClassifierState is "none" with no classifier, "ok"
 // with one, and "unavailable" once the model was reported unavailable (the
 // latch has no auto-restart, so it stays there).
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_ClassifierState(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -479,6 +489,7 @@ func TestServer_ClassifierState(t *testing.T) {
 }
 
 // T-RATE-DEBUG: a drop suppressed by the rate limit is still named at Debug.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestNoteClassifyDropped_SuppressedDropLoggedAtDebug(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -527,6 +538,7 @@ func (c *countingFlags) RecordFlag(string, string, float64, []string) {
 // external classifier. An in-process (Assessor) classification already
 // forked runs to completion and records its flag; it never logs a
 // classify error.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestShutdown_DrainsForkedBuiltinClassification(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -573,6 +585,7 @@ func TestShutdown_DrainsForkedBuiltinClassification(t *testing.T) {
 // classifier (the external adapter) is cancelled by Shutdown. If the
 // adapter ever gained Assess it would silently lose that cancellation.
 func TestAdapter_StaysClassifyOnly(t *testing.T) {
+	t.Parallel()
 	if _, ok := any((*adapter.Adapter)(nil)).(model.Assessor); ok {
 		t.Fatal("internal/model.Adapter must stay Classify-only: Shutdown cancels only the Classify branch (#45/#46)")
 	}
@@ -581,6 +594,7 @@ func TestAdapter_StaysClassifyOnly(t *testing.T) {
 // T-DRAIN-TIMEOUT: a classification still running when the Shutdown ctx
 // ends is reported, with the count, instead of being silently abandoned.
 func TestShutdown_DrainTimeout_ReportsUndrainedClassifications(t *testing.T) {
+	t.Parallel()
 	bc := &blockingClassifier{release: make(chan struct{})}
 	srv := newBoundTestServer(t, bc)
 	forwardOnce(srv, 0)
@@ -642,6 +656,7 @@ func newAbortTestServer(t *testing.T, c SlowPathClassifier) *Server {
 
 // abort (the listener-failure path) reports a drain that ran out of time
 // instead of discarding Shutdown's error.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestAbort_DrainTimeout_LogsWarn(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -673,6 +688,7 @@ func TestAbort_DrainTimeout_LogsWarn(t *testing.T) {
 
 // With 0 classifications running the stuck work is a query handler, so the
 // remediation must not blame the classifier.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -704,6 +720,7 @@ func TestAbort_DrainTimeout_NoClassifications_NeutralRemediation(t *testing.T) {
 // ctx must not report a drain timeout (the select would otherwise pick
 // ctx.Done before the waiter goroutine closes the drained channel).
 func TestShutdown_IdleServer_CancelledCtx_NoDrainTimeout(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < 50; i++ {
 		srv := newBoundTestServer(t, &blockingClassifier{release: make(chan struct{})})
 		ctx, cancel := context.WithCancel(context.Background())

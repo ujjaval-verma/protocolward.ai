@@ -92,6 +92,7 @@ func waitForAddr(srv *dataplane.Server, deadline time.Duration) (string, error) 
 // (Bundled since they use the same server setup.)
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_BindsAndForwardsQuery(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -156,6 +157,7 @@ func TestServer_BindsAndForwardsQuery(t *testing.T) {
 // With CounterSeed=0 and 3 resolvers, queries 1/2/3/4 hit resolvers 0/1/2/0.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_RoundRobinSelection(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -212,6 +214,7 @@ func TestServer_RoundRobinSelection(t *testing.T) {
 // T4: First-upstream-failure: retry on next upstream succeeds.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_FirstUpstreamFail_RetrySucceeds(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -263,6 +266,7 @@ func TestServer_FirstUpstreamFail_RetrySucceeds(t *testing.T) {
 // T5: All-upstreams-failure → SERVFAIL; slog ERROR with remediation (invariant #8).
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_AllUpstreamsFail_ReturnsSERVFAIL(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -325,6 +329,7 @@ func TestServer_AllUpstreamsFail_ReturnsSERVFAIL(t *testing.T) {
 // T7a: Graceful shutdown without in-flight queries.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_GracefulShutdown(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -356,6 +361,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 // Finding #2: Double-Serve guard — second Serve() call returns a typed error.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -399,6 +405,7 @@ func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 // split into single-resolver and two-resolver variants below)
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_SingleResolver_NoRetryOnFail(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -462,6 +469,7 @@ func TestServer_SingleResolver_NoRetryOnFail(t *testing.T) {
 	}
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_AllUpstreamsFail_TwoResolvers(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -534,6 +542,7 @@ func TestServer_AllUpstreamsFail_TwoResolvers(t *testing.T) {
 // T7b: Graceful shutdown drains an in-flight slow query.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_GracefulShutdown_DrainInFlightQuery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping drain test in -short mode")
@@ -661,6 +670,7 @@ func startPolicyServer(t *testing.T, cfg dataplane.Config) string {
 }
 
 func TestHandleQuery_BlockA(t *testing.T) {
+	t.Parallel()
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
@@ -704,6 +714,7 @@ func TestHandleQuery_BlockA(t *testing.T) {
 }
 
 func TestHandleQuery_BlockAAAA(t *testing.T) {
+	t.Parallel()
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
@@ -738,6 +749,7 @@ func TestHandleQuery_BlockAAAA(t *testing.T) {
 }
 
 func TestHandleQuery_BlockMX_NXDOMAIN(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -773,6 +785,7 @@ func TestHandleQuery_BlockMX_NXDOMAIN(t *testing.T) {
 }
 
 func TestHandleQuery_PassThrough(t *testing.T) {
+	t.Parallel()
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
@@ -796,6 +809,7 @@ func TestHandleQuery_PassThrough(t *testing.T) {
 }
 
 func TestHandleQuery_NilMatcher_NoChange(t *testing.T) {
+	t.Parallel()
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -816,6 +830,7 @@ func TestHandleQuery_NilMatcher_NoChange(t *testing.T) {
 	}
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestHandleQuery_AttributionLog(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -900,6 +915,7 @@ func TestHandleQuery_AttributionLog(t *testing.T) {
 // ───────────────────────────────────────────────────────────────────────────
 
 func TestHandleQuery_SinkPreservesQClass(t *testing.T) {
+	t.Parallel()
 	// A query with qclass != INET (e.g., CHAOS) — the sink answer's
 	// RR class should match the question's class per RFC 1035.
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "test"})
@@ -939,6 +955,7 @@ func TestHandleQuery_SinkPreservesQClass(t *testing.T) {
 // zero questions sent over the wire receives a FORMERR response. miekg's
 // DefaultMsgAcceptFunc handles this case before our handler is invoked, so
 // this test documents the end-to-end observable behaviour.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_ZeroQuestion_WireReturnsFORMERR(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -995,6 +1012,7 @@ func (p *panicResolver) Query(_ context.Context, _ *dns.Msg) (*dns.Msg, error) {
 }
 func (p *panicResolver) Address() string { return p.addr }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_HandlerPanic_RecoversToServfail(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1059,6 +1077,7 @@ func TestServer_HandlerPanic_RecoversToServfail(t *testing.T) {
 
 // TestHandleQuery_AllowBeatsBlock: allow={example.com}, block={cdn.example.com}
 // A cdn.example.com → upstream A response; "policy: allowed" logged.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestHandleQuery_AllowBeatsBlock(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1120,6 +1139,7 @@ func TestHandleQuery_AllowBeatsBlock(t *testing.T) {
 // TestHandleQuery_Block_AddressMode_Custom_A: block={x.example.com}, A=10.0.0.1
 // A x.example.com → answer 10.0.0.1, AA=1, RA=0.
 func TestHandleQuery_Block_AddressMode_Custom_A(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x.example.com", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1165,6 +1185,7 @@ func TestHandleQuery_Block_AddressMode_Custom_A(t *testing.T) {
 // TestHandleQuery_Block_NXDOMAIN_Mode_A: block={x}, mode=nxdomain
 // A x → NXDOMAIN, AA=1, RA=0.
 func TestHandleQuery_Block_NXDOMAIN_Mode_A(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1198,6 +1219,7 @@ func TestHandleQuery_Block_NXDOMAIN_Mode_A(t *testing.T) {
 // TestHandleQuery_Block_NXDOMAIN_Mode_AAAA: block={x}, mode=nxdomain
 // AAAA x → NXDOMAIN, AA=1, RA=0.
 func TestHandleQuery_Block_NXDOMAIN_Mode_AAAA(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1231,6 +1253,7 @@ func TestHandleQuery_Block_NXDOMAIN_Mode_AAAA(t *testing.T) {
 // TestHandleQuery_Block_AddressMode_MX_NXDOMAIN: block={x}, mode=address
 // MX x → NXDOMAIN (non-A/AAAA in address mode falls through to NXDOMAIN).
 func TestHandleQuery_Block_AddressMode_MX_NXDOMAIN(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1256,6 +1279,7 @@ func TestHandleQuery_Block_AddressMode_MX_NXDOMAIN(t *testing.T) {
 // TestHandleQuery_NilEngine_Forwards: nil engine
 // A google.com → upstream forward (slice-A regression).
 func TestHandleQuery_NilEngine_Forwards(t *testing.T) {
+	t.Parallel()
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001", rcode: dns.RcodeSuccess}}
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1282,6 +1306,7 @@ func TestHandleQuery_NilEngine_Forwards(t *testing.T) {
 
 // TestHandleQuery_AllowOnly_NoBlock_Forwards: allow={x.example.com}, block=nil
 // A x.example.com → upstream forward + allowed log.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestHandleQuery_AllowOnly_NoBlock_Forwards(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1340,6 +1365,7 @@ func TestHandleQuery_AllowOnly_NoBlock_Forwards(t *testing.T) {
 // TestHandleQuery_BlockedQclass_Preserved: block={x}, BR.a=10.0.0.1, mode=address
 // A x with qclass=CH → answer with Class=CH (slice-B T8 I3 regression).
 func TestHandleQuery_BlockedQclass_Preserved(t *testing.T) {
+	t.Parallel()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1374,6 +1400,7 @@ func TestHandleQuery_BlockedQclass_Preserved(t *testing.T) {
 
 // TestServer_AttributionLog_Allow: allow={x}, A x → log record msg="policy: allowed",
 // kind="allow", list_id present, matched present.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_AttributionLog_Allow(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1436,6 +1463,7 @@ func TestServer_AttributionLog_Allow(t *testing.T) {
 
 // TestServer_AttributionLog_Block: block={x}, A x → log record msg="policy: blocked",
 // kind="block", remediation present.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_AttributionLog_Block(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1567,6 +1595,7 @@ func findRecordByMsg(records []map[string]any, msg string) map[string]any {
 }
 
 // SP10c T2 — verdict mapping: Malicious → Warn / Telemetry → Info / Benign → Debug.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestSlowPath_Verdict_LogLevels(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1608,6 +1637,7 @@ func TestSlowPath_Verdict_LogLevels(t *testing.T) {
 }
 
 // SP10c T2 — nil Classifier: no fork at all (no `policy: classified` line).
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestSlowPath_NilClassifier_NoFork(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1649,6 +1679,7 @@ func TestSlowPath_NilClassifier_NoFork(t *testing.T) {
 // Classify is called at most once after the latch trips.
 //
 // Race-detector exercises the atomic.Bool CompareAndSwap path.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestSlowPath_ErrUnavailable_LatchOnce_Concurrent(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1716,6 +1747,7 @@ func TestSlowPath_ErrUnavailable_LatchOnce_Concurrent(t *testing.T) {
 
 // SP10c T2 — non-ErrUnavailable error: log Warn, no latch, classify still
 // invoked on a second forward.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestSlowPath_OtherError_LogsWarn_NoLatch(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -1774,6 +1806,7 @@ func TestSlowPath_OtherError_LogsWarn_NoLatch(t *testing.T) {
 // SP10c T2 — DecideWithVerdict is consulted when Engine is non-nil; the
 // returned Decision drives the log's `kind` + `matched` fields (NOT the
 // query response — observe-only).
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestSlowPath_WithEngine_DecideWithVerdictAttribution(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

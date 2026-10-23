@@ -43,6 +43,7 @@ func newDecoySet(t *testing.T, body string) *decoy.Set {
 // TestHandleQuery_Decoy_Alerts_And_Sinkholes confirms a decoy hit produces
 // (a) the configured block response on the wire and (b) a "policy: alert"
 // log line at WARN level. The upstream resolver MUST NOT be called.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestHandleQuery_Decoy_Alerts_And_Sinkholes(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -134,6 +135,7 @@ func TestHandleQuery_Decoy_Alerts_And_Sinkholes(t *testing.T) {
 // allowlist AND in the decoy set must trip the alert and NOT be forwarded.
 // Decoy short-circuit fires before Engine.Decide so allowlist cannot mask
 // the alarm.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestHandleQuery_DecoyBeatsAllowlist(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -202,6 +204,7 @@ func TestHandleQuery_DecoyBeatsAllowlist(t *testing.T) {
 // still flow through Engine.Decide. Sanity: confirms the short-circuit only
 // fires on actual decoy hits.
 func TestHandleQuery_DecoyMiss_FallsThroughToEngine(t *testing.T) {
+	t.Parallel()
 	decoys := newDecoySet(t, "0.0.0.0 only.this.decoy\n")
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 
@@ -264,6 +267,7 @@ func (c *captureRecorder) all() []captureRecord {
 // TestHandleQuery_DecisionRecorder_DecoyHit confirms the Record hook fires
 // on the decoy short-circuit branch with action="decoy".
 func TestHandleQuery_DecisionRecorder_DecoyHit(t *testing.T) {
+	t.Parallel()
 	decoys := newDecoySet(t, "0.0.0.0 tripwire.dod.test\n")
 	rec := &captureRecorder{}
 
@@ -312,6 +316,7 @@ func TestHandleQuery_DecisionRecorder_DecoyHit(t *testing.T) {
 // TestHandleQuery_DecisionRecorder_ForwardPath confirms forward decisions
 // also fire Record with action="forward".
 func TestHandleQuery_DecisionRecorder_ForwardPath(t *testing.T) {
+	t.Parallel()
 	rec := &captureRecorder{}
 	resolver := &countingResolver{inner: &fakeResolver{addr: "127.0.0.1:9001"}}
 
@@ -357,6 +362,7 @@ func TestHandleQuery_DecisionRecorder_ForwardPath(t *testing.T) {
 // TestHandleQuery_DecisionRecorder_BlockHit confirms a block-path query
 // produces Record(qname, "block", matchedLabel).
 func TestHandleQuery_DecisionRecorder_BlockHit(t *testing.T) {
+	t.Parallel()
 	rec := &captureRecorder{}
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "example.com", listID: "blk"})
 
@@ -399,6 +405,7 @@ func TestHandleQuery_DecisionRecorder_BlockHit(t *testing.T) {
 // TestHandleQuery_DecisionRecorder_AllowHit confirms an allow-path query
 // produces Record(qname, "allow", matchedLabel) AFTER the forward returns.
 func TestHandleQuery_DecisionRecorder_AllowHit(t *testing.T) {
+	t.Parallel()
 	rec := &captureRecorder{}
 	allow := &stubMatcher{blockedSuffix: "example.com", listID: "allow-list"}
 	engine := policy.NewEngine(allow, nil)

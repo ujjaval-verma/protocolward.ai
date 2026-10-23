@@ -57,6 +57,7 @@ func (s *stubResolver) Address() string { return "127.0.0.1:9001" }
 // an ERROR with remediation field when req.Question is empty.
 // ───────────────────────────────────────────────────────────────────────────
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_ZeroQuestion_ReturnsFormErr(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -114,6 +115,7 @@ func TestServer_ZeroQuestion_ReturnsFormErr(t *testing.T) {
 // ───────────────────────────────────────────────────────────────────────────
 
 func TestHandleQuery_UnknownAction_Panics(t *testing.T) {
+	t.Parallel()
 	// Construct a *Server minimally; we exercise the dispatchForTest seam,
 	// not the full DNS pipeline.
 	s := &Server{
@@ -144,6 +146,7 @@ func TestHandleQuery_UnknownAction_Panics(t *testing.T) {
 // (c) isConnectivityProbe matches on label boundaries: the zone itself and
 // names under it, never look-alikes that merely share a suffix or prefix.
 func TestIsConnectivityProbe(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		qname string
 		want  bool
