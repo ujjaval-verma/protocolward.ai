@@ -16,6 +16,8 @@ root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || {
 }
 cd "$root"
 re_key='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(.*)$'
+re_dq='^"([^"]*)"'
+re_sq="^'([^']*)'"
 re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
 bad=0
 uses=0
@@ -28,9 +30,27 @@ while IFS= read -r f; do
     [[ $line =~ $re_key ]] || continue
     uses=$((uses + 1))
     v="${BASH_REMATCH[2]}"
-    v="${v%%[[:space:]]*}"
-    if [[ ! $v =~ $re_sha ]]; then
-      printf 'check-actions-pinned: %s:%s: uses: %s: not pinned to a full 40-hex lowercase commit SHA\n' "$f" "$n" "$v" >&2
+    v="${v%$'\r'}"
+    reason="not pinned to a full 40-hex lowercase commit SHA"
+    ok=0
+    if [[ $v =~ $re_dq ]]; then
+      v="${BASH_REMATCH[1]}"
+    elif [[ $v =~ $re_sq ]]; then
+      v="${BASH_REMATCH[1]}"
+    elif [[ $v == \"* || $v == \'* ]]; then
+      printf 'check-actions-pinned: %s:%s: uses: %s: unterminated quote\n' "$f" "$n" "$v" >&2
+      bad=1
+      continue
+    else
+      v="${v%%[[:space:]]*}"
+    fi
+    if [[ -z $v ]]; then
+      reason="(empty)"
+    elif [[ $v =~ $re_sha ]]; then
+      ok=1
+    fi
+    if (( ! ok )); then
+      printf 'check-actions-pinned: %s:%s: uses: %s: %s\n' "$f" "$n" "$v" "$reason" >&2
       bad=1
     fi
   done < "$f"
