@@ -1004,32 +1004,41 @@ func TestServe_ListenAddrOverride_Invalid_ExitsCode2(t *testing.T) {
 
 func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
 	const (
-		addr      = "127.0.0.1:53"
-		inUseWant = "port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr"
+		addr     = "127.0.0.1:53"
+		highAddr = "127.0.0.1:5353"
+		setcap   = "bind to 127.0.0.1:53 requires CAP_NET_BIND_SERVICE; run `sudo setcap cap_net_bind_service=+ep ./bin/ward` or "
 	)
 	cases := []struct {
-		name string
-		err  error
-		addr string
-		want string
+		name     string
+		err      error
+		addr     string
+		wantFlag string
+		wantYAML string
 	}{
-		{"in use", errors.New("listen udp: bind: address already in use"), addr, inUseWant},
-		{"eacces low port", errors.New("listen udp: bind: permission denied"), addr, "--listen-addr"},
-		{"eacces high port", errors.New("listen udp: bind: permission denied"), "127.0.0.1:5353", "--listen-addr"},
-		{"fallback", errors.New("something odd"), addr, "--listen-addr"},
+		{"in use", errors.New("listen udp: bind: address already in use"), addr,
+			"port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr",
+			"port already in use at 127.0.0.1:53; stop the process using that port or change listen in ward.yaml"},
+		{"eacces low port", errors.New("listen udp: bind: permission denied"), addr,
+			setcap + "pass --listen-addr with a port >= 1024",
+			setcap + "set listen to a port >= 1024 in ward.yaml"},
+		{"eacces high port", errors.New("listen udp: bind: permission denied"), highAddr,
+			"bind to 127.0.0.1:5353 was refused; ensure ward has permission or pass --listen-addr with a port >= 1024",
+			"bind to 127.0.0.1:5353 was refused; ensure ward has permission or use a port >= 1024"},
+		{"fallback", errors.New("something odd"), addr,
+			"check the --listen-addr address and port availability",
+			"check listen address and port availability in ward.yaml"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := bindErrRemediationFor(c.err, c.addr, true)
-			if !strings.Contains(got, c.want) {
-				t.Errorf("remediation %q does not contain %q", got, c.want)
+			if got := bindErrRemediationFor(c.err, c.addr, true); got != c.wantFlag {
+				t.Errorf("flag remediation = %q, want %q", got, c.wantFlag)
 			}
-			if strings.Contains(got, "ward.yaml") {
-				t.Errorf("remediation %q must not point at ward.yaml when the flag set the address", got)
+			// The ward.yaml source: pinned through the wrapper and directly.
+			if got := bindErrRemediation(c.err, c.addr); got != c.wantYAML {
+				t.Errorf("bindErrRemediation = %q, want %q", got, c.wantYAML)
 			}
-			// The ward.yaml source keeps the existing text.
-			if bindErrRemediationFor(c.err, c.addr, false) != bindErrRemediation(c.err, c.addr) {
-				t.Errorf("bindErrRemediation must equal bindErrRemediationFor(..., false)")
+			if got := bindErrRemediationFor(c.err, c.addr, false); got != c.wantYAML {
+				t.Errorf("bindErrRemediationFor(false) = %q, want %q", got, c.wantYAML)
 			}
 		})
 	}
