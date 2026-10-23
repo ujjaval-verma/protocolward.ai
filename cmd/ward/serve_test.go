@@ -618,90 +618,54 @@ func freeTCPAddr(t *testing.T) string {
 // detector → query forwarded (upstream is dead, so the forward path's
 // SERVFAIL + "all upstream resolvers failed" log prove it was forwarded,
 // not answered by the block path) → hostname listed in dashboard Flags.
+//
+// Determinism: ward binds a kernel-assigned DNS port and dashboard port that
+// it holds itself, and the test learns both from ward's own `dns: listening`
+// and `dashboard: ready` log lines (startWard), so no other process can take
+// the port and no retry loop is needed. It sends one query, then waits for
+// the `policy: classified` line: ward records the flag before logging it and
+// all log lines share one ordered pipe, so once that line is captured the
+// flag is on the dashboard and every earlier line is in the capture too.
 func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 	const dgaProbe = "3f9a1c7e5b2d8046af1e9c3b7d5a2e80.info"
 	if a, err := detect.New().Assess(context.Background(), pmodel.Input{Hostname: dgaProbe}); err != nil || a.Verdict != schema.VerdictMalicious {
 		t.Fatalf("precondition: detect.New() must flag %q, got %+v err=%v", dgaProbe, a, err)
 	}
-	bin, err := buildWardBin()
-	if err != nil {
-		t.Fatalf("could not build ward binary: %v", err)
-	}
-	dnsAddr, dashAddr := freeUDPAddr(t), freeTCPAddr(t)
-	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
-	body := `listen: "` + dnsAddr + `"
-upstreams:
-  - address: "127.0.0.1:1"
-    server_name: "unreachable.test"
-timeouts:
-  dial: "300ms"
-  query: "500ms"
-  shutdown: "2s"
-model:
+	w := startWard(t, deadUpstreamCfg+`model:
   builtin: lexical
-`
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(bin, "serve", "--config", cfgPath, "--dash-listen-addr", dashAddr)
-	out := &safeBuffer{}
-	cmd.Stdout, cmd.Stderr = out, out
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-	})
+`)
 
-	// Wait for the DNS listener: retry until any reply arrives.
 	c := &dns.Client{Timeout: 2 * time.Second}
 	m := new(dns.Msg)
 	m.SetQuestion(dgaProbe+".", dns.TypeA)
-	var resp *dns.Msg
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if resp, _, err = c.Exchange(m, dnsAddr); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	resp, _, err := c.Exchange(m, w.dnsAddr)
 	if err != nil {
-		t.Fatalf("no DNS reply within 5s: %v\nlog:\n%s", err, out.String())
+		t.Fatalf("no DNS reply from %s: %v\nlog:\n%s", w.dnsAddr, err, w.out.String())
 	}
 	if resp.Rcode != dns.RcodeServerFailure {
 		t.Errorf("rcode = %s, want SERVFAIL from the forward path (flag-only, never blocked)", dns.RcodeToString[resp.Rcode])
 	}
 
-	// Poll the dashboard until the flag shows up (the fork is async). The
-	// panel is extracted by its element boundaries, independent of the order
-	// of the flags and decisions sections (k).
-	var panel string
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if hr, gerr := http.Get("http://" + dashAddr + "/"); gerr == nil {
-			raw, _ := io.ReadAll(hr.Body)
-			hr.Body.Close()
-			panel = extractPanel(string(raw), `id="flags"`)
-			if strings.Contains(panel, dgaProbe) {
-				break
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	if _, err := w.waitFor("policy: classified"); err != nil {
+		t.Fatalf("%v", err)
 	}
+
+	// The panel is extracted by its element boundaries, independent of the
+	// order of the flags and decisions sections (k).
+	hr, err := http.Get("http://" + w.dashAddr + "/")
+	if err != nil {
+		t.Fatalf("GET dashboard: %v\nlog:\n%s", err, w.out.String())
+	}
+	raw, _ := io.ReadAll(hr.Body)
+	hr.Body.Close()
+	panel := extractPanel(string(raw), `id="flags"`)
 	// (j) Assert strings that exist only in a rendered row — the qname and a
 	// reason code — not the static "flagged, not blocked" note, which the
 	// empty state also renders.
 	if !strings.Contains(panel, dgaProbe) || !strings.Contains(panel, "rare_ngrams") {
-		t.Fatalf("dashboard flags panel missing %q row:\n%s\nlog:\n%s", dgaProbe, panel, out.String())
+		t.Fatalf("dashboard flags panel missing %q row:\n%s\nlog:\n%s", dgaProbe, panel, w.out.String())
 	}
-	log := out.String()
+	log := w.out.String()
 	for _, want := range []string{
 		`"msg":"policy: model loaded"`, `"builtin":"lexical"`,
 		`"msg":"all upstream resolvers failed"`,
