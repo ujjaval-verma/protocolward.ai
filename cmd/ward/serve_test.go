@@ -836,6 +836,7 @@ func launchWard(t *testing.T, cfgBody, listenAddr string) *wardProc {
 		"--listen-addr", listenAddr, "--dash-listen-addr", "127.0.0.1:0")
 	w := &wardProc{out: newWakeBuffer(), exited: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = w.out, w.out
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start ward: %v", err)
 	}
