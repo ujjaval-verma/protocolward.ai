@@ -62,6 +62,7 @@ good "    uses: org/repo/.github/workflows/f.yml@$sha"
 good '      # - uses: actions/checkout@v4'
 good '      - uses: ./local-action'
 good '    uses: ./.github/workflows/reuse.yml'
+put  '  next-job:'   # keeps the steps below from reading as a continuation of the job-level uses:
 good "      - uses: docker://alpine@sha256:$dig"
 bad  '      - uses: docker://alpine:3.20'                              'not pinned by @sha256:'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
@@ -73,7 +74,7 @@ while IFS='|' read -r ln why; do
     || fail "forms.yml:$ln not reported with '$why'"
 done <<<"$badl"
 for ln in $goodl; do
-  if grep -qF "forms.yml:$ln:" <<<"$out"; then fail "good line forms.yml:$ln flagged"; fi
+  if grep -qF "forms.yml:$ln:" <<<"$out"; then fail "good line forms.yml:$ln flagged: $out"; fi
 done
 git -C "$T" rm -q -f --cached .github/workflows/forms.yml && rm "$forms"
 
@@ -113,6 +114,21 @@ grep -qF "check-actions-pinned: OK (6 uses: in 5 files)" <<<"$out" || fail "unex
 rn=0
 newrepo() { rn=$((rn + 1)); repo="$R/r$rn"; mkdir -p "$repo/.github/workflows"; git -C "$repo" init -q; }
 step() { printf 'jobs:\n  j:\n    steps:\n%s\n' "$1"; }   # a workflow whose only content is line 4
+expect_bad() {   # <workflow body line(s) from line 4> <label> [message fragment]
+  newrepo
+  step "$1" > "$repo/.github/workflows/a.yml"
+  git -C "$repo" add -A
+  out="$(scan "$repo" 2>&1)" && fail "$2: scanner passed: $out"
+  grep -qF "check-actions-pinned: .github/workflows/a.yml:4:" <<<"$out" || fail "$2: not reported at a.yml:4: $out"
+  if [[ -n ${3:-} ]]; then grep -qF "$3" <<<"$out" || fail "$2: message lacks '$3': $out"; fi
+}
+expect_good() {
+  newrepo
+  step "$1" > "$repo/.github/workflows/a.yml"
+  git -C "$repo" add -A
+  out="$(scan "$repo" 2>&1)" || fail "$2: scanner failed: $out"
+  grep -qF "OK (1 uses: in 1 files)" <<<"$out" || fail "$2: not counted as one use: $out"
+}
 
 # F1: a non-ASCII file name must be scanned (git quotes it as "d\303\251ploy.yml" without -z).
 newrepo
@@ -143,5 +159,17 @@ for form in 'uses :' '- !!str uses:' '!!str uses :'; do
   out="$(scan "$repo" 2>&1)" || fail "'$form' SHA-pinned failed: $out"
   grep -qF "OK (1 uses: in 1 files)" <<<"$out" || fail "'$form' SHA-pinned not counted: $out"
 done
+
+# N2: strict quoting. Only whitespace or a `# comment` may follow a closing quote; a value may not continue on the next line.
+expect_bad "      - uses: \"actions/checkout@$sha\" junk" 'text after double quote'
+expect_bad "      - uses: \"actions/checkout@$sha\"# c" 'comment without space after quote'
+expect_bad "      - uses: 'actions/checkout@$sha' junk" 'text after single quote'
+expect_bad "      - uses: 'actions/checkout@$sha''x'" "'' escape after the sha"
+expect_bad "      - uses: 'actions/checkout@v4''@$sha'" "'' escape inside the value"
+expect_bad $'      - uses: actions/checkout@'"$sha"$'\n          v4' 'plain scalar continuation line' 'continues on the next line'
+expect_good "      - uses: \"actions/checkout@$sha\"   # c" 'double quote then comment'
+expect_good "      - uses: 'actions/checkout@$sha' # c" 'single quote then comment'
+expect_good "      - uses: 'actions/checkout@$sha'  " 'single quote then trailing spaces'
+expect_good $'      - uses: actions/checkout@'"$sha"$'\n        # more indented comment\n        with:\n          x: y' 'sibling key and comment after uses'
 
 echo "check-actions-pinned selftest: OK (bash $ver)"

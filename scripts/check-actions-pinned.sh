@@ -24,7 +24,9 @@ git ls-files -z --cached --others --exclude-standard -- '.github/workflows/*.yml
   echo "check-actions-pinned: git ls-files failed" >&2
   exit 1
 }
-re_key='^[[:space:]]*(-[[:space:]]+)?([!&][^[:space:]]*[[:space:]]+)*uses[[:space:]]*:[[:space:]]*(.*)$'
+re_key='^([[:space:]]*)(-[[:space:]]+)?([!&][^[:space:]]*[[:space:]]+)*uses[[:space:]]*:[[:space:]]*(.*)$'
+re_ind='^([[:space:]]*)(.*)$'
+re_tail='^([[:space:]]+#.*|[[:space:]]*)$'   # after a closing quote: only whitespace or a # comment
 re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
 re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
@@ -40,18 +42,40 @@ while IFS= read -r -d '' f; do
   fi
   files=$((files + 1))
   n=0
+  pend=""
+  pend_col=0
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))
+    if [[ -n $pend ]]; then
+      # A more-indented line right after uses: continues the scalar (blank lines are skipped, a comment ends it).
+      [[ $line =~ $re_ind ]]
+      ind="${#BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[2]%$'\r'}"
+      if [[ -n $rest ]]; then
+        if [[ $rest != '#'* ]] && (( ind > pend_col )); then
+          printf 'check-actions-pinned: %s:%s: uses: value continues on the next line\n' "$f" "$pend" >&2
+          bad=1
+        fi
+        pend=""
+      fi
+    fi
     [[ $line =~ $re_key ]] || continue
     uses=$((uses + 1))
-    v="${BASH_REMATCH[3]}"
+    pend="$n"
+    pend_col=$(( ${#BASH_REMATCH[1]} + ${#BASH_REMATCH[2]} ))
+    v="${BASH_REMATCH[4]}"
     v="${v%$'\r'}"
     reason="not pinned to a full 40-hex lowercase commit SHA"
     ok=0
-    if [[ $v =~ $re_dq ]]; then
-      v="${BASH_REMATCH[1]}"
-    elif [[ $v =~ $re_sq ]]; then
-      v="${BASH_REMATCH[1]}"
+    if [[ $v =~ $re_dq || $v =~ $re_sq ]]; then
+      q="${BASH_REMATCH[1]}"
+      tail="${v:${#BASH_REMATCH[0]}}"
+      if [[ ! $tail =~ $re_tail ]]; then
+        printf 'check-actions-pinned: %s:%s: uses: %s: unexpected text after the closing quote\n' "$f" "$n" "$v" >&2
+        bad=1
+        continue
+      fi
+      v="$q"
     elif [[ $v == \"* || $v == \'* ]]; then
       printf 'check-actions-pinned: %s:%s: uses: %s: unterminated quote\n' "$f" "$n" "$v" >&2
       bad=1
