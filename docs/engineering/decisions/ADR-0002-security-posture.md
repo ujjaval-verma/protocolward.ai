@@ -12,6 +12,7 @@
 - **Amended:** 2026-10-21 — GitHub repository settings: secret scanning and push protection on; Actions restricted to an allowlist with SHA pinning required (§1; issue #12)
 - **Amended:** 2026-10-23 — Actions SHA-pin gate (check-actions-pinned) in make check and on pre-push (§1, §2; issue #42)
 - **Amended:** 2026-10-23 — Dependabot alerts and private vulnerability reporting on; automated security-update PRs off (§1, §4; issue #41)
+- **Amended:** 2026-10-23 — pre-push budget raised to 30 s cold; all pre-push gates run concurrently in one make target (§2)
 
 ## Context
 
@@ -51,7 +52,7 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 | Stage | Budget | Contents |
 |---|---|---|
 | pre-commit | ≤5s | trailing-ws, eof-fix, check-yaml/json, large-file, merge-conflict, mixed-line-ending, go-fmt, codespell |
-| pre-push | ≤20s cold | go mod tidy -diff, golangci-lint + go vet + full `go test -race` (`make test`) + wasm compile and 5 MB size gate (one hook, `make -j4`), go mod verify, **`govulncheck`**, check-public, check-spdx, check-testing-doc, check-licenses, check-actions-pinned |
+| pre-push | ≤30s cold | one hook, `make -k -j8 pre-push`, running every gate concurrently: go mod tidy -diff, golangci-lint, go vet, full `go test -race` (`make test`), wasm compile and 5 MB size gate, go mod verify, **`govulncheck`**, check-public, check-spdx, check-testing-doc, check-licenses, check-actions-pinned |
 | `make audit` (manual, pre-release) | unbounded | full `go test -race`, future syft+grype SBOM, future cosign verify of update-channel artifacts, pnpm audit signatures (when web exists) |
 
 Note (2026-10-06): `make audit` today runs `go mod verify`, govulncheck and `goreleaser check`; the full race suite runs in `make ci`, and pnpm audit runs in `make audit` once a lockfile exists, not on pre-push.
@@ -62,7 +63,9 @@ Note (2026-10-20, issue #25): the pre-push budget is measured cold, meaning empt
 
 Note (2026-10-23, issue #42): `check-actions-pinned` is a pre-push hook through the same Make target `make check` uses (`make check-actions-pinned`: its self-test, then the scan of `.github/workflows` and `.github/actions` for a `uses:` that is not a full commit SHA). Measured warm cost is 0.46 to 0.47 s. Cold pre-push, same definition as the issue #25 note and taken on the same machine, three runs each: 18.4/17.5/18.5 s before the hook, 17.9/17.7/18.1 s with it. The difference is inside run-to-run variance, because the gate needs no Go build or lint cache, so it costs the same cold as warm; it stays under the 20 s budget.
 
-Re-evaluation ladder if pre-push exceeds 20s sustainably:
+Note (2026-10-23): the pre-push budget is raised from 20 s to 30 s cold, with the cold definition unchanged from the issue #25 note. Before, on the branch base, three runs: 24.6/22.0/22.5 s. After, three runs: 15.4/15.1/16.1 s. 20 s left no margin for run-to-run noise (17.3 to 18.5 s in the notes above and 22.0 to 24.6 s on 2026-10-23 for the same hook set) and no room for new tests. Two changes brought the time down. The deadline tests in `internal/upstream` and `internal/dataplane` that own their state now run in parallel; warm wall time for `go test -race -count=1` went from 5.50 to 2.36 s for `internal/upstream` and from 4.39 to 4.09 s for `internal/dataplane` (the rest of `internal/dataplane` stays serial because `obs.Capture` swaps the global `slog` default). And every gate now runs concurrently as `make -k -j8 pre-push` in one hook; before, lint, vet, tests and the wasm gate ran concurrently in one `make -j4` hook, and the remaining gates ran as separate hooks one after another; `-j8` measured 15.4/15.3/16.6 s cold against 16.2/16.0/16.0 s for `-j4`. The current warm cost of `check-actions-pinned` is 1.53 s (median of three), which supersedes the 0.46 to 0.47 s in the issue #42 note: its self-test now runs the scanner 31 times over 11 throwaway repositories, and the gate runs alongside the heaviest step, not after it.
+
+Re-evaluation ladder if pre-push exceeds 30s sustainably:
 
 1. Move the full race suite off pre-push to `make ci` only, keeping a fast subset on pre-push.
 2. Once the repo is public, move the heaviest checks into a pre-merge GitHub workflow as required checks.
@@ -103,7 +106,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 
 ## Consequences
 
-- Pre-push becomes mildly slower (about 9 s warm and 18 s cold as of 2026-10-20, ≤20s cold budget) — acceptable for the supply-chain guarantee.
+- Pre-push becomes mildly slower (about 9 s warm and 18 s cold as of 2026-10-20, ≤30s cold budget) — acceptable for the supply-chain guarantee.
 - The `check-actions-pinned` gate adds about 0.5 s to pre-push (a few lines of bash over the workflow files, no build cache involved) and means an unpinned `uses:` is caught before the push instead of only at job setup.
 - Solo dev can choose to bypass with `--no-verify`; that is a documented policy violation, not an accident.
 - No green-checkmark hygiene burden on GitHub; contributors run `make ci` locally.
@@ -115,7 +118,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 
 ## Revisit conditions
 
-- Pre-push latency exceeds 20s for ≥2 consecutive weeks on a cold push (empty Go build and lint caches).
+- Pre-push latency exceeds 30s for ≥2 consecutive weeks on a cold push (empty Go build and lint caches).
 - A CVE arrives that `govulncheck` does not detect but `grype` or Socket.dev would have. Pulls SBOM tooling into pre-push.
 - Bun, Deno, or another runtime gains a credible security track record (Sigstore-equivalent provenance, formal audits) that justifies a swap. ≥18 months sustained signal required.
 - Outside pull requests arrive faster than local review can keep up with. (The repository going public on 2026-10-05 was considered and did not by itself trigger CI; see the §1 amendment.)
