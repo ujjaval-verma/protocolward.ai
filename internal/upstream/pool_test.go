@@ -37,6 +37,7 @@ func newMsg() *dns.Msg {
 // TestQuery_Burst100At20ms is the issue's acceptance burst: a cold client with
 // the default pool answers 100 concurrent queries against a 20 ms upstream in
 // under 500 ms. The threshold is fixed and the pool is never pre-warmed.
+// Serial: asserts the 500 ms burst bound, measured at 45 % of it under -cpu 1; parallel load eats its headroom.
 func TestQuery_Burst100At20ms(t *testing.T) {
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond})
 	client, err := upstream.New(fakeConfig(srv))
@@ -178,6 +179,7 @@ func newHangServer(t *testing.T) *FakeDoTServer {
 }
 
 func TestQuery_PoolWait_DeadlineExceeded(t *testing.T) {
+	t.Parallel()
 	srv := newHangServer(t)
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -203,6 +205,7 @@ func TestQuery_PoolWait_DeadlineExceeded(t *testing.T) {
 }
 
 func TestQuery_PoolWait_Canceled(t *testing.T) {
+	t.Parallel()
 	srv := newHangServer(t)
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -232,6 +235,7 @@ func TestQuery_PoolWait_Canceled(t *testing.T) {
 // An already-ended ctx on an idle cold client returns the plain context error
 // without taking a slot or dialling.
 func TestQuery_PoolWait_AlreadyDone(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -254,6 +258,7 @@ func TestQuery_PoolWait_AlreadyDone(t *testing.T) {
 
 // Simulates the dataplane's two-resolver split: a saturated primary gives up
 // at its half of the budget, and the fallback answers inside the rest.
+// Serial: asserts the 600 ms failover budget at under 2x headroom (about 350 ms under -race -cpu 1).
 func TestQuery_PoolWait_LeavesBudgetForFallback(t *testing.T) {
 	srvPrimary := newHangServer(t)
 	primary := newPoolClient(t, srvPrimary, 1, time.Minute)
@@ -322,6 +327,7 @@ func firstErr(errs []error) error {
 }
 
 func TestQuery_PoolBound(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond})
 	client := newPoolClient(t, srv, 4, time.Minute)
 	defer client.Close()
@@ -341,6 +347,7 @@ func TestQuery_PoolBound(t *testing.T) {
 // the top stale connection, closes only that one and retries on one fresh
 // dial, which then serves the rest from the top of the LIFO stack.
 func TestQuery_HalfClosedIdle(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		reset bool
@@ -349,6 +356,7 @@ func TestQuery_HalfClosedIdle(t *testing.T) {
 		{"rst", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			arm := make(chan struct{})
 			srv := newFakeDoT(t, FakeDoTOptions{
 				Rcode:          dns.RcodeSuccess,
@@ -401,6 +409,7 @@ func TestQuery_HalfClosedIdle(t *testing.T) {
 // A deadline from an earlier exchange must not apply to a later one on the
 // same connection.
 func TestQuery_ReusedConn_ClearsOldDeadline(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -426,6 +435,7 @@ func TestQuery_ReusedConn_ClearsOldDeadline(t *testing.T) {
 // reply, but its connection is discarded, not pooled: the cancel callback may
 // yet set a deadline of now on it, which would fail the next query on it.
 func TestQuery_CancelAfterReply_ConnDiscarded(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -461,6 +471,7 @@ func TestQuery_CancelAfterReply_ConnDiscarded(t *testing.T) {
 
 // A query whose ctx ends just after it wins a slot is neither sent nor dialled.
 func TestQuery_SlotTaken_CtxEnded_NotSent(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -501,6 +512,7 @@ func TestQuery_SlotTaken_CtxEnded_NotSent(t *testing.T) {
 // A read that hits the query's deadline on a reused connection closes only
 // that connection and is neither retried nor redialled.
 func TestQuery_ReusedConnDeadline_NoRetry(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 200 * time.Millisecond, IdleClose: time.Minute})
 	client := newPoolClient(t, srv, 4, time.Minute)
 	defer client.Close()
@@ -540,6 +552,7 @@ func TestQuery_ReusedConnDeadline_NoRetry(t *testing.T) {
 // A healthy connection is back on the idle stack before the slot frees, so a
 // waiter woken by that slot reuses it instead of dialling one too many.
 func TestQuery_ReleaseBeforeSlotFree(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -594,6 +607,7 @@ func (c endsAfterPrecheckCtx) Err() error {
 // then gets the plain context error from the post-slot re-check, never the
 // wait error that claims every connection is in use.
 func TestQuery_FreeSlot_CtxEnded_NoWaitError(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -622,6 +636,7 @@ func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-tim
 // in Query too: the query returns the write's deadline error and is not
 // retried on a fresh dial.
 func TestQuery_PastDeadline_LiveErr_NoRetry(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -649,6 +664,7 @@ func TestQuery_PastDeadline_LiveErr_NoRetry(t *testing.T) {
 // main's retry rule is kept: a failure on a freshly dialled connection is
 // retried once, on another fresh dial, never more.
 func TestQuery_FreshConnFailure_RetriedOnce(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, CloseWithoutReply: true})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -680,6 +696,7 @@ func TestQuery_FreshConnFailure_RetriedOnce(t *testing.T) {
 }
 
 func TestQuery_HandshakeFailure_RetriedOnce(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{CloseOnHandshake: true})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -699,6 +716,7 @@ func TestQuery_HandshakeFailure_RetriedOnce(t *testing.T) {
 
 // The only idle connection never expires, however long it has been idle.
 func TestQuery_IdleExpiry_KeepsMostRecent(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, IdleClose: time.Minute})
 	client := newPoolClient(t, srv, 16, 50*time.Millisecond)
 	defer client.Close()
@@ -717,6 +735,7 @@ func TestQuery_IdleExpiry_KeepsMostRecent(t *testing.T) {
 
 // Idle connections beyond the most recent one are closed once they expire.
 func TestQuery_IdleExpiry_ExtrasClosed(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond, IdleClose: time.Minute})
 	client := newPoolClient(t, srv, 4, 50*time.Millisecond)
 	defer client.Close()
@@ -751,6 +770,7 @@ func wantClosed(t *testing.T, what string, err error, addr string) {
 }
 
 func TestClose_UnblocksInFlight(t *testing.T) {
+	t.Parallel()
 	srv := newHangServer(t)
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -773,6 +793,7 @@ func TestClose_UnblocksInFlight(t *testing.T) {
 }
 
 func TestClose_ReleasesWaiters(t *testing.T) {
+	t.Parallel()
 	srv := newHangServer(t)
 	client := newPoolClient(t, srv, 1, time.Minute)
 	defer client.Close()
@@ -797,6 +818,7 @@ func TestClose_ReleasesWaiters(t *testing.T) {
 }
 
 func TestClose_QueryAfterCloseNoDial(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -817,6 +839,7 @@ func TestClose_QueryAfterCloseNoDial(t *testing.T) {
 }
 
 func TestClose_Idempotent(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -830,6 +853,7 @@ func TestClose_Idempotent(t *testing.T) {
 }
 
 func TestClose_ConcurrentWithQueries(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: time.Millisecond})
 	client, err := upstream.New(fakeConfig(srv))
 	if err != nil {
@@ -888,6 +912,7 @@ func TestClose_ConcurrentWithQueries(t *testing.T) {
 
 // A query that wins a slot as Close runs neither reuses nor dials.
 func TestClose_AfterSlot_NoDial(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 	client := newPoolClient(t, srv, 1, time.Minute)
 	upstream.SetAfterSlotHook(client, client.Close)
@@ -904,6 +929,7 @@ func TestClose_AfterSlot_NoDial(t *testing.T) {
 // Waiters entering checkout concurrently with Close all see ErrClosed, and
 // only the occupant's connection is ever dialled.
 func TestClose_RacesWaiters_NoDialAfterClose(t *testing.T) {
+	t.Parallel()
 	for round := 0; round < 5; round++ {
 		t.Run(fmt.Sprintf("round%d", round), func(t *testing.T) {
 			srv := newHangServer(t)

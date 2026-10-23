@@ -20,6 +20,7 @@ type pastDeadlineCtx struct{ context.Context }
 func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
 
 func TestDeadlineOutcome(t *testing.T) {
+	t.Parallel()
 	live := context.Background()
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
