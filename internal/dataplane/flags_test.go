@@ -57,6 +57,7 @@ func flagsSection(t *testing.T, body string) string {
 // S2 tracer bullet: real detector in the dataplane fork, real web FlagLog,
 // real dashboard handler. Proves the DGA-like name is (a) answered from
 // upstream — flag-only, never enforced — and (b) listed under Flags.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestTracer_BuiltinDetector_FlagsAndStillForwards(t *testing.T) {
 	requireDetectorFlags(t, dgaProbe)
 	restore := obs.Capture(t)
@@ -247,6 +248,7 @@ func maliciousAssessment() schema.Assessment {
 	}
 }
 
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestFlags_Malicious_RecordsFlagWithClientScoreTopReasons(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -268,6 +270,7 @@ func TestFlags_Malicious_RecordsFlagWithClientScoreTopReasons(t *testing.T) {
 	}
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_Benign_NoFlag(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -288,6 +291,7 @@ func TestFlags_Benign_NoFlag(t *testing.T) {
 
 // Sibling-adapter shape (Classify only): no flag, and the classified line is
 // unchanged (no flag attrs) — DoD bullets 13-15 depend on this path.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_ClassifyOnly_NoFlag_LogUnchanged(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -311,6 +315,7 @@ func TestFlags_ClassifyOnly_NoFlag_LogUnchanged(t *testing.T) {
 // One event, one line: the flag rides on the existing policy: classified
 // record. Flags is nil here — proves the nil sink is safe and logging is
 // independent of the dashboard.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_LogLine_OnePerFlag(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -344,6 +349,7 @@ func TestFlags_LogLine_OnePerFlag(t *testing.T) {
 // S1 contract: invalid hostnames return a wrapped detect.ErrInvalidHostname.
 // That is a quiet skip — Debug only, no flag, no Warn — and the
 // model-unavailable latch is NOT tripped (the next query is still assessed).
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_InvalidHostname_QuietSkip_NoLatch(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -378,6 +384,7 @@ func TestFlags_InvalidHostname_QuietSkip_NoLatch(t *testing.T) {
 // ctx.Err() on timeout or cancellation) is a Warn with a remediation that
 // fits the in-process detector: there is no adapter to investigate. The
 // sibling path keeps its adapter-logs remediation. Neither trips the latch.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_NonSentinelError_RemediationMatchesPath(t *testing.T) {
 	t.Run("assessor_path_names_builtin_detector", func(t *testing.T) {
 		restore := obs.Capture(t)
@@ -419,6 +426,7 @@ func TestFlags_NonSentinelError_RemediationMatchesPath(t *testing.T) {
 // only because the real detector flags it. If a recalibration stops
 // flagging it, the entry is dead weight and this fails so it gets reviewed.
 func TestFlags_RealDetector_Msftncsi_StillMalicious(t *testing.T) {
+	t.Parallel()
 	a, err := detect.New().Assess(context.Background(), model.Input{Hostname: "msftncsi.com"})
 	if err != nil {
 		t.Fatalf("Assess: %v", err)
@@ -432,6 +440,7 @@ func TestFlags_RealDetector_Msftncsi_StillMalicious(t *testing.T) {
 // underscore label is legitimate. Neither may flag or warn. (_dmarc.github.com,
 // not *.example.com: S1 does not score the example TLD at all, so it would
 // not exercise underscore acceptance.)
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_RealDetector_RootAndUnderscore_Quiet(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -463,6 +472,7 @@ func TestFlags_RealDetector_RootAndUnderscore_Quiet(t *testing.T) {
 // builds one — the Assessor path must NOT consult DecideWithVerdict, whose
 // Malicious → ActionBlock mapping planned enforcement will start applying. The sibling path
 // with the same Engine still does (unchanged attribution).
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_Assessor_NeverConsultsEngine(t *testing.T) {
 	engine := policy.NewEngine(nil, nil)
 
@@ -493,6 +503,7 @@ func TestFlags_Assessor_NeverConsultsEngine(t *testing.T) {
 // DD9: LAN clients' OS connectivity probes are skipped before Assess, so they
 // can never be flagged, whatever the detector says. A look-alike outside the
 // zone is still assessed.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_ConnectivityProbe_NeverAssessed(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -525,6 +536,7 @@ func TestFlags_ConnectivityProbe_NeverAssessed(t *testing.T) {
 // measured at T0 (2026-10-05) stays unflagged. If S1 is recalibrated and one
 // starts scoring ≥ T_mal, this fails: add its zone to connectivityProbeZones
 // with the measured score in the comment — do not drop it from this list.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_RealDetector_ConnectivityProbes_NeverFlagged(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -560,6 +572,7 @@ func (p *panicAssessor) Assess(context.Context, model.Input) (schema.Assessment,
 	panic("detector bug")
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_ClassifierPanic_Recovered_ServerSurvives(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -609,6 +622,7 @@ func (bigPanicAssessor) Assess(context.Context, model.Input) (schema.Assessment,
 	panic(strings.Repeat("x", 5000))
 }
 
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
 func TestFlags_ClassifierPanic_ValueAndStackBounded(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

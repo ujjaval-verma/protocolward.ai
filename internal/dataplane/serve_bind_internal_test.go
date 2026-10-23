@@ -54,6 +54,7 @@ func waitServeErr(t *testing.T, errCh <-chan error) error {
 	}
 }
 
+// Serial: rebinds a just-released ephemeral port, which a parallel test's bind could take.
 func TestServe_UDPListenerErrorAfterReady_StopsTCPAndReturnsError(t *testing.T) {
 	srv := newServeTestServer(t, "127.0.0.1:0")
 	addr, errCh := startServe(t, srv)
@@ -71,6 +72,7 @@ func TestServe_UDPListenerErrorAfterReady_StopsTCPAndReturnsError(t *testing.T) 
 	_ = ln.Close()
 }
 
+// Serial: rebinds a just-released ephemeral port, which a parallel test's bind could take.
 func TestServe_TCPListenerErrorAfterReady_StopsUDPAndReturnsError(t *testing.T) {
 	srv := newServeTestServer(t, "127.0.0.1:0")
 	addr, errCh := startServe(t, srv)
@@ -116,6 +118,7 @@ func rebindUDP(addr string) (net.PacketConn, error) {
 	return pc, err
 }
 
+// Serial: rebinds the just-closed ephemeral UDP ports, which a parallel test's bind could take.
 func TestBind_TCPTwinRetry(t *testing.T) {
 	inUse := fmt.Errorf("listen tcp: %w", syscall.EADDRINUSE)
 	denied := fmt.Errorf("listen tcp: %w", syscall.EACCES)

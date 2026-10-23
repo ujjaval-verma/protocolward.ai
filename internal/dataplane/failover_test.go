@@ -52,6 +52,7 @@ func exchangeTimed(t *testing.T, addr, qname string) (*dns.Msg, time.Duration) {
 }
 
 func TestFakeResolver_HangHonoursContext(t *testing.T) {
+	t.Parallel()
 	r := hangingResolver(t, "10.0.0.1:853")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -72,6 +73,7 @@ func TestFakeResolver_HangHonoursContext(t *testing.T) {
 }
 
 func TestFakeResolver_DoneContextFailsAtOnce(t *testing.T) {
+	t.Parallel()
 	r := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -233,6 +235,7 @@ func findRecord(records []map[string]any, level, msgPart string) map[string]any 
 
 // A rescued query must not hide the dead primary: a WARN names it, says
 // whether it timed out, and carries a remediation.
+// Serial: runLoggedQuery swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_PrimaryHangs_FallbackAnswers_WarnsAboutPrimary(t *testing.T) {
 	primary := hangingResolver(t, "10.0.0.1:853")
 	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
@@ -256,6 +259,7 @@ func TestServer_PrimaryHangs_FallbackAnswers_WarnsAboutPrimary(t *testing.T) {
 }
 
 // A fast primary failure is not a timeout.
+// Serial: runLoggedQuery swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_PrimaryFailsFast_WarnNotTimedOut(t *testing.T) {
 	primary := &fakeResolver{addr: "10.0.0.1:853", err: errors.New("connection refused")}
 	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
@@ -271,6 +275,7 @@ func TestServer_PrimaryFailsFast_WarnNotTimedOut(t *testing.T) {
 
 // Both fail: `upstream` names the upstream whose error is in `error` (the
 // last tried); the primary is in first_upstream / first_error.
+// Serial: runLoggedQuery swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_BothFail_LogNamesLastTriedUpstream(t *testing.T) {
 	primary := hangingResolver(t, "10.0.0.1:853")
 	fallback := &fakeResolver{addr: "10.0.0.2:853", err: errors.New("fake upstream 10.0.0.2:853: connection refused")}

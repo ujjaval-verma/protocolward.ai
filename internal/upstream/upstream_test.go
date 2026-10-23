@@ -17,6 +17,7 @@ import (
 )
 
 func TestQuery_NOERROR(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 
 	cfg := upstream.Config{
@@ -47,6 +48,7 @@ func TestQuery_NOERROR(t *testing.T) {
 }
 
 func TestQuery_NXDOMAIN(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeNameError})
 
 	cfg := upstream.Config{
@@ -77,6 +79,7 @@ func TestQuery_NXDOMAIN(t *testing.T) {
 }
 
 func TestQuery_ConnectionReuse(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
 
 	cfg := upstream.Config{
@@ -111,6 +114,7 @@ func TestQuery_ConnectionReuse(t *testing.T) {
 }
 
 func TestQuery_DialTimeout(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("TestQuery_DialTimeout skipped in short mode (blocks on non-routable address)")
 	}
@@ -140,6 +144,7 @@ func TestQuery_DialTimeout(t *testing.T) {
 }
 
 func TestQuery_QueryTimeout(t *testing.T) {
+	t.Parallel()
 	hang := make(chan struct{}) // never closed — server will hang forever
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, HangUntil: hang})
 
@@ -171,6 +176,7 @@ func TestQuery_QueryTimeout(t *testing.T) {
 }
 
 func TestQuery_ContextCancelAbortsRead(t *testing.T) {
+	t.Parallel()
 	// B1: a context.WithCancel (no deadline) must abort an in-flight read within a
 	// short window when cancel() is called. Without the AfterFunc fix this test
 	// would hang for the OS TCP timeout (minutes).
@@ -221,6 +227,7 @@ func TestQuery_ContextCancelAbortsRead(t *testing.T) {
 }
 
 func TestQuery_SNIMismatch(t *testing.T) {
+	t.Parallel()
 	// WrongCert=true makes the server present a cert for "wrong-name.test".
 	// srv.TLSConf trusts that cert and sets ServerName="wrong-name.test".
 	// Our Config overrides ServerName to "fake-dot.test", so the TLS handshake
@@ -267,6 +274,7 @@ func TestQuery_SNIMismatch(t *testing.T) {
 // A hung upstream (TCP accepted, TLS never answered) is a connectivity
 // problem, not a certificate one: the remediation must say so.
 func TestQuery_HandshakeTimeout_ConnectivityRemediation(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -320,6 +328,7 @@ func TestQuery_HandshakeTimeout_ConnectivityRemediation(t *testing.T) {
 }
 
 func TestQuery_CloseOnHandshake(t *testing.T) {
+	t.Parallel()
 	srv := newFakeDoT(t, FakeDoTOptions{CloseOnHandshake: true})
 
 	cfg := upstream.Config{
@@ -347,6 +356,7 @@ func TestQuery_CloseOnHandshake(t *testing.T) {
 }
 
 func TestQuery_ConnEvictionOnError(t *testing.T) {
+	t.Parallel()
 	// Verify that after a timeout error the Client nils its cached connection
 	// and re-dials successfully on the next Query call.
 	//
@@ -413,6 +423,7 @@ func TestQuery_ConnEvictionOnError(t *testing.T) {
 }
 
 func TestQuery_ConnEvictionRedials(t *testing.T) {
+	t.Parallel()
 	// B2: Prove that the SAME Client re-dials after its connection is evicted by a
 	// server-side close. The fake server closes the TCP connection after the first
 	// response (CloseConnAfterResponse knob). The second query on the SAME client
@@ -469,6 +480,7 @@ func TestQuery_ConnEvictionRedials(t *testing.T) {
 }
 
 func TestNew_MissingAddress(t *testing.T) {
+	t.Parallel()
 	_, err := upstream.New(upstream.Config{ServerName: "example.com"})
 	if err == nil {
 		t.Fatal("expected error for missing Address, got nil")
@@ -476,6 +488,7 @@ func TestNew_MissingAddress(t *testing.T) {
 }
 
 func TestNew_MissingServerName(t *testing.T) {
+	t.Parallel()
 	_, err := upstream.New(upstream.Config{Address: "9.9.9.9:853"})
 	if err == nil {
 		t.Fatal("expected error for missing ServerName, got nil")

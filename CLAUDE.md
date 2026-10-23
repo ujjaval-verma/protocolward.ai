@@ -40,6 +40,7 @@ make test       # tests with race detector
 make lint       # golangci-lint (pinned)
 make fmt        # gofumpt -w
 make vuln       # govulncheck (also runs on pre-push)
+make pre-push   # runs exactly what the pre-push hook runs
 make audit      # pre-release: go mod verify + govulncheck + goreleaser check
 make build      # bin/ward
 make wasm       # dist/wasm/ward.wasm for the browser demos
@@ -58,7 +59,7 @@ Targets are quiet by default; pass `V=1` for full commands.
 
 See `docs/engineering/decisions/ADR-0002-security-posture.md`. In short:
 
-- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 20 s cold (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence, Actions SHA-pin (`check-actions-pinned`) and wasm size gates).
+- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 30 s cold (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence, Actions SHA-pin (`check-actions-pinned`) and wasm size gates).
 - **`git push --no-verify` is a policy violation.** If you bypass, run `make ci && make audit` by hand and roll back if either fails.
 - **JS/TS: pnpm only**, Node 24 LTS, `engine-strict=true`, `onlyBuiltDependencies: []`.
 
