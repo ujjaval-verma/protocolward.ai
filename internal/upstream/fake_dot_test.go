@@ -27,6 +27,21 @@ type FakeDoTOptions struct {
 	CloseOnHandshake       bool          // drop TCP conn immediately after TLS accept
 	WrongCert              bool          // serve cert for "wrong-name.test" instead of "fake-dot.test"
 	CloseConnAfterResponse bool          // close the TCP connection after sending the first response
+
+	// Latency is slept before writing each reply, per query and serially on
+	// each connection: it models the round trip a non-pipelining client sees,
+	// so N connections give N replies per Latency. The handshake is not delayed.
+	Latency time.Duration
+	// IdleClose, when non-zero, replaces the 3 s per-read deadline: the server
+	// closes a connection that has been idle this long (a full close:
+	// close_notify then FIN, which leaves the client socket half-closed).
+	IdleClose time.Duration
+	// ResetOnClose makes every server-side close a bare RST: SO_LINGER is set
+	// to 0 and the TCP connection is closed directly, with no close_notify.
+	ResetOnClose bool
+	// CloseWithoutReply reads and records each query, then closes the
+	// connection without replying.
+	CloseWithoutReply bool
 }
 
 // FakeDoTServer is a minimal in-process DoT (DNS-over-TLS) server for tests.
@@ -37,11 +52,14 @@ type FakeDoTServer struct {
 	queries []*dns.Msg
 	opts    FakeDoTOptions
 	ln      net.Listener
+	conns   int // connections accepted, counted at Accept (guarded by mu)
+	open    int // connections whose handler is still running (guarded by mu)
+	maxOpen int // peak of open (guarded by mu)
 }
 
 // newFakeDoT starts a fake DoT server on a random loopback port and registers
 // cleanup with t. Returns the server; inspect .Addr and .TLSConf.
-func newFakeDoT(t *testing.T, opts FakeDoTOptions) *FakeDoTServer {
+func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
 	t.Helper()
 
 	serverName := "fake-dot.test"
@@ -91,23 +109,78 @@ func (s *FakeDoTServer) Queries() []*dns.Msg {
 	return out
 }
 
+// Conns returns the number of connections accepted so far, counted at Accept,
+// before the TLS handshake.
+func (s *FakeDoTServer) Conns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conns
+}
+
+// Open returns the number of connections the server still holds open. It
+// lags client-side closes until the server's read sees the EOF.
+func (s *FakeDoTServer) Open() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open
+}
+
+// MaxOpen returns the peak of Open. It is a valid bound only in tests where
+// the client discards no connection, because Open lags client-side closes.
+func (s *FakeDoTServer) MaxOpen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxOpen
+}
+
 func (s *FakeDoTServer) serve() {
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
 			return
 		}
+		s.mu.Lock()
+		s.conns++
+		s.open++
+		if s.open > s.maxOpen {
+			s.maxOpen = s.open
+		}
+		s.mu.Unlock()
 		go s.handleConn(conn)
 	}
 }
 
+// closeConn closes conn the way the options ask: a TLS close (close_notify
+// then FIN), or with ResetOnClose a bare RST on the TCP connection.
+func (s *FakeDoTServer) closeConn(conn net.Conn) {
+	if s.opts.ResetOnClose {
+		if tc, ok := conn.(*tls.Conn); ok {
+			if tcp, ok := tc.NetConn().(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+				_ = tcp.Close()
+				return
+			}
+		}
+	}
+	_ = conn.Close()
+}
+
 func (s *FakeDoTServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		s.closeConn(conn)
+		s.mu.Lock()
+		s.open--
+		s.mu.Unlock()
+	}()
 	if s.opts.CloseOnHandshake {
 		return
 	}
+	idle := 3 * time.Second
+	if s.opts.IdleClose > 0 {
+		idle = s.opts.IdleClose
+	}
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
 			return
 		}
 		// Read 2-byte length prefix.
@@ -134,6 +207,12 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 			<-s.opts.HangUntil
 			return
 		}
+		if s.opts.CloseWithoutReply {
+			return
+		}
+		if s.opts.Latency > 0 {
+			time.Sleep(s.opts.Latency)
+		}
 
 		resp := new(dns.Msg)
 		resp.SetReply(msg)
@@ -156,7 +235,7 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 
 // generateSelfSignedCert creates a self-signed ECDSA cert for serverName.
 // Returns the tls.Certificate and a CertPool that trusts it.
-func generateSelfSignedCert(t *testing.T, serverName string) (tls.Certificate, *x509.CertPool) {
+func generateSelfSignedCert(t testing.TB, serverName string) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

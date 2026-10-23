@@ -105,6 +105,9 @@ func TestQuery_ConnectionReuse(t *testing.T) {
 	if len(queries) != n {
 		t.Errorf("expected %d queries received by server, got %d", n, len(queries))
 	}
+	if got := srv.Conns(); got != 1 {
+		t.Errorf("expected 1 connection (sequential queries reuse the idle one), got %d", got)
+	}
 }
 
 func TestQuery_DialTimeout(t *testing.T) {
