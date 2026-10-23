@@ -44,7 +44,7 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 
 - Dependabot alerts are enabled. Read back with `gh api -i repos/{owner}/{repo}/vulnerability-alerts` (HTTP 204 means on).
 - Private vulnerability reporting is enabled. Read back with `gh api repos/{owner}/{repo}/private-vulnerability-reporting` (`{"enabled":true}`). Reporters use "Report a vulnerability" on the Security tab, and `SECURITY.md` points to it as the preferred channel.
-- Automated security-update PRs stay off. Read back with `gh api repos/{owner}/{repo} --jq .security_and_analysis.dependabot_security_updates` (`disabled`). With no PR CI, nothing would gate the PRs Dependabot opens, so the maintainer triages alerts by hand. There is no release-checklist gate for alerts.
+- Automated security-update PRs stay off. Read back with `gh api repos/{owner}/{repo} --jq .security_and_analysis.dependabot_security_updates.status` (`disabled`). With no PR CI, nothing would gate the PRs Dependabot opens, so the maintainer triages alerts by hand. There is no release-checklist gate for alerts.
 
 ### 2. Hook tiering with strict latency budgets
 
@@ -76,7 +76,7 @@ The pre-push hook is the only enforcement point until public-repo CI exists. Byp
 
 ### 4. Vulnerability scanning
 
-**Go:** `govulncheck` (golang.org/x/vuln) — call-graph aware, fewer false positives than SBOM scanners. Pinned in `.tools/` via `GOVULNCHECK_VERSION` in the Makefile. `gosec` continues to run as a golangci-lint linter for static SAST. Dependabot alerts (§1 amendment of 2026-10-23) complement it: they flag any vulnerable dependency version in the manifests GitHub reads, such as `go.mod`, `package.json` and the workflow `uses:` actions, whether or not the code reaches it. `govulncheck` stays the call-graph gate.
+**Go:** `govulncheck` (golang.org/x/vuln) — call-graph aware, fewer false positives than SBOM scanners. Pinned in `.tools/` via `GOVULNCHECK_VERSION` in the Makefile. `gosec` continues to run as a golangci-lint linter for static SAST. Dependabot alerts (§1 amendment of 2026-10-23) complement it: they flag any vulnerable dependency version in the Go modules listed in `go.mod`, whether or not the code reaches it. JS manifests are covered once `web/` or `site/` declare dependencies. Actions pinned by full commit SHA (§1, issue #12) get no Dependabot alerts, because GitHub only alerts for actions referenced by a semantic version. `govulncheck` stays the call-graph gate.
 
 **JS/TS (once `web/` and `site/` package.json files exist):** `pnpm audit --audit-level=moderate` + **`pnpm audit signatures`** (verifies npm provenance attestations — the supply-chain defense most repos skip). Both run on pre-push via the `make audit` recipe.
 
@@ -121,6 +121,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - Outside pull requests arrive faster than local review can keep up with. (The repository going public on 2026-10-05 was considered and did not by itself trigger CI; see the §1 amendment.)
 - The nightly workflow catches, within one month, two breaks on `main` that a pre-merge check would have caught. Pulls PR CI forward.
 - PR CI exists. Reconsider automated Dependabot security-update PRs then, since checks could gate them.
+- A Dependabot alert stays open and unread for more than a release cycle. Set a triage cadence or add a release-checklist check then.
 
 ## References
 
