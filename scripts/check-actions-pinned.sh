@@ -24,6 +24,11 @@ bad=0
 uses=0
 files=0
 while IFS= read -r f; do
+  if [[ ! -f $f ]]; then
+    # --cached lists a tracked file deleted from the work tree but not staged; the deletion is what gets committed.
+    echo "check-actions-pinned: note: $f: tracked but missing from the work tree; skipped (the deletion is what will be committed)" >&2
+    continue
+  fi
   files=$((files + 1))
   n=0
   while IFS= read -r line || [[ -n $line ]]; do
@@ -60,7 +65,9 @@ while IFS= read -r f; do
       bad=1
     fi
   done < "$f"
-done < <(git ls-files --cached --others --exclude-standard -- '.github/workflows/*.yml')
+done < <(git ls-files --cached --others --exclude-standard -- '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+  '.github/actions/action.yml' '.github/actions/action.yaml' \
+  '.github/actions/**/action.yml' '.github/actions/**/action.yaml')
 if (( bad )); then
   echo "check-actions-pinned: hint: pin by full commit SHA and keep the tag as a trailing comment, e.g. uses: owner/repo@<40 hex>  # vX.Y.Z (ADR-0002 §1)" >&2
   exit 1

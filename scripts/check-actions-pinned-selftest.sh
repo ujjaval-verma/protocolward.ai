@@ -76,7 +76,32 @@ for ln in $goodl; do
 done
 git -C "$T" rm -q -f --cached .github/workflows/forms.yml && rm "$forms"
 
+# --- Scan scope: .yaml, composite actions (nested and directly under actions/), untracked, deleted-but-tracked. ---
+mkdir -p "$T/.github/actions/x"
+printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4\n' > "$T/.github/workflows/b.yaml"
+printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/cache@v5\n' > "$T/.github/actions/x/action.yml"
+printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/cache@v5\n' > "$T/.github/actions/action.yml"
+printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4\n' > "$T/.github/workflows/d.yml"
+git -C "$T" add -A
+rm "$T/.github/workflows/d.yml"   # tracked, deleted from the work tree, not staged
+printf 'jobs:\n  j:\n    steps:\n      - uses: actions/checkout@v4\n' > "$T/.github/workflows/c.yml"   # untracked
+errf="$N/err"
+scan "$T" >/dev/null 2>"$errf" && fail "expected failure on scope tree"
+out="$(cat "$errf")"
+for want in .github/workflows/b.yaml:4: .github/actions/x/action.yml:4: .github/actions/action.yml:4: .github/workflows/c.yml:4:; do
+  grep -qF "check-actions-pinned: $want" <<<"$out" || fail "$want not reported"
+done
+grep -qF "check-actions-pinned: note: .github/workflows/d.yml: tracked but missing from the work tree; skipped" <<<"$out" \
+  || fail "d.yml missing-file note not printed"
+if grep -F "d.yml" <<<"$out" | grep -qv "^check-actions-pinned: note: "; then fail "unlabelled line naming d.yml"; fi
+scan "$T/.github" >/dev/null 2>&1 && fail "subdir run missed repo root"
+out="$(scan "$N" 2>&1)" && fail "non-git dir should fail"
+case "$out" in "check-actions-pinned: "*) ;; *) fail "non-git dir message not labelled: $out" ;; esac
+for f in .github/workflows/b.yaml .github/actions/x/action.yml .github/actions/action.yml .github/workflows/c.yml; do
+  sed 's|@v[0-9]*|@'"$sha"'|' "$T/$f" > "$T/$f.tmp" && mv "$T/$f.tmp" "$T/$f"
+done
+
 sed 's|actions/checkout@v4|actions/checkout@'"$sha"'  # v1|' "$wf" > "$wf.tmp" && mv "$wf.tmp" "$wf"
 out="$(scan "$T" 2>&1)" || fail "fixed tree should pass: $out"
-grep -qF "check-actions-pinned: OK (" <<<"$out" || fail "no OK line"
+grep -qF "check-actions-pinned: OK (6 uses: in 5 files)" <<<"$out" || fail "unexpected OK line (d.yml must not count): $out"
 echo "check-actions-pinned selftest: OK (bash $ver)"
