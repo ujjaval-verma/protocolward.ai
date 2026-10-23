@@ -57,7 +57,7 @@ func flagsSection(t *testing.T, body string) string {
 // S2 tracer bullet: real detector in the dataplane fork, real web FlagLog,
 // real dashboard handler. Proves the DGA-like name is (a) answered from
 // upstream — flag-only, never enforced — and (b) listed under Flags.
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestTracer_BuiltinDetector_FlagsAndStillForwards(t *testing.T) {
 	requireDetectorFlags(t, dgaProbe)
 	restore := obs.Capture(t)
@@ -248,7 +248,7 @@ func maliciousAssessment() schema.Assessment {
 	}
 }
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestFlags_Malicious_RecordsFlagWithClientScoreTopReasons(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

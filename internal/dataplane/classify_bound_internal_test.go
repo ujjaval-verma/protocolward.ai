@@ -198,7 +198,7 @@ func (p *panickingClassifier) Classify(context.Context, model.Input) (schema.Ver
 
 // T-PANIC: a recovered classifier panic still returns its slot, so panics
 // cannot leak capacity until every forward is dropped.
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestClassify_PanicReleasesSlot(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -465,7 +465,7 @@ func TestServer_ClassifyDropped_ReportsRunningTotal(t *testing.T) {
 // T-CLASSIFIER-STATE: ClassifierState is "none" with no classifier, "ok"
 // with one, and "unavailable" once the model was reported unavailable (the
 // latch has no auto-restart, so it stays there).
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_ClassifierState(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

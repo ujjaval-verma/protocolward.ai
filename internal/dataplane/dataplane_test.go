@@ -157,7 +157,7 @@ func TestServer_BindsAndForwardsQuery(t *testing.T) {
 // With CounterSeed=0 and 3 resolvers, queries 1/2/3/4 hit resolvers 0/1/2/0.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_RoundRobinSelection(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -214,7 +214,7 @@ func TestServer_RoundRobinSelection(t *testing.T) {
 // T4: First-upstream-failure: retry on next upstream succeeds.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_FirstUpstreamFail_RetrySucceeds(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -329,7 +329,7 @@ func TestServer_AllUpstreamsFail_ReturnsSERVFAIL(t *testing.T) {
 // T7a: Graceful shutdown without in-flight queries.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_GracefulShutdown(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -361,7 +361,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 // Finding #2: Double-Serve guard — second Serve() call returns a typed error.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
@@ -542,7 +542,7 @@ func TestServer_AllUpstreamsFail_TwoResolvers(t *testing.T) {
 // T7b: Graceful shutdown drains an in-flight slow query.
 // ───────────────────────────────────────────────────────────────────────────
 
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_GracefulShutdown_DrainInFlightQuery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping drain test in -short mode")
@@ -955,7 +955,7 @@ func TestHandleQuery_SinkPreservesQClass(t *testing.T) {
 // zero questions sent over the wire receives a FORMERR response. miekg's
 // DefaultMsgAcceptFunc handles this case before our handler is invoked, so
 // this test documents the end-to-end observable behaviour.
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
+// Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
 func TestServer_ZeroQuestion_WireReturnsFORMERR(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()

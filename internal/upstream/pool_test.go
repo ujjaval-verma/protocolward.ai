@@ -37,6 +37,7 @@ func newMsg() *dns.Msg {
 // TestQuery_Burst100At20ms is the issue's acceptance burst: a cold client with
 // the default pool answers 100 concurrent queries against a 20 ms upstream in
 // under 500 ms. The threshold is fixed and the pool is never pre-warmed.
+//
 // Serial: asserts the 500 ms burst bound, measured at 45 % of it under -cpu 1; parallel load eats its headroom.
 func TestQuery_Burst100At20ms(t *testing.T) {
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond})

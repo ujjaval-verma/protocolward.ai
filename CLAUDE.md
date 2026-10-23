@@ -40,6 +40,7 @@ make test       # tests with race detector
 make lint       # golangci-lint (pinned)
 make fmt        # gofumpt -w
 make vuln       # govulncheck (also runs on pre-push)
+make pre-push   # runs exactly what the pre-push hook runs
 make audit      # pre-release: go mod verify + govulncheck + goreleaser check
 make build      # bin/ward
 make wasm       # dist/wasm/ward.wasm for the browser demos

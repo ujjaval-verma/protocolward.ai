@@ -53,6 +53,8 @@ repos:
       # the js/wasm compile + 5 MB size gate, go mod tidy -diff, go mod verify and
       # govulncheck, plus the invariant gates below. -k lets every gate finish when
       # one fails, and Make names each failing gate ("[check-spdx] Error 1").
+      # When the hook fails, search its output for `make: *** [` to find the failing
+      # gate, then rerun `make <gate>` alone.
       # Invariant gates (issue #10): check-public, check-spdx, check-testing-doc,
       # check-licenses and check-actions-pinned are the same Make targets
       # `make check`/`make ci` run, so the hook and the manual gate cannot drift;
