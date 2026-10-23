@@ -34,8 +34,8 @@ uses=0
 files=0
 while IFS= read -r -d '' f; do
   if [[ ! -f $f ]]; then
-    # --cached lists a tracked file deleted from the work tree but not staged; the deletion is what gets committed.
-    echo "check-actions-pinned: note: $f: tracked but missing from the work tree; skipped (the deletion is what will be committed)" >&2
+    # --cached lists a tracked file deleted from the work tree but not staged; this gate checks the work tree (ADR-0002 §2).
+    echo "check-actions-pinned: note: $f: tracked but missing from the work tree; skipped: this gate checks the work tree; the pushed commits may still contain it (ADR-0002 §2)" >&2
     continue
   fi
   files=$((files + 1))

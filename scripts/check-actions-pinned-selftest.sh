@@ -94,6 +94,9 @@ for want in .github/workflows/b.yaml:4: .github/actions/x/action.yml:4: .github/
 done
 grep -qF "check-actions-pinned: note: .github/workflows/d.yml: tracked but missing from the work tree; skipped" <<<"$out" \
   || fail "d.yml missing-file note not printed"
+grep -qF "skipped: this gate checks the work tree; the pushed commits may still contain it (ADR-0002 §2)" <<<"$out" \
+  || fail "d.yml note lacks the work-tree wording"
+if grep -qF "will be committed" <<<"$out"; then fail "d.yml note still claims the deletion is committed"; fi
 if grep -F "d.yml" <<<"$out" | grep -qv "^check-actions-pinned: note: "; then fail "unlabelled line naming d.yml"; fi
 scan "$T/.github" >/dev/null 2>&1 && fail "subdir run missed repo root"
 out="$(scan "$N" 2>&1)" && fail "non-git dir should fail"
