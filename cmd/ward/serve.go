@@ -604,6 +604,14 @@ func bindErrRemediationFor(err error, listenAddr string, fromFlag bool) string {
 			}
 			return fmt.Sprintf("bind to %s requires CAP_NET_BIND_SERVICE; run `sudo setcap cap_net_bind_service=+ep ./bin/ward` or set listen to a port >= 1024 in ward.yaml", listenAddr)
 		}
+		if n, perr := strconv.Atoi(port); perr == nil && n >= 1024 {
+			// The port is already unprivileged, so "use a port >= 1024" is
+			// advice the operator has followed; name what else can block it.
+			if fromFlag {
+				return fmt.Sprintf("bind to %s was refused; check sandbox or firewall rules, or pass --listen-addr with a different address", listenAddr)
+			}
+			return fmt.Sprintf("bind to %s was refused; check sandbox or firewall rules, or change listen in ward.yaml", listenAddr)
+		}
 		if fromFlag {
 			return fmt.Sprintf("bind to %s was refused; ensure ward has permission or pass --listen-addr with a port >= 1024", listenAddr)
 		}
