@@ -243,6 +243,9 @@ func (c *Client) exchange(ctx context.Context, pc *pconn, msg *dns.Msg) (_ *dns.
 	}
 
 	resp, err := pc.dc.ReadMsg()
+	if c.afterRead != nil {
+		c.afterRead()
+	}
 	stopped := stop()
 	if err != nil {
 		// A deadline outcome wraps the ctx error so callers can

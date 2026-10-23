@@ -20,3 +20,8 @@ func NewWithPool(cfg Config, maxConns int, idle time.Duration) (*Client, error) 
 // slot is acquired and before the post-slot re-check. Set it before the first
 // Query and never change it afterwards.
 func SetAfterSlotHook(c *Client, f func()) { c.afterSlot = f }
+
+// SetAfterReadHook sets a function that exchange calls after every read,
+// before it stops the ctx's cancel callback. Set it before the first Query
+// and never change it afterwards.
+func SetAfterReadHook(c *Client, f func()) { c.afterRead = f }

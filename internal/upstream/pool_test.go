@@ -414,6 +414,43 @@ func TestQuery_ReusedConn_ClearsOldDeadline(t *testing.T) {
 	}
 }
 
+// A query whose ctx is cancelled after its reply was read still returns the
+// reply, but its connection is discarded, not pooled: the cancel callback may
+// yet set a deadline of now on it, which would fail the next query on it.
+func TestQuery_CancelAfterReply_ConnDiscarded(t *testing.T) {
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	defer client.Close()
+
+	var armed atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	upstream.SetAfterReadHook(client, func() {
+		if armed.CompareAndSwap(true, false) {
+			cancel()
+		}
+	})
+
+	armed.Store(true)
+	resp, err := client.Query(ctx, newMsg())
+	if err != nil {
+		t.Fatalf("query cancelled after its reply: err = %v, want the reply", err)
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("query cancelled after its reply: rcode %d, want NOERROR", resp.Rcode)
+	}
+	if armed.Load() {
+		t.Fatal("the after-read hook did not run")
+	}
+
+	if _, err := client.Query(context.Background(), newMsg()); err != nil {
+		t.Fatalf("next query: %v", err)
+	}
+	if got := srv.Conns(); got != 2 {
+		t.Errorf("server accepted %d connections, want 2 (the connection whose cancel callback fired is not pooled)", got)
+	}
+}
+
 // A query whose ctx ends just after it wins a slot is neither sent nor dialled.
 func TestQuery_SlotTaken_CtxEnded_NotSent(t *testing.T) {
 	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})

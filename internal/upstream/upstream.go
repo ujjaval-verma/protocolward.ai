@@ -142,6 +142,7 @@ type Client struct {
 	slots       chan struct{} // cap maxConns; send = acquire, receive = release
 	done        chan struct{} // closed once by Close
 	afterSlot   func()        // test hook; nil in production
+	afterRead   func()        // test hook between ReadMsg and stop; nil in production
 	closeOnce   sync.Once
 
 	mu     sync.Mutex
