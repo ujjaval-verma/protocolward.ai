@@ -55,7 +55,12 @@ func (c *Client) acquireSlot(ctx context.Context) error {
 }
 
 // releaseSlot gives back the slot taken by acquireSlot.
-func (c *Client) releaseSlot() { <-c.slots }
+func (c *Client) releaseSlot() {
+	<-c.slots
+	if c.afterFree != nil {
+		c.afterFree()
+	}
+}
 
 // recheckLocked is the check made before the slot wait and again after it,
 // before any reuse or dial: a closed client returns ErrClosed, and an ended

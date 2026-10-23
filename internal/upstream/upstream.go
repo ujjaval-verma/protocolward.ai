@@ -143,6 +143,7 @@ type Client struct {
 	done        chan struct{} // closed once by Close
 	afterSlot   func()        // test hook; nil in production
 	afterRead   func()        // test hook between ReadMsg and stop; nil in production
+	afterFree   func()        // test hook right after the slot is released; nil in production
 	closeOnce   sync.Once
 
 	mu     sync.Mutex

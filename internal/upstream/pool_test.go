@@ -529,6 +529,35 @@ func TestQuery_ReusedConnDeadline_NoRetry(t *testing.T) {
 	}
 }
 
+// A healthy connection is back on the idle stack before the slot frees, so a
+// waiter woken by that slot reuses it instead of dialling one too many.
+func TestQuery_ReleaseBeforeSlotFree(t *testing.T) {
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	defer client.Close()
+
+	var frees atomic.Int32
+	idleAtFree := make(chan int, 2)
+	upstream.SetAfterFreeHook(client, func() {
+		frees.Add(1)
+		idleAtFree <- upstream.IdleLen(client)
+	})
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.Query(context.Background(), newMsg()); err != nil {
+			t.Fatalf("query %d: %v", i, err)
+		}
+	}
+	if got := frees.Load(); got != 2 {
+		t.Fatalf("slot released %d times, want 2", got)
+	}
+	for i := 0; i < 2; i++ {
+		if got := <-idleAtFree; got != 1 {
+			t.Errorf("query %d: %d idle connections when its slot freed, want 1 (the connection is pushed first)", i, got)
+		}
+	}
+}
+
 // pastDeadlineCtx has a deadline that has passed while its Err is still nil,
 // as when the context's own timer has not fired yet.
 type pastDeadlineCtx struct{ context.Context }

@@ -25,3 +25,14 @@ func SetAfterSlotHook(c *Client, f func()) { c.afterSlot = f }
 // before it stops the ctx's cancel callback. Set it before the first Query
 // and never change it afterwards.
 func SetAfterReadHook(c *Client, f func()) { c.afterRead = f }
+
+// SetAfterFreeHook sets a function that Query calls right after it releases
+// its slot. Set it before the first Query and never change it afterwards.
+func SetAfterFreeHook(c *Client, f func()) { c.afterFree = f }
+
+// IdleLen returns the number of connections on the idle stack.
+func IdleLen(c *Client) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.idle)
+}
