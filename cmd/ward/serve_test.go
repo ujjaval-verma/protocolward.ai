@@ -1046,18 +1046,26 @@ func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
 		wantFlag string
 		wantYAML string
 	}{
-		{"in use", errors.New("listen udp: bind: address already in use"), addr,
+		{
+			"in use", errors.New("listen udp: bind: address already in use"), addr,
 			"port already in use at 127.0.0.1:53; stop the process using that port or change --listen-addr",
-			"port already in use at 127.0.0.1:53; stop the process using that port or change listen in ward.yaml"},
-		{"eacces low port", errors.New("listen udp: bind: permission denied"), addr,
+			"port already in use at 127.0.0.1:53; stop the process using that port or change listen in ward.yaml",
+		},
+		{
+			"eacces low port", errors.New("listen udp: bind: permission denied"), addr,
 			setcap + "pass --listen-addr with a port >= 1024",
-			setcap + "set listen to a port >= 1024 in ward.yaml"},
-		{"eacces high port", errors.New("listen udp: bind: permission denied"), highAddr,
+			setcap + "set listen to a port >= 1024 in ward.yaml",
+		},
+		{
+			"eacces high port", errors.New("listen udp: bind: permission denied"), highAddr,
 			"bind to 127.0.0.1:5353 was refused; check sandbox or firewall rules, or pass --listen-addr with a different address",
-			"bind to 127.0.0.1:5353 was refused; check sandbox or firewall rules, or change listen in ward.yaml"},
-		{"fallback", errors.New("something odd"), addr,
+			"bind to 127.0.0.1:5353 was refused; check sandbox or firewall rules, or change listen in ward.yaml",
+		},
+		{
+			"fallback", errors.New("something odd"), addr,
 			"check the --listen-addr address and port availability",
-			"check listen address and port availability in ward.yaml"},
+			"check listen address and port availability in ward.yaml",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
