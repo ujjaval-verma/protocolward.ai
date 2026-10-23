@@ -118,4 +118,13 @@ git -C "$repo" add -A
 out="$(scan "$repo" 2>&1)" && fail "non-ASCII file name was skipped"
 grep -qF "check-actions-pinned: .github/workflows/déploy.yml:4:" <<<"$out" || fail "déploy.yml:4 not reported: $out"
 
+# F2: a failing git ls-files must fail the gate with a labelled message, never print OK.
+newrepo
+step '      - uses: actions/checkout@'"$sha" > "$repo/.github/workflows/a.yml"
+git -C "$repo" add -A
+printf 'garbage' > "$repo/.git/index"
+out="$(scan "$repo" 2>&1)" && fail "corrupt index: scanner exited 0: $out"
+grep -qF "check-actions-pinned: git ls-files failed" <<<"$out" || fail "corrupt index: no labelled message: $out"
+if grep -qF "OK" <<<"$out"; then fail "corrupt index: printed OK: $out"; fi
+
 echo "check-actions-pinned selftest: OK (bash $ver)"

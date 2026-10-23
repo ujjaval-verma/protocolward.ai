@@ -15,6 +15,15 @@ root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || {
   exit 1
 }
 cd "$root"
+# NUL-separated list in a temp file (bash cannot hold NUL in a variable) so a git failure is seen, not swallowed by <( ).
+list="$(mktemp)"
+trap 'rm -f "$list"' EXIT
+git ls-files -z --cached --others --exclude-standard -- '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+  '.github/actions/action.yml' '.github/actions/action.yaml' \
+  '.github/actions/**/action.yml' '.github/actions/**/action.yaml' > "$list" || {
+  echo "check-actions-pinned: git ls-files failed" >&2
+  exit 1
+}
 re_key='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(.*)$'
 re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
@@ -65,9 +74,7 @@ while IFS= read -r -d '' f; do
       bad=1
     fi
   done < "$f"
-done < <(git ls-files -z --cached --others --exclude-standard -- '.github/workflows/*.yml' '.github/workflows/*.yaml' \
-  '.github/actions/action.yml' '.github/actions/action.yaml' \
-  '.github/actions/**/action.yml' '.github/actions/**/action.yaml')
+done < "$list"
 if (( bad )); then
   echo "check-actions-pinned: hint: pin by full commit SHA and keep the tag as a trailing comment, e.g. uses: owner/repo@<40 hex>  # vX.Y.Z (ADR-0002 §1)" >&2
   exit 1
