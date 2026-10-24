@@ -4,49 +4,53 @@ package hostlist
 
 import "strings"
 
-// reverseLabels turns "ads.example.com" into "com.example.ads".
-// Empty input returns empty; single-label input returns itself.
-func reverseLabels(host string) string {
-	labels := strings.Split(host, ".")
-	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
-		labels[i], labels[j] = labels[j], labels[i]
-	}
-	return strings.Join(labels, ".")
-}
-
-// Match probes the reversed-label storage for the longest blocklisted suffix
+// Match probes the hash-indexed storage for the longest blocklisted suffix
 // that is an ancestor (or the same as) the queried hostname. Returns the
 // list_id, the matched suffix (lowercased, no trailing dot), and ok=true on
-// hit; ok=false on miss. Empty / lone-dot hostnames return ok=false without
-// allocation.
+// hit; ok=false on miss. Empty / lone-dot hostnames return ok=false. Match
+// does not allocate for an already lowercase name without a trailing dot.
+// A zero-value Set matches nothing.
 //
 // Algorithm: normalize the hostname (lowercase, strip trailing dot, reject
-// empty), reverse its labels, then walk progressively shorter label-bounded
-// prefixes of the reversed form. The first map hit is the longest matching
-// suffix.
+// empty), then probe the full name and each label-bounded suffix after a dot,
+// longest first. Each probe hashes the candidate, looks it up in the index and
+// verifies the arena bytes, so the first hit is the longest matching suffix
+// and a hash collision cannot cause a false hit.
 //
 // Example: list = {example.com, ads.example.com}, qname = "tracker.ads.example.com"
 //
-//	rev = "com.example.ads.tracker"
-//	probes (longest first): "com.example.ads.tracker" → miss
-//	                        "com.example.ads"         → hit (list_id, matched="ads.example.com")
+//	probes (longest first): "tracker.ads.example.com" → miss
+//	                        "ads.example.com"         → hit (list_id, matched="ads.example.com")
 func (s *Set) Match(hostname string) (listID, matched string, ok bool) {
-	host := strings.ToLower(strings.TrimSuffix(hostname, "."))
-	if host == "" {
+	if s.index == nil && len(s.over) == 0 {
 		return "", "", false
 	}
-	rev := reverseLabels(host)
-
-	cur := rev
-	for {
-		if id, hit := s.entries[cur]; hit {
-			return id, reverseLabels(cur), true
-		}
-		i := strings.LastIndexByte(cur, '.')
-		if i < 0 {
-			break
-		}
-		cur = cur[:i]
+	cur := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	if cur == "" {
+		return "", "", false
 	}
-	return "", "", false
+	for {
+		if idx, hit := s.lookup(cur); hit {
+			return s.ids[idx], cur, true
+		}
+		i := strings.IndexByte(cur, '.')
+		if i < 0 {
+			return "", "", false
+		}
+		cur = cur[i+1:]
+	}
+}
+
+// lookup returns the list index stored for exactly host.
+func (s *Set) lookup(host string) (uint16, bool) {
+	if len(host) <= maxPackedLen {
+		if p, ok := s.index[s.hash(host)]; ok && s.packedEquals(p, host) {
+			return listIdx(p), true
+		}
+	}
+	if len(s.over) > 0 {
+		idx, ok := s.over[host]
+		return idx, ok
+	}
+	return 0, false
 }

@@ -55,7 +55,8 @@ func keys(stats []Stats) []statKey {
 
 func TestForcedHashCollisions_MatchesRealHash(t *testing.T) {
 	dir := t.TempDir()
-	var a, b []string
+	a := make([]string, 0, 32)
+	b := make([]string, 0, 32)
 	for i := range 30 {
 		a = append(a, fmt.Sprintf("a%02d.example.com", i))
 	}
