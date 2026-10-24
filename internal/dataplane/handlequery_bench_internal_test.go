@@ -17,6 +17,7 @@ import (
 	"protocolward.ai/ward/internal/decoy"
 	"protocolward.ai/ward/internal/hostlist"
 	"protocolward.ai/ward/internal/policy"
+	"protocolward.ai/ward/internal/web"
 )
 
 var sinkWritten *dns.Msg
@@ -24,6 +25,9 @@ var sinkWritten *dns.Msg
 // BenchmarkHandleQuery measures one handleQuery call through the stub writer.
 // forward_no_classifier is the fast path only: no Classifier is configured, so
 // the slow-path fork is not measured.
+//
+// The server is wired as in `ward serve`: policy engine, decoys and the
+// dashboard decision recorder (web.NewStore).
 //
 // Logging is swapped for a JSON handler on io.Discard at Info, the cost of the
 // production default. The swap is restored with b.Cleanup. testing runs
@@ -65,6 +69,7 @@ func BenchmarkHandleQuery(b *testing.B) {
 		ShutdownTimeout: 2 * time.Second,
 		Engine:          policy.NewEngine(allow, block),
 		Decoys:          decoys,
+		Decisions:       web.NewStore(),
 		BlockResponse: config.BlockResponseConfig{
 			Mode: config.BlockResponseModeAddress,
 			A:    netip.MustParseAddr("0.0.0.0"),
