@@ -22,6 +22,11 @@ BINARY      := ward
 PKG         := ./...
 # One test timeout for `make test`, which is also what the pre-push hook runs (issue #25).
 TEST_TIMEOUT := 120s
+# `make bench` knobs: BENCH=regex BENCH_TIME=1s|Nx BENCH_COUNT=n BENCH_TIMEOUT=d
+BENCH         ?= .
+BENCH_TIME    ?= 1s
+BENCH_COUNT   ?= 1
+BENCH_TIMEOUT ?= 10m
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
@@ -123,6 +128,10 @@ install: build ## Install ward into $$DESTDIR$$PREFIX/bin (default /usr/local/bi
 .PHONY: test
 test: ## Run unit tests with race detector (the pre-push hook runs this target)
 	$(Q)$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) $(PKG)
+
+.PHONY: bench
+bench: ## Run the hot-path benchmarks with -benchmem (BENCH=regex BENCH_TIME=1s|Nx BENCH_COUNT=n)
+	$(Q)$(GO) test -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -timeout=$(BENCH_TIMEOUT) $(PKG)
 
 .PHONY: test-cover
 test-cover: ## Run tests with coverage report
