@@ -245,3 +245,52 @@ func TestListIndexUpperByte(t *testing.T) {
 		})
 	}
 }
+
+// nameOfLen builds a valid hostname of exactly n bytes from labels of at most 61 bytes.
+func nameOfLen(t *testing.T, n int) string {
+	t.Helper()
+	var labels []string
+	rem := n
+	for rem > 61 {
+		labels = append(labels, strings.Repeat("a", 60))
+		rem -= 61
+	}
+	if rem < 1 {
+		t.Fatalf("cannot build a %d-byte name", n)
+	}
+	labels = append(labels, strings.Repeat("b", rem))
+	name := strings.Join(labels, ".")
+	if len(name) != n {
+		t.Fatalf("built %d bytes, want %d", len(name), n)
+	}
+	return name
+}
+
+func TestPackedLengthBoundary(t *testing.T) {
+	n255, n256 := nameOfLen(t, 255), nameOfLen(t, 256)
+	p := writeHosts(t, t.TempDir(), "b.txt", []string{n255, n256})
+	s := newSet([]string{"L"}, newHash())
+	if _, err := s.load([]Source{{ID: "L", Path: p}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.index[s.hash(n255)]; !ok {
+		t.Error("255-byte name should be in index")
+	}
+	if _, ok := s.over[n255]; ok {
+		t.Error("255-byte name should not be in over")
+	}
+	if _, ok := s.over[n256]; !ok {
+		t.Error("256-byte name should be in over")
+	}
+	if _, ok := s.index[s.hash(n256)]; ok {
+		t.Error("256-byte name should not be in index")
+	}
+	for _, n := range []string{n255, n256} {
+		if id, m, ok := s.Match(n); !ok || id != "L" || m != n {
+			t.Errorf("exact %d: (%q,%v)", len(n), id, ok)
+		}
+		if _, m, ok := s.Match("q." + n); !ok || m != n {
+			t.Errorf("suffix %d: (%v)", len(n), ok)
+		}
+	}
+}
