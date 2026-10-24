@@ -152,3 +152,24 @@ func TestMatch_ZeroAllocs(t *testing.T) {
 func sinkMatch(s *hostlist.Set, q string) {
 	_, _, _ = s.Match(q)
 }
+
+func TestMatch_OddInputs(t *testing.T) {
+	set := loadSimple(t, "com", "example.com", "b.com")
+	cases := []struct {
+		in          string
+		wantMatched string // "" means miss
+	}{
+		{"", ""},
+		{".", ""},
+		{".com", "com"},
+		{"a..b.com", "b.com"},
+		{"com..", ""},
+		{"X.Example.COM.", "example.com"},
+	}
+	for _, c := range cases {
+		_, matched, ok := set.Match(c.in)
+		if ok != (c.wantMatched != "") || matched != c.wantMatched {
+			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
+		}
+	}
+}
