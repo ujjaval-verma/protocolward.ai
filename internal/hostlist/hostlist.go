@@ -164,7 +164,7 @@ type TooManySourcesError struct {
 }
 
 func (e *TooManySourcesError) Error() string {
-	return fmt.Sprintf("hostlist: %d sources configured, the limit is %d — remediation: merge blocklists[*] and allowlists[*] sources into fewer files", e.Count, maxSources)
+	return fmt.Sprintf("hostlist: %d sources configured, the limit is %d — remediation: merge the sources in this list (blocklists[*] or allowlists[*]) into fewer files", e.Count, maxSources)
 }
 
 func newHash() func(string) uint64 {
