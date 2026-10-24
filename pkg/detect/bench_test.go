@@ -42,8 +42,12 @@ func BenchmarkAssess(b *testing.B) {
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
+			var assessErr error
 			for range b.N {
-				sinkAssessment, _ = l.Assess(ctx, in)
+				sinkAssessment, assessErr = l.Assess(ctx, in)
+			}
+			if assessErr != nil {
+				b.Fatalf("Assess(%q): %v", tc.host, assessErr)
 			}
 		})
 	}

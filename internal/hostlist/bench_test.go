@@ -93,7 +93,11 @@ func BenchmarkLoad(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
+	var loadErr error
 	for range b.N {
-		sinkSet, _, _ = hostlist.Load(sources)
+		sinkSet, _, loadErr = hostlist.Load(sources)
+	}
+	if loadErr != nil {
+		b.Fatalf("Load: %v", loadErr)
 	}
 }
