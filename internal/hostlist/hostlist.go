@@ -147,13 +147,13 @@ const (
 	scanBufInitial   = 64 * 1024       // bufio.Scanner initial buffer size
 	maxLineSizeBytes = 1 * 1024 * 1024 // guard against adversarial / truncated lines (1 MiB)
 
-	maxSources    = math.MaxUint16 // list index is 16 bits
-	maxPackedLen  = math.MaxUint8  // name length is 8 bits
-	lenShift      = 16
-	offShift      = 24
-	maxPackedOff  = 1<<(64-offShift) - 1 // arena offset is 40 bits
-	listIdxMask   = 1<<lenShift - 1
-	packedLenMask = 1<<(offShift-lenShift) - 1
+	maxSources           = math.MaxUint16 // list index is 16 bits
+	maxPackedLen         = math.MaxUint8  // name length is 8 bits
+	lenShift             = 16
+	offShift             = 24
+	maxPackedOff  uint64 = 1<<(64-offShift) - 1 // arena offset is 40 bits
+	listIdxMask   uint64 = 1<<lenShift - 1
+	packedLenMask uint64 = 1<<(offShift-lenShift) - 1
 )
 
 // TooManySourcesError is returned by Load when more sources are configured
@@ -192,7 +192,7 @@ func (s *Set) add(host string, idx uint16) (prev uint16, existed bool) {
 			}
 			return s.addOver(host, idx) // hash collision with a different name
 		}
-		if off := len(s.arena); off >= 0 && off <= maxPackedOff {
+		if off := len(s.arena); off >= 0 && uint64(off) <= maxPackedOff {
 			s.index[h] = uint64(off)<<offShift | uint64(len(host))<<lenShift | uint64(idx)
 			s.arena = append(s.arena, host...)
 			return 0, false
