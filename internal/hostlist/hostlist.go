@@ -127,9 +127,10 @@ func truncateEntry(s string) string {
 //
 // Hostnames are stored as written (normalized, forward order) in one
 // concatenated byte arena. A hash-indexed table maps hash(host) to a packed
-// word (arena offset, length, list index), so a loaded entry costs about 16 B
-// of table plus the name bytes instead of a string header and allocation per
-// entry. Match probes the full name and then each label-bounded suffix,
+// word (arena offset, length, list index), instead of a string header and
+// allocation per entry. Measured by BenchmarkLoadRetained: about 60 B/entry
+// retained at 1M 22-byte names, of which roughly 38 B is the index including
+// map overhead. Match probes the full name and then each label-bounded suffix,
 // longest first, and verifies every candidate against the arena, so a hash
 // collision can never produce a false hit. Names that cannot be packed (longer
 // than 255 bytes) or that collide with a different name live in the overflow
