@@ -107,6 +107,11 @@ func BenchmarkHandleQuery(b *testing.B) {
 			if m.Rcode != dns.RcodeSuccess {
 				return fmt.Sprintf("rcode = %s, want NOERROR", dns.RcodeToString[m.Rcode])
 			}
+			// A block response sets AA and carries one answer; the stub
+			// resolver reply has neither, so this proves the upstream path ran.
+			if len(m.Answer) != 0 || m.Authoritative {
+				return fmt.Sprintf("answers = %d, authoritative = %v, want a stub upstream reply (0, false)", len(m.Answer), m.Authoritative)
+			}
 			return ""
 		}},
 		{"block", "host000042.zone42.com.", wantZeroA},
