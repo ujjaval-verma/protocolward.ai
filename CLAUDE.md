@@ -37,6 +37,7 @@ make help       # all targets, by section
 make check      # lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow lint (actionlint) gate
 make ci         # check + build + wasm compile/size gate (run before pushing; there is no PR CI)
 make test       # tests with race detector
+make bench      # hot-path benchmarks (-benchmem)
 make lint       # golangci-lint (pinned)
 make fmt        # gofumpt -w
 make vuln       # govulncheck (also runs on pre-push)
