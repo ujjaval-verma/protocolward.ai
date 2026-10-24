@@ -11,6 +11,10 @@ import "strings"
 // does not allocate for an already lowercase name without a trailing dot.
 // A zero-value Set matches nothing.
 //
+// The returned matched string may be a substring of hostname and shares its
+// memory, so callers must pass an immutable string (not one aliasing a
+// mutable byte buffer).
+//
 // Algorithm: normalize the hostname (lowercase, strip trailing dot, reject
 // empty), then probe the full name and each label-bounded suffix after a dot,
 // longest first. Each probe hashes the candidate, looks it up in the index and
