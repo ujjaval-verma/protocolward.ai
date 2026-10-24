@@ -86,6 +86,9 @@ func TestForcedHashCollisions_MatchesRealHash(t *testing.T) {
 		t.Errorf("Info logs forced=%d real=%d, want 10 both", got, realInfo)
 	}
 	rk, fk := keys(realStats), keys(forcedStats)
+	if len(rk) != len(fk) {
+		t.Fatalf("stats len forced=%d real=%d", len(fk), len(rk))
+	}
 	for i := range rk {
 		if rk[i] != fk[i] {
 			t.Errorf("stats[%d] forced=%+v real=%+v", i, fk[i], rk[i])
