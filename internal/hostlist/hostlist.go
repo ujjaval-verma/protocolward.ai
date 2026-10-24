@@ -251,9 +251,6 @@ func Load(sources []Source) (*Set, []Stats, error) {
 	if err := checkDuplicateIDs(sources); err != nil {
 		return nil, nil, err
 	}
-	if err := checkSourceCount(sources); err != nil {
-		return nil, nil, err
-	}
 	ids := make([]string, len(sources))
 	for i, src := range sources {
 		ids[i] = src.ID
@@ -270,6 +267,9 @@ func Load(sources []Source) (*Set, []Stats, error) {
 func (s *Set) load(sources []Source) ([]Stats, error) {
 	if err := checkSourceCount(sources); err != nil {
 		return nil, err
+	}
+	if len(s.ids) != len(sources) {
+		return nil, fmt.Errorf("hostlist: internal error: %d list ids for %d sources — remediation: build the Set with one id per source (report this as a bug)", len(s.ids), len(sources))
 	}
 	stats := make([]Stats, 0, len(sources))
 	for i, src := range sources {

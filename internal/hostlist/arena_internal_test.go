@@ -297,3 +297,18 @@ func TestPackedLengthBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_IDSourceMismatch(t *testing.T) {
+	p := writeHosts(t, t.TempDir(), "a.txt", []string{"a.test"})
+	s := newSet([]string{"A"}, newHash())
+	_, err := s.load([]Source{{ID: "A", Path: p}, {ID: "B", Path: p}})
+	if err == nil {
+		t.Fatal("load with 1 id and 2 sources succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "remediation") {
+		t.Errorf("error lacks remediation: %v", err)
+	}
+	if s.len() != 0 {
+		t.Errorf("len = %d, want 0 (nothing loaded)", s.len())
+	}
+}
