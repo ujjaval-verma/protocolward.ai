@@ -110,7 +110,7 @@ func TestFromEntries_DuplicatesCoalesceToOneEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromEntries: %v", err)
 	}
-	if got := len(set.entries); got != 1 {
+	if got := set.len(); got != 1 {
 		t.Errorf("entries = %d; want 1", got)
 	}
 }

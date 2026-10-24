@@ -3,7 +3,9 @@
 package hostlist_test
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"protocolward.ai/ward/internal/hostlist"
@@ -126,5 +128,85 @@ func TestMatch_TLDOnly_SubdomainHit(t *testing.T) {
 	}
 	if matched != "com" {
 		t.Errorf("matched: got %q, want \"com\" (TLD is the matching suffix)", matched)
+	}
+}
+
+func TestMatch_ZeroValueSet(t *testing.T) {
+	var s hostlist.Set
+	if id, m, ok := s.Match("a.com"); ok || id != "" || m != "" {
+		t.Errorf("zero Set Match = (%q,%q,%v), want miss", id, m, ok)
+	}
+}
+
+func TestMatch_ZeroAllocs(t *testing.T) {
+	set := loadSimple(t, "example.com", "ads.tracker.net")
+	for name, q := range map[string]string{
+		"exact":  "example.com",
+		"suffix": "a.b.example.com",
+		"miss":   "nothere.unlisted.org",
+	} {
+		if n := testing.AllocsPerRun(100, func() { sinkMatch(set, q) }); n != 0 {
+			t.Errorf("%s: allocs = %v, want 0", name, n)
+		}
+	}
+}
+
+func sinkMatch(s *hostlist.Set, q string) {
+	_, _, _ = s.Match(q)
+}
+
+func TestMatch_OddInputs(t *testing.T) {
+	set := loadSimple(t, "com", "example.com", "b.com")
+	cases := []struct {
+		in          string
+		wantMatched string // "" means miss
+	}{
+		{"", ""},
+		{".", ""},
+		{".com", "com"},
+		{"a..b.com", "b.com"},
+		{"com..", ""},
+		{"X.Example.COM.", "example.com"},
+	}
+	for _, c := range cases {
+		_, matched, ok := set.Match(c.in)
+		if ok != (c.wantMatched != "") || matched != c.wantMatched {
+			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
+		}
+	}
+}
+
+func TestMatch_ConcurrentRace(t *testing.T) {
+	set := loadSimple(t, "example.com", "ads.tracker.net")
+	cases := []struct {
+		in          string
+		wantMatched string
+	}{
+		{"example.com", "example.com"},
+		{"a.b.example.com", "example.com"},
+		{"nothere.unlisted.org", ""},
+		{"X.ADS.Tracker.NET.", "ads.tracker.net"},
+	}
+	const goroutines, iterations = 16, 300
+	errs := make(chan string, goroutines)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range iterations {
+				c := cases[i%len(cases)]
+				id, matched, ok := set.Match(c.in)
+				if ok != (c.wantMatched != "") || matched != c.wantMatched || (ok && id != "t") {
+					errs <- fmt.Sprintf("Match(%q) = (%q,%q,%v)", c.in, id, matched, ok)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
 	}
 }

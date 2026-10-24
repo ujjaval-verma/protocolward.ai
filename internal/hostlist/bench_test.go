@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"protocolward.ai/ward/internal/hostlist"
@@ -100,4 +101,57 @@ func BenchmarkLoad(b *testing.B) {
 	if loadErr != nil {
 		b.Fatalf("Load: %v", loadErr)
 	}
+}
+
+const retainedEntries = 1_000_000
+
+// BenchmarkLoadRetained reports the heap a loaded 1 000 000-entry Set retains
+// after a GC (retained-B/entry), excluding load-time garbage.
+func BenchmarkLoadRetained(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "retained.hosts")
+	f, err := os.Create(path)
+	if err != nil {
+		b.Fatalf("create: %v", err)
+	}
+	w := bufio.NewWriter(f)
+	for i := range retainedEntries {
+		fmt.Fprintf(w, "0.0.0.0 host%07d.zone%02d.com\n", i, i%97)
+	}
+	if err := w.Flush(); err != nil {
+		b.Fatalf("flush: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		b.Fatalf("close: %v", err)
+	}
+	sources := []hostlist.Source{{ID: "bench", Path: path}}
+
+	var sum float64
+	b.ResetTimer()
+	for range b.N {
+		b.StopTimer()
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		b.StartTimer()
+
+		set, stats, loadErr := hostlist.Load(sources)
+
+		b.StopTimer()
+		if loadErr != nil {
+			b.Fatalf("Load: %v", loadErr)
+		}
+		if len(stats) != 1 || stats[0].Entries != retainedEntries {
+			b.Fatalf("Load stats = %+v, want one source with %d entries", stats, retainedEntries)
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		runtime.KeepAlive(set)
+		delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+		if delta <= 0 {
+			b.Fatalf("retained heap delta = %d, want > 0", delta)
+		}
+		sum += float64(delta)
+		b.StartTimer()
+	}
+	b.ReportMetric(sum/(float64(b.N)*retainedEntries), "retained-B/entry")
 }

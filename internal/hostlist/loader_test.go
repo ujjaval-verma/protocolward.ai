@@ -4,8 +4,10 @@ package hostlist_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"protocolward.ai/ward/internal/hostlist"
@@ -187,5 +189,21 @@ func mustWrite(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoad_TooManySources(t *testing.T) {
+	const limit = 65535
+	srcs := make([]hostlist.Source, limit+1)
+	for i := range srcs {
+		srcs[i] = hostlist.Source{ID: fmt.Sprintf("s%d", i), Path: filepath.Join("nonexistent", fmt.Sprintf("%d.txt", i))}
+	}
+	_, _, err := hostlist.Load(srcs)
+	var tms *hostlist.TooManySourcesError
+	if !errors.As(err, &tms) {
+		t.Fatalf("err = %v (%T), want *TooManySourcesError", err, err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "65535") || !strings.Contains(msg, "remediation") {
+		t.Errorf("message lacks limit or remediation: %q", msg)
 	}
 }

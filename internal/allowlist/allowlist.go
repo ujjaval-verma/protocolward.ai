@@ -24,7 +24,8 @@ type Stats = hostlist.Stats
 // Load reads each source file, parses hosts-file entries, and returns a
 // compiled Set plus per-source Stats. Error contract is identical to
 // hostlist.Load: *hostlist.MissingSourceError, *hostlist.EmptySourceError,
-// *hostlist.DuplicateIDError.
+// *hostlist.DuplicateIDError,
+// *hostlist.TooManySourcesError.
 func Load(srcs []Source) (*hostlist.Set, []Stats, error) {
 	return hostlist.Load(srcs)
 }
