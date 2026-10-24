@@ -22,7 +22,7 @@ Protocol Ward is a DNS resolver with a three-tier defence, built as one Go binar
 
 ### Tier 1: Blocklists and allowlists (fast path, in memory)
 
-`internal/hostlist` parses hosts-format sources and compiles them into a reversed-label suffix set. `internal/allowlist` wraps it for allowlist semantics. `internal/policy.Engine.Decide` checks the allowlist (precedence), then blocklists, and returns a typed `Decision`; `internal/dataplane` executes it. Decoys are matched by `internal/dataplane` *before* `Decide` runs, so an allowlist entry can never mask a decoy hit (Tier 3). Lists are whatever the operator configures. A curated, signed default bundle is planned.
+`internal/hostlist` parses hosts-format sources and compiles them into a hash-indexed suffix set. `internal/allowlist` wraps it for allowlist semantics. `internal/policy.Engine.Decide` checks the allowlist (precedence), then blocklists, and returns a typed `Decision`; `internal/dataplane` executes it. Decoys are matched by `internal/dataplane` *before* `Decide` runs, so an allowlist entry can never mask a decoy hit (Tier 3). Lists are whatever the operator configures. A curated, signed default bundle is planned.
 
 ### Tier 2: Behavioral detection (async, flag-only in beta)
 
