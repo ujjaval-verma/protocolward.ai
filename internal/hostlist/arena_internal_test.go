@@ -222,3 +222,26 @@ func TestCrossSourceSemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestListIndexUpperByte(t *testing.T) {
+	ids := make([]string, maxSources)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("list%d", i)
+	}
+	for name, hash := range map[string]func(string) uint64{"real": newHash(), "forced": constHash} {
+		t.Run(name, func(t *testing.T) {
+			s := newSet(ids, hash)
+			for _, i := range []uint16{0, 255, 256, 65534} {
+				if _, existed := s.add(fmt.Sprintf("n%d.test", i), i); existed {
+					t.Fatalf("n%d.test reported as existing", i)
+				}
+			}
+			for _, i := range []int{0, 255, 256, 65534} {
+				id, m, ok := s.Match(fmt.Sprintf("x.n%d.test", i))
+				if !ok || id != ids[i] || m != fmt.Sprintf("n%d.test", i) {
+					t.Errorf("index %d: Match = (%q,%q,%v), want %q", i, id, m, ok, ids[i])
+				}
+			}
+		})
+	}
+}
