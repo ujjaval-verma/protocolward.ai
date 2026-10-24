@@ -130,7 +130,7 @@ test: ## Run unit tests with race detector (the pre-push hook runs this target)
 	$(Q)$(GO) test -race -count=1 -timeout=$(TEST_TIMEOUT) $(PKG)
 
 .PHONY: bench
-bench: ## Run the hot-path benchmarks with -benchmem (BENCH=regex BENCH_TIME=1s|Nx BENCH_COUNT=n)
+bench: ## Run the hot-path benchmarks with -benchmem (BENCH=regex BENCH_TIME=1s|Nx BENCH_COUNT=n BENCH_TIMEOUT=d)
 	$(Q)$(GO) test -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -timeout=$(BENCH_TIMEOUT) $(PKG)
 
 .PHONY: test-cover
