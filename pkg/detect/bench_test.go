@@ -26,7 +26,7 @@ func BenchmarkAssess(b *testing.B) {
 		check func(a schema.Assessment) bool
 		want  string
 	}{
-		{"benign", "www.google.com", func(a schema.Assessment) bool { return a.Verdict == schema.VerdictBenign }, "Verdict == VerdictBenign"},
+		{"benign", "googleusercontent.com", func(a schema.Assessment) bool { return a.Verdict == schema.VerdictBenign && a.Score > 0 }, "Verdict == VerdictBenign and Score > 0"},
 		{"dga_like", "qwkjxzpvtr.net", func(a schema.Assessment) bool { return a.Verdict == schema.VerdictMalicious }, "Verdict == VerdictMalicious"},
 		{"long_label", longLabel, func(a schema.Assessment) bool { return a.Score > 0 }, "Score > 0"},
 	}
