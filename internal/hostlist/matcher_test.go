@@ -3,7 +3,9 @@
 package hostlist_test
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"protocolward.ai/ward/internal/hostlist"
@@ -171,5 +173,40 @@ func TestMatch_OddInputs(t *testing.T) {
 		if ok != (c.wantMatched != "") || matched != c.wantMatched {
 			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
 		}
+	}
+}
+
+func TestMatch_ConcurrentRace(t *testing.T) {
+	set := loadSimple(t, "example.com", "ads.tracker.net")
+	cases := []struct {
+		in          string
+		wantMatched string
+	}{
+		{"example.com", "example.com"},
+		{"a.b.example.com", "example.com"},
+		{"nothere.unlisted.org", ""},
+		{"X.ADS.Tracker.NET.", "ads.tracker.net"},
+	}
+	const goroutines, iterations = 16, 300
+	errs := make(chan string, goroutines)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range iterations {
+				c := cases[i%len(cases)]
+				id, matched, ok := set.Match(c.in)
+				if ok != (c.wantMatched != "") || matched != c.wantMatched || (ok && id != "t") {
+					errs <- fmt.Sprintf("Match(%q) = (%q,%q,%v)", c.in, id, matched, ok)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
 	}
 }
