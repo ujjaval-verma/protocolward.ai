@@ -207,3 +207,54 @@ func TestLoad_TooManySources(t *testing.T) {
 		t.Errorf("message lacks limit or remediation: %q", msg)
 	}
 }
+
+func TestLoad_UnderscoreNameLoadsAndMatches(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "u.txt")
+	mustWrite(t, p, "0.0.0.0 _dmarc.ads.test\n")
+	set, stats, err := hostlist.Load([]hostlist.Source{{ID: "u", Path: p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 0 {
+		t.Errorf("stats: entries=%d skipped=%d, want 1/0", stats[0].Entries, stats[0].SkippedLines)
+	}
+	if _, _, ok := set.Match("_dmarc.ads.test"); !ok {
+		t.Error("Match(_dmarc.ads.test) missed")
+	}
+}
+
+func TestLoad_OverlongNamesSkipped(t *testing.T) {
+	defer obs.Capture(t)()
+	l64 := strings.Repeat("a", 64) + ".test"
+	n254 := strings.Join([]string{strings.Repeat("a", 63), strings.Repeat("b", 63), strings.Repeat("c", 63), strings.Repeat("d", 62)}, ".")
+	if len(n254) != 254 {
+		t.Fatalf("fixture is %d bytes, want 254", len(n254))
+	}
+	p := filepath.Join(t.TempDir(), "o.txt")
+	mustWrite(t, p, "0.0.0.0 "+n254+"\n0.0.0.0 "+l64+"\n0.0.0.0 ok.test\n")
+	set, stats, err := hostlist.Load([]hostlist.Source{{ID: "o", Path: p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 2 {
+		t.Errorf("stats: entries=%d skipped=%d, want 1/2", stats[0].Entries, stats[0].SkippedLines)
+	}
+	if _, _, ok := set.Match("ok.test"); !ok {
+		t.Error("ok.test should hit")
+	}
+	if _, _, ok := set.Match(l64); ok {
+		t.Error("64-byte-label name should have been skipped")
+	}
+	warns := filterRecords(t, func(r map[string]any) bool {
+		return r["level"] == "WARN" && r["msg"] == "hostlist: skipped unparsable line"
+	})
+	if len(warns) != 2 {
+		t.Fatalf("WARN count = %d, want 2", len(warns))
+	}
+	for _, w := range warns {
+		reason, _ := w["reason"].(string)
+		if !strings.Contains(reason, "labels 1-63 bytes") || !strings.Contains(reason, "up to 253 bytes") {
+			t.Errorf("reason lacks the new rule text: %q", reason)
+		}
+	}
+}

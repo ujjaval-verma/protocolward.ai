@@ -288,9 +288,9 @@ func (s *Set) load(sources []Source) ([]Stats, error) {
 
 // FromEntries compiles an in-memory Set from bare hostnames without touching
 // the filesystem (the browser build has none). Each entry passes the same
-// normalize + validate gate as a hosts-file line accepted by Load
-// (lowercase, trailing dot stripped, ASCII letters/digits/dot/hyphen,
-// system aliases excluded). The first invalid entry fails the whole call
+// rule set as a hosts-file line accepted by Load: NormalizeName (lowercase,
+// one trailing dot stripped, ASCII letters, digits, hyphen and underscore,
+// labels 1-63 bytes, name up to 253 bytes) plus system aliases excluded. The first invalid entry fails the whole call
 // with *InvalidEntryError and returns no Set — no partial state.
 // Duplicates coalesce. A nil or empty slice yields an empty, usable Set.
 // Every match reports list_id InlineSourceID.

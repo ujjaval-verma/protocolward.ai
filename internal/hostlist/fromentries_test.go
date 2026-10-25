@@ -91,7 +91,6 @@ func TestFromEntries_RejectsNonBareHostnames(t *testing.T) {
 		{"lone_dot", "."},
 		{"hosts_file_line", "0.0.0.0 ads.example.com"},
 		{"adguard_rule", "||ads.example.com^"},
-		{"underscore", "bad_host.example.com"},
 		{"leading_hyphen", "-ads.example.com"},
 		{"empty_label", "ads..example.com"},
 		{"system_alias", "localhost"},

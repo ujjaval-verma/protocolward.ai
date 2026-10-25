@@ -3,7 +3,6 @@
 package hostlist
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -70,9 +69,9 @@ func parseLine(line string) (hostname string, ok bool, reason string) {
 // accepted line shape ends with. Returns (norm, true, "") on accept, or
 // ("", false, reason) with the standard normalization-failure or alias reason.
 func validateHostname(host string) (string, bool, string) {
-	norm, ok := normalizeHostname(host)
+	norm, ok := NormalizeName(host)
 	if !ok {
-		return "", false, "hostname " + strconv.Quote(host) + " failed validation (lowercase + ASCII letters/digits/dot/hyphen, no empty labels, no leading/trailing hyphen per label)"
+		return "", false, "hostname " + strconv.Quote(host) + " failed validation (ASCII letters, digits, hyphen and underscore; labels 1-63 bytes without a leading or trailing hyphen; name up to 253 bytes; no empty labels)"
 	}
 	if isSystemAlias(norm) {
 		return "", false, "system alias " + strconv.Quote(norm) + " is excluded (never blocklist intent)"
@@ -92,27 +91,67 @@ func lenWord(n int) string {
 	return "many"
 }
 
-// hostnameRE matches the overall character set; per-label rules are checked separately.
-var hostnameRE = regexp.MustCompile(`^[a-z0-9.-]+$`)
+// Hostname length limits from RFC 1035 section 2.3.4, as carried by a DNS query.
+const (
+	// MaxNameLen is the longest accepted hostname in bytes, measured after one
+	// trailing dot is stripped (so a 253-byte name plus "." is valid).
+	MaxNameLen = 253
+	// MaxLabelLen is the longest accepted dot-separated label in bytes.
+	MaxLabelLen = 63
+)
 
-// normalizeHostname lowercases s, strips a single trailing dot, and validates
-// the result. Returns (normalized, true) on success or ("", false) on failure.
-func normalizeHostname(s string) (string, bool) {
-	n := strings.ToLower(strings.TrimSpace(s))
-	n = strings.TrimSuffix(n, ".")
-	if n == "" {
-		return "", false
-	}
-	if !hostnameRE.MatchString(n) {
-		return "", false
-	}
-	for _, label := range strings.Split(n, ".") {
-		if label == "" {
-			return "", false // consecutive dots
-		}
-		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+// FoldName is the query-side fold: it lowercases s and strips ONE trailing
+// dot. It does not trim whitespace or validate. It is byte-for-byte
+// strings.ToLower(strings.TrimSuffix(s, ".")) and does not allocate when s is
+// already lowercase without a trailing dot.
+func FoldName(s string) string {
+	return strings.ToLower(strings.TrimSuffix(s, "."))
+}
+
+// NormalizeName is the one list-entry normaliser and validator for hostnames
+// (block/allow lists, decoy lists, inline entries). It returns the folded name
+// and true, or ("", false) when s breaks any rule:
+//
+//   - surrounding whitespace is trimmed first (strings.TrimSpace, which also
+//     trims Unicode spaces, so "\u00a0a.com" is valid and "a\u00a0b.com" is not);
+//   - every remaining byte must be ASCII. The check runs BEFORE folding because
+//     strings.ToLower maps U+212A (Kelvin sign) to 'k' and U+0130 to 'i', which
+//     would otherwise let non-ASCII lookalikes in;
+//   - the name is folded with FoldName: lowercase, ONE trailing dot stripped
+//     (two trailing dots leave an empty label and are invalid);
+//   - the result is non-empty and at most MaxNameLen bytes (the limit applies
+//     after the trailing dot is stripped);
+//   - every dot-separated label is 1 to MaxLabelLen bytes of [a-z0-9_-] and
+//     neither starts nor ends with a hyphen.
+//
+// Underscore is allowed because DNS queries legitimately carry underscore
+// labels (SRV and DMARC style names such as _ldap._tcp or _dmarc), and a name
+// a query can carry must be listable.
+func NormalizeName(s string) (string, bool) {
+	t := strings.TrimSpace(s)
+	for i := 0; i < len(t); i++ {
+		if t[i] >= 0x80 {
 			return "", false
 		}
+	}
+	n := FoldName(t)
+	if n == "" || len(n) > MaxNameLen {
+		return "", false
+	}
+	start := 0
+	for i := 0; i <= len(n); i++ {
+		if i < len(n) && n[i] != '.' {
+			c := n[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return "", false
+			}
+			continue
+		}
+		label := n[start:i]
+		if len(label) == 0 || len(label) > MaxLabelLen || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
+		}
+		start = i + 1
 	}
 	return n, true
 }

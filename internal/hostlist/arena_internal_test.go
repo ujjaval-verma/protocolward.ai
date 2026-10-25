@@ -133,6 +133,17 @@ func TestFromEntries_ForcedHash(t *testing.T) {
 	}
 }
 
+// fillOver builds a Set holding names under list index 0 via add + trim,
+// bypassing the loader's name validation.
+func fillOver(ids []string, h func(string) uint64, names ...string) *Set {
+	s := newSet(ids, h)
+	for _, n := range names {
+		s.add(n, 0)
+	}
+	s.trim()
+	return s
+}
+
 func TestLongNameOverflow(t *testing.T) {
 	label := strings.Repeat("a", 63)
 	long := strings.Join([]string{label, label, label, label}, ".") // 255 bytes
@@ -140,14 +151,12 @@ func TestLongNameOverflow(t *testing.T) {
 	if len(long) < 255 || len(longer) < 256 {
 		t.Fatalf("bad fixture lengths %d %d", len(long), len(longer))
 	}
-	dir := t.TempDir()
-	p := writeHosts(t, dir, "l.txt", []string{longer, "short.test"})
+	// Load rejects names over 253 bytes, so fill the Set directly to keep the
+	// over-length (len > maxPackedLen) path covered.
 	for name, set := range map[string]func() (*Set, error){
-		"real": func() (*Set, error) { s, _, err := Load([]Source{{ID: "L", Path: p}}); return s, err },
+		"real": func() (*Set, error) { return fillOver([]string{"L"}, newHash(), longer, "short.test"), nil },
 		"forced": func() (*Set, error) {
-			s := newSet([]string{"L"}, constHash)
-			_, err := s.load([]Source{{ID: "L", Path: p}})
-			return s, err
+			return fillOver([]string{"L"}, constHash, longer, "short.test"), nil
 		},
 	} {
 		s, err := set()
@@ -271,11 +280,7 @@ func nameOfLen(t *testing.T, n int) string {
 
 func TestPackedLengthBoundary(t *testing.T) {
 	n255, n256 := nameOfLen(t, 255), nameOfLen(t, 256)
-	p := writeHosts(t, t.TempDir(), "b.txt", []string{n255, n256})
-	s := newSet([]string{"L"}, newHash())
-	if _, err := s.load([]Source{{ID: "L", Path: p}}); err != nil {
-		t.Fatal(err)
-	}
+	s := fillOver([]string{"L"}, newHash(), n255, n256)
 	if _, ok := s.index[s.hash(n255)]; !ok {
 		t.Error("255-byte name should be in index")
 	}

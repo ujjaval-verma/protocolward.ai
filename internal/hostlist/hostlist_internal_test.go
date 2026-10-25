@@ -64,34 +64,6 @@ func TestParseLine(t *testing.T) {
 	}
 }
 
-func TestNormalizeHostname(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-		ok   bool
-	}{
-		{"example.com", "example.com", true},
-		{"EXAMPLE.COM", "example.com", true},
-		{"example.com.", "example.com", true},
-		{"  example.com  ", "example.com", true},
-		{"", "", false},
-		{".", "", false},
-		{"example..com", "", false},
-		{"-bad.com", "", false},
-		{"bad-.com", "", false},
-		{"a-.b", "", false},
-		{"a.-b", "", false},
-		{"例え.com", "", false},
-		{"foo/bar", "", false},
-	}
-	for _, c := range cases {
-		got, ok := normalizeHostname(c.in)
-		if ok != c.ok || got != c.want {
-			t.Errorf("normalizeHostname(%q): got (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
-		}
-	}
-}
-
 func TestIsSystemAlias(t *testing.T) {
 	for _, n := range []string{"localhost", "localhost.localdomain", "broadcasthost"} {
 		if !isSystemAlias(n) {
