@@ -4,12 +4,15 @@ package decoy_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"protocolward.ai/ward/internal/decoy"
 	"protocolward.ai/ward/internal/hostlist"
+	"protocolward.ai/ward/internal/obs"
 )
 
 func writeFile(t *testing.T, name, body string) string {
@@ -152,5 +155,108 @@ func TestNew_EmptySource_Errors(t *testing.T) {
 	var ese *decoy.EmptySourceError
 	if !errors.As(err, &ese) {
 		t.Errorf("expected *decoy.EmptySourceError, got %T: %v", err, err)
+	}
+}
+
+const invalidSkipMsg = "decoy: skipped invalid hostname"
+
+func invalidSkipWarns(t *testing.T) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, r := range obs.Captured(t) {
+		if r["level"] == "WARN" && r["msg"] == invalidSkipMsg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestNew_InvalidNamesSkippedAndWarned(t *testing.T) {
+	defer obs.Capture(t)()
+	long := strings.Repeat("a", 64) + ".test"
+	body := "bad!name.test\n-lead.test\n" + long + "\nok.decoy.test\n"
+	path := writeFile(t, "decoys.txt", body)
+
+	set, stats, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 3 {
+		t.Errorf("stats = entries %d skipped %d; want 1/3", stats[0].Entries, stats[0].SkippedLines)
+	}
+	if _, _, ok := set.Match("ok.decoy.test"); !ok {
+		t.Error("valid name not loaded")
+	}
+	if _, _, ok := set.Match("bad!name.test"); ok {
+		t.Error("invalid name loaded")
+	}
+	warns := invalidSkipWarns(t)
+	if len(warns) != 3 {
+		t.Fatalf("WARN count = %d; want 3", len(warns))
+	}
+	for i, w := range warns {
+		if w["source_id"] != "d1" {
+			t.Errorf("warn %d source_id = %v", i, w["source_id"])
+		}
+		if got, want := fmt.Sprint(w["line"]), fmt.Sprint(i+1); got != want {
+			t.Errorf("warn %d line = %v; want %v", i, got, want)
+		}
+		if r, _ := w["reason"].(string); !strings.Contains(r, "failed validation") {
+			t.Errorf("warn %d reason = %q", i, r)
+		}
+	}
+}
+
+func TestNew_InvalidNameWarnTruncatesToken(t *testing.T) {
+	defer obs.Capture(t)()
+	token := strings.Repeat("a!", 3000) + ".test"
+	path := writeFile(t, "decoys.txt", token+"\nok.decoy.test\n")
+
+	if _, _, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	warns := invalidSkipWarns(t)
+	if len(warns) != 1 {
+		t.Fatalf("WARN count = %d; want 1", len(warns))
+	}
+	r, _ := warns[0]["reason"].(string)
+	if len(r) >= 400 {
+		t.Errorf("reason is %d bytes; want < 400 (token not truncated)", len(r))
+	}
+	if strings.Contains(r, token) {
+		t.Error("reason contains the full token")
+	}
+}
+
+func TestNew_OnlyInvalidNames_EmptySourceError(t *testing.T) {
+	defer obs.Capture(t)()
+	path := writeFile(t, "decoys.txt", "bad!name.test\n-lead.test\n")
+	_, _, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	var ese *decoy.EmptySourceError
+	if !errors.As(err, &ese) {
+		t.Fatalf("err = %T %v; want *EmptySourceError", err, err)
+	}
+	if !strings.Contains(err.Error(), "each hostname is valid") {
+		t.Errorf("Error() lacks validity remediation: %v", err)
+	}
+}
+
+func TestNew_InvalidNameWarnsCappedAt16(t *testing.T) {
+	defer obs.Capture(t)()
+	var b strings.Builder
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&b, "bad!%d.test\n", i)
+	}
+	b.WriteString("ok.decoy.test\n")
+	path := writeFile(t, "decoys.txt", b.String())
+	_, stats, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if stats[0].SkippedLines != 20 {
+		t.Errorf("SkippedLines = %d; want 20", stats[0].SkippedLines)
+	}
+	if n := len(invalidSkipWarns(t)); n != 16 {
+		t.Errorf("WARN count = %d; want 16", n)
 	}
 }

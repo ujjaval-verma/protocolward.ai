@@ -69,7 +69,7 @@ func TestAssess_NormalizesInput(t *testing.T) {
 
 func TestAssess_RejectsInvalidHostnames(t *testing.T) {
 	d := demo.New()
-	for _, q := range []string{"", strings.Repeat("a", 300), "bad host.com"} {
+	for _, q := range []string{"", strings.Repeat("a", 300), "bad host.com", "\u212Aa.com", "\u0130x.com"} {
 		_, err := d.Assess(context.Background(), q)
 		if !errors.Is(err, demo.ErrInvalidHostname) {
 			t.Errorf("Assess(%.20q) err = %v; want ErrInvalidHostname", q, err)

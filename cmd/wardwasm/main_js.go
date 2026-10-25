@@ -142,7 +142,8 @@ func isArray(v js.Value) bool {
 }
 
 // nameArg checks the single hostname argument of assess/decide is a string.
-// Shape and length (≤ 253) are validated natively by demo's normalizeName.
+// Shape and length are validated natively by demo's normalizeName
+// (hostlist.NormalizeName).
 func nameArg(fn string, args []js.Value) (string, error) {
 	if len(args) != 1 || !isType(args[0], js.TypeString) {
 		return "", fmt.Errorf("%s: expected one string argument", fn)

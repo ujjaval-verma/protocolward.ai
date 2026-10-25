@@ -17,6 +17,14 @@
 // difference from hostlist.Set, which deliberately performs longest-suffix
 // matching for blocklist/allowlist use cases.
 //
+// # Hostname rules
+//
+// Every decoy name, from a file line or from FromEntries, is validated and
+// normalized by hostlist.NormalizeName, and Match folds queries with
+// hostlist.FoldName; see those functions for the exact rule set. A file line
+// whose name fails validation is skipped, counted in Stats.SkippedLines and
+// reported with a WARN log (capped per source).
+//
 // # Construction
 //
 // New loads hosts-file sources from disk; FromEntries builds the same Set
@@ -38,7 +46,9 @@ package decoy
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -67,7 +77,7 @@ type EmptySourceError struct {
 }
 
 func (e *EmptySourceError) Error() string {
-	return fmt.Sprintf("decoy: source %q at %q yielded zero parseable entries — remediation: verify the file is a hosts-file with \"0.0.0.0 hostname\" or plain \"hostname\" lines", e.ID, e.Path)
+	return fmt.Sprintf("decoy: source %q at %q yielded zero parseable entries — remediation: verify the file is a hosts-file with \"0.0.0.0 hostname\" or plain \"hostname\" lines and that each hostname is valid (ASCII letters, digits, hyphen and underscore; labels 1-63 bytes; name up to 253 bytes)", e.ID, e.Path)
 }
 
 // InvalidEntryError is returned by FromEntries for an entry that cannot be
@@ -132,22 +142,18 @@ func New(sources []hostlist.Source) (*Set, []Stats, error) {
 }
 
 // FromEntries builds a Set from bare hostnames without touching the
-// filesystem (the browser build has none). Entries are normalized like
-// file lines (lowercase, trimmed, one trailing dot stripped). Unlike the
-// lenient file parser, each entry must also be a name a DNS query could
-// carry: ASCII letters, digits, hyphen and underscore only (so no
-// whitespace, control characters or '#'), labels of 1-63 bytes without a
-// leading or trailing hyphen, and at most 253 bytes in all. These are the
-// same rules the browser demo's Decide applies to a query, so an accepted
-// decoy can always match. An invalid entry fails
-// the whole call with *InvalidEntryError and returns no Set. Duplicates
-// coalesce. A nil or empty slice yields an empty, usable Set. Match
-// reports decoy_id hostlist.InlineSourceID for every entry.
+// filesystem (the browser build has none). Each entry is validated and
+// normalized by hostlist.NormalizeName (the rule set every other hostname
+// surface shares), so an accepted decoy can always match a query the browser
+// demo's Decide accepts. An invalid entry fails the whole call with
+// *InvalidEntryError and returns no Set. Duplicates coalesce. A nil or empty
+// slice yields an empty, usable Set. Match reports decoy_id
+// hostlist.InlineSourceID for every entry.
 func FromEntries(names []string) (*Set, error) {
 	s := &Set{entries: make(map[string]string, len(names))}
 	for i, raw := range names {
-		host := normalize(raw)
-		if !validDecoyName(host) {
+		host, ok := hostlist.NormalizeName(raw)
+		if !ok {
 			return nil, &InvalidEntryError{Index: i, Entry: raw}
 		}
 		s.entries[host] = hostlist.InlineSourceID
@@ -155,33 +161,12 @@ func FromEntries(names []string) (*Set, error) {
 	return s, nil
 }
 
-// validDecoyName reports whether host (already normalized) is a DNS-shaped
-// name: <=253 bytes, labels 1-63 bytes of [a-z0-9_-] with no leading or
-// trailing hyphen.
-func validDecoyName(host string) bool {
-	if host == "" || len(host) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(host, ".") {
-		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for i := 0; i < len(label); i++ {
-			switch c := label[i]; {
-			case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
-			default:
-				return false
-			}
-		}
-	}
-	return true
-}
-
 // Match reports whether hostname matches a decoy entry. Returns the
-// decoy_id and the matched (already-normalized) hostname on hit. Match is
-// case-insensitive and tolerates a trailing dot.
+// decoy_id and the matched (already-normalized) hostname on hit. The query is
+// folded with hostlist.FoldName (case-insensitive, one trailing dot tolerated);
+// it is not validated, so an invalid query simply misses.
 func (s *Set) Match(hostname string) (decoyID, matched string, ok bool) {
-	norm := normalize(hostname)
+	norm := hostlist.FoldName(hostname)
 	if norm == "" {
 		return "", "", false
 	}
@@ -202,12 +187,24 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 
 	stat := Stats{ID: src.ID, Path: src.Path}
 	scanner := bufio.NewScanner(f)
+	lineNo := 0
+	warns := 0
 	for scanner.Scan() {
+		lineNo++
 		raw := scanner.Text()
-		host, ok := parseLine(raw)
+		host, ok, reason := parseLine(raw)
 		if !ok {
 			if strings.TrimSpace(raw) != "" {
 				stat.SkippedLines++
+			}
+			if reason != "" && warns < warnCapPerSource {
+				slog.Warn("decoy: skipped invalid hostname",
+					"source_id", src.ID,
+					"path", src.Path,
+					"line", lineNo,
+					"reason", reason,
+				)
+				warns++
 			}
 			continue
 		}
@@ -229,29 +226,38 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 	return stat, nil
 }
 
-func parseLine(raw string) (string, bool) {
+// warnCapPerSource bounds the invalid-name WARN logs per source, matching
+// hostlist; further skips are still counted in Stats.SkippedLines.
+const warnCapPerSource = 16
+
+// parseLine extracts the decoy hostname from one file line: a single field,
+// or the second field of "<ip> <hostname>"; inline "#" comments are stripped.
+// The name is validated and normalized by hostlist.NormalizeName. ok=false
+// with reason "" means a comment, blank or unsupported-shape line; a non-empty
+// reason means the chosen field is not a valid hostname and is worth a WARN.
+func parseLine(raw string) (host string, ok bool, reason string) {
 	line := strings.TrimSpace(raw)
 	if line == "" || strings.HasPrefix(line, "#") {
-		return "", false
+		return "", false, ""
 	}
 	// strip inline comment
 	if i := strings.Index(line, "#"); i >= 0 {
 		line = strings.TrimSpace(line[:i])
 	}
 	fields := strings.Fields(line)
+	var token string
 	switch len(fields) {
 	case 1:
-		return normalize(fields[0]), true
+		token = fields[0]
 	case 2:
 		// hosts-file shape: "0.0.0.0 hostname"
-		return normalize(fields[1]), true
+		token = fields[1]
 	default:
-		return "", false
+		return "", false, ""
 	}
-}
-
-func normalize(s string) string {
-	out := strings.ToLower(strings.TrimSpace(s))
-	out = strings.TrimSuffix(out, ".")
-	return out
+	norm, valid := hostlist.NormalizeName(token)
+	if !valid {
+		return "", false, "hostname " + strconv.Quote(truncateEntry(token)) + " failed validation (ASCII letters, digits, hyphen and underscore; labels 1-63 bytes without a leading or trailing hyphen; name up to 253 bytes; no empty labels)"
+	}
+	return norm, true, ""
 }
