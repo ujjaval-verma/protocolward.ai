@@ -207,6 +207,27 @@ func TestNew_InvalidNamesSkippedAndWarned(t *testing.T) {
 	}
 }
 
+func TestNew_InvalidNameWarnTruncatesToken(t *testing.T) {
+	defer obs.Capture(t)()
+	token := strings.Repeat("a!", 3000) + ".test"
+	path := writeFile(t, "decoys.txt", token+"\nok.decoy.test\n")
+
+	if _, _, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}}); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	warns := invalidSkipWarns(t)
+	if len(warns) != 1 {
+		t.Fatalf("WARN count = %d; want 1", len(warns))
+	}
+	r, _ := warns[0]["reason"].(string)
+	if len(r) >= 400 {
+		t.Errorf("reason is %d bytes; want < 400 (token not truncated)", len(r))
+	}
+	if strings.Contains(r, token) {
+		t.Error("reason contains the full token")
+	}
+}
+
 func TestNew_OnlyInvalidNames_EmptySourceError(t *testing.T) {
 	defer obs.Capture(t)()
 	path := writeFile(t, "decoys.txt", "bad!name.test\n-lead.test\n")
