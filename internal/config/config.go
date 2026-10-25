@@ -244,8 +244,9 @@ func rejectExtraDocuments(path string, dec *yaml.Decoder) error {
 	}
 }
 
-// Load reads the YAML file at path, applies defaults, validates, and returns
-// a Config. Errors are one of: *MissingFileError, *ParseError, *UnknownKeyError,
+// Load reads the YAML file at path, applies defaults, validates, loads each
+// upstream's ca_bundle PEM (after validation), and returns a Config. Errors
+// are one of: *MissingFileError, *ParseError, *UnknownKeyError,
 // *ValidationError.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
