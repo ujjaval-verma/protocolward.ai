@@ -123,19 +123,23 @@ func TestNew_MissingFile_TypedError(t *testing.T) {
 	}
 }
 
-func TestNew_DuplicateID_Errors(t *testing.T) {
+// TestNew_DuplicateIDs_NotRejected documents that duplicate-id checking moved
+// to config.Load; decoy.New no longer re-checks. It is not a feature, and a
+// future maintainer may delete it.
+func TestNew_DuplicateIDs_NotRejected(t *testing.T) {
 	p1 := writeFile(t, "a.txt", "0.0.0.0 alpha.dod.test\n")
 	p2 := writeFile(t, "b.txt", "0.0.0.0 beta.dod.test\n")
-	_, _, err := decoy.New([]hostlist.Source{
+	set, _, err := decoy.New([]hostlist.Source{
 		{ID: "primary", Path: p1},
 		{ID: "primary", Path: p2},
 	})
-	if err == nil {
-		t.Fatal("expected duplicate-id error")
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	var dup *decoy.DuplicateIDError
-	if !errors.As(err, &dup) {
-		t.Errorf("expected *decoy.DuplicateIDError, got %T: %v", err, err)
+	for _, h := range []string{"alpha.dod.test", "beta.dod.test"} {
+		if _, _, ok := set.Match(h); !ok {
+			t.Errorf("%s must match", h)
+		}
 	}
 }
 

@@ -19,8 +19,8 @@ import (
 )
 
 // configUpstream builds a config.Upstream for tests. When caBundlePath is
-// non-empty it is passed through the real config.Load validator so RootCAs
-// is populated by the same code path serve.go consumes — no test-only
+// non-empty it is passed through config.Load so RootCAs is populated
+// by the same code path serve.go consumes — no test-only
 // shortcut bypassing the parser.
 func configUpstream(t *testing.T, address, serverName, caBundlePath string) config.Upstream {
 	t.Helper()
