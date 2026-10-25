@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"protocolward.ai/ward/internal/hostlist"
 )
 
 // internalValidPEM returns a self-signed ECDSA cert PEM. validPEM lives in
@@ -71,6 +73,49 @@ func TestValidate_NoFileIO_NoMutation(t *testing.T) {
 			}
 			if cfg.Upstreams[0].RootCAs != nil {
 				t.Errorf("validate() populated RootCAs; want nil")
+			}
+		})
+	}
+}
+
+// TestValidateSources pins the shared list-source check: check order is
+// id, then path, then duplicate, and the error Field/Message are exact.
+func TestValidateSources(t *testing.T) {
+	msg := sourceMessages{
+		emptyList: "EMPTY-LIST",
+		emptyID:   "EMPTY-ID",
+		emptyPath: "EMPTY-PATH",
+	}
+	const dup = `duplicate id "a" at index 0 and 1 — remediation: give each entry a unique id`
+	cases := []struct {
+		name      string
+		srcs      []hostlist.Source
+		wantField string
+		wantMsg   string
+	}{
+		{"nil slice", nil, "", ""},
+		{"empty non-nil slice", []hostlist.Source{}, "f", "EMPTY-LIST"},
+		{"empty id", []hostlist.Source{{ID: "", Path: "p"}}, "f[0].id", "EMPTY-ID"},
+		{"empty path", []hostlist.Source{{ID: "a", Path: ""}}, "f[0].path", "EMPTY-PATH"},
+		{"duplicate id", []hostlist.Source{{ID: "a", Path: "p"}, {ID: "a", Path: "q"}}, "f", dup},
+		{"duplicate id and empty path reports path", []hostlist.Source{{ID: "a", Path: "p"}, {ID: "a", Path: ""}}, "f[1].path", "EMPTY-PATH"},
+		{"valid", []hostlist.Source{{ID: "a", Path: "p"}, {ID: "b", Path: "q"}}, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSources("f", tc.srcs, msg)
+			if tc.wantField == "" {
+				if err != nil {
+					t.Fatalf("validateSources = %v; want nil", err)
+				}
+				return
+			}
+			ve, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("validateSources = %T %v; want *ValidationError", err, err)
+			}
+			if ve.Field != tc.wantField || ve.Message != tc.wantMsg {
+				t.Errorf("got Field=%q Message=%q; want Field=%q Message=%q", ve.Field, ve.Message, tc.wantField, tc.wantMsg)
 			}
 		})
 	}

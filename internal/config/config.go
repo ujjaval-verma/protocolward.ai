@@ -379,6 +379,39 @@ func loadCABundles(ups []Upstream) error {
 	return nil
 }
 
+// sourceMessages holds the per-kind error text for validateSources.
+type sourceMessages struct {
+	emptyList string // field present but zero entries
+	emptyID   string // an entry has an empty id
+	emptyPath string // an entry has an empty path
+}
+
+// validateSources checks one optional list-source field. A nil slice is
+// valid; a non-nil empty slice, an empty id or path, or a duplicate id is
+// a ValidationError. Per entry the order is id, path, then duplicate.
+func validateSources(field string, srcs []hostlist.Source, msg sourceMessages) error {
+	if srcs != nil && len(srcs) == 0 {
+		return &ValidationError{Field: field, Message: msg.emptyList}
+	}
+	seen := make(map[string]int, len(srcs))
+	for i, s := range srcs {
+		if s.ID == "" {
+			return &ValidationError{Field: fmt.Sprintf("%s[%d].id", field, i), Message: msg.emptyID}
+		}
+		if s.Path == "" {
+			return &ValidationError{Field: fmt.Sprintf("%s[%d].path", field, i), Message: msg.emptyPath}
+		}
+		if prev, dup := seen[s.ID]; dup {
+			return &ValidationError{
+				Field:   field,
+				Message: fmt.Sprintf("duplicate id %q at index %d and %d — remediation: give each entry a unique id", s.ID, prev, i),
+			}
+		}
+		seen[s.ID] = i
+	}
+	return nil
+}
+
 func (c Config) validate() error {
 	// listen: required, must parse as host:port with port in 1–65535.
 	if c.Listen == "" {
@@ -435,95 +468,27 @@ func (c Config) validate() error {
 		}
 	}
 
-	// blocklists: optional; if the field was present in YAML it must have ≥1 entry.
-	if c.Blocklists != nil && len(c.Blocklists) == 0 {
-		return &ValidationError{
-			Field:   "blocklists",
-			Message: "is empty — remediation: omit the field entirely to run ward as a pure DNS forwarder",
-		}
+	// blocklists, allowlists, decoys: optional; if present, ≥1 valid entry.
+	if err := validateSources("blocklists", c.Blocklists, sourceMessages{
+		emptyList: "is empty — remediation: omit the field entirely to run ward as a pure DNS forwarder",
+		emptyID:   "must not be empty — remediation: give each entry a unique logical name (used in attribution logs)",
+		emptyPath: "must not be empty — remediation: set to a local file path containing hosts-file entries",
+	}); err != nil {
+		return err
 	}
-	seenIDs := make(map[string]int, len(c.Blocklists))
-	for i, b := range c.Blocklists {
-		if b.ID == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("blocklists[%d].id", i),
-				Message: "must not be empty — remediation: give each entry a unique logical name (used in attribution logs)",
-			}
-		}
-		if b.Path == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("blocklists[%d].path", i),
-				Message: "must not be empty — remediation: set to a local file path containing hosts-file entries",
-			}
-		}
-		if prev, dup := seenIDs[b.ID]; dup {
-			return &ValidationError{
-				Field:   "blocklists",
-				Message: fmt.Sprintf("duplicate id %q at index %d and %d — remediation: give each entry a unique id", b.ID, prev, i),
-			}
-		}
-		seenIDs[b.ID] = i
+	if err := validateSources("allowlists", c.Allowlists, sourceMessages{
+		emptyList: "is empty — remediation: omit the field entirely if you don't need allowlist overrides",
+		emptyID:   "must not be empty — remediation: give each entry a unique logical name (used in attribution logs)",
+		emptyPath: "must not be empty — remediation: set to a local file path containing hosts-format entries (the same syntaxes as blocklists)",
+	}); err != nil {
+		return err
 	}
-
-	// allowlists: optional; if present, same rules as blocklists.
-	if c.Allowlists != nil && len(c.Allowlists) == 0 {
-		return &ValidationError{
-			Field:   "allowlists",
-			Message: "is empty — remediation: omit the field entirely if you don't need allowlist overrides",
-		}
-	}
-	seenAllowIDs := make(map[string]int, len(c.Allowlists))
-	for i, a := range c.Allowlists {
-		if a.ID == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("allowlists[%d].id", i),
-				Message: "must not be empty — remediation: give each entry a unique logical name (used in attribution logs)",
-			}
-		}
-		if a.Path == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("allowlists[%d].path", i),
-				Message: "must not be empty — remediation: set to a local file path containing hosts-format entries (the same syntaxes as blocklists)",
-			}
-		}
-		if prev, dup := seenAllowIDs[a.ID]; dup {
-			return &ValidationError{
-				Field:   "allowlists",
-				Message: fmt.Sprintf("duplicate id %q at index %d and %d — remediation: give each entry a unique id", a.ID, prev, i),
-			}
-		}
-		seenAllowIDs[a.ID] = i
-	}
-
-	// decoys: optional; if present, must have ≥1 entry. Same per-entry
-	// validation as allowlists/blocklists.
-	if c.Decoys != nil && len(c.Decoys) == 0 {
-		return &ValidationError{
-			Field:   "decoys",
-			Message: "is empty — remediation: omit the field entirely if you don't have decoys configured",
-		}
-	}
-	seenDecoyIDs := make(map[string]int, len(c.Decoys))
-	for i, d := range c.Decoys {
-		if d.ID == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("decoys[%d].id", i),
-				Message: "must not be empty — remediation: give each entry a unique logical name (used in alert logs)",
-			}
-		}
-		if d.Path == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("decoys[%d].path", i),
-				Message: "must not be empty — remediation: set to a local file path containing hosts-file or plain hostname entries",
-			}
-		}
-		if prev, dup := seenDecoyIDs[d.ID]; dup {
-			return &ValidationError{
-				Field:   "decoys",
-				Message: fmt.Sprintf("duplicate id %q at index %d and %d — remediation: give each entry a unique id", d.ID, prev, i),
-			}
-		}
-		seenDecoyIDs[d.ID] = i
+	if err := validateSources("decoys", c.Decoys, sourceMessages{
+		emptyList: "is empty — remediation: omit the field entirely if you don't have decoys configured",
+		emptyID:   "must not be empty — remediation: give each entry a unique logical name (used in alert logs)",
+		emptyPath: "must not be empty — remediation: set to a local file path containing hosts-file or plain hostname entries",
+	}); err != nil {
+		return err
 	}
 
 	// model: optional. When present, exactly one of builtin / command.
