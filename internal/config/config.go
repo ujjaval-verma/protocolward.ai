@@ -25,11 +25,12 @@ import (
 //
 // CABundle, when non-empty, is the path to a PEM file containing one or more
 // CA certificates that pin the upstream's TLS trust. The file is read and
-// parsed by Load (after validation passes); the resulting *x509.CertPool is exposed via RootCAs so
-// serve-time TLS construction does not need to re-touch the filesystem
-// (eliminating an invariant-8 error branch). When CABundle is empty, RootCAs
-// is nil and system roots are used by the upstream client (the existing
-// behavior — see internal/upstream/upstream.go package doc).
+// parsed by Load (after validation passes); the resulting *x509.CertPool is
+// exposed via RootCAs so serve-time TLS construction does not need to
+// re-touch the filesystem (eliminating an invariant-8 error branch). When
+// CABundle is empty, RootCAs is nil and system roots are used by the upstream
+// client (the existing behavior — see internal/upstream/upstream.go package
+// doc).
 type Upstream struct {
 	Address    string         `yaml:"address"`
 	ServerName string         `yaml:"server_name"`
