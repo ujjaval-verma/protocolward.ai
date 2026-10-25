@@ -43,8 +43,8 @@ func TestFromEntries_NilAndEmptyYieldUsableEmptySet(t *testing.T) {
 	}
 }
 
-// Parity with the decoy file parser, which accepts any single field: an
-// underscore label (e.g. a planted _ldap SRV-style name) is a legal decoy.
+// Underscore labels (e.g. a planted _ldap SRV-style name) are legal decoys:
+// hostlist.NormalizeName, shared by the file parser and FromEntries, allows them.
 func TestFromEntries_AcceptsUnderscoreLabels(t *testing.T) {
 	set, err := decoy.FromEntries([]string{"_ldap.corp.lan"})
 	if err != nil {
