@@ -877,3 +877,17 @@ func TestExport_DefaultBlockResponse_OmittedFromOutput(t *testing.T) {
 		t.Errorf("default block_response should be omitted from export; got:\n%s", string(out))
 	}
 }
+
+// TestLoad_CABundleErrorAfterOtherValidation pins the precedence: ca_bundle
+// files are read only after all other validation passes.
+func TestLoad_CABundleErrorAfterOtherValidation(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	_, err := loadYAMLString(t, `listen: "127.0.0.1:5354"
+upstreams:
+  - address: "9.9.9.9:853"
+    server_name: "dns.quad9.net"
+    ca_bundle: "`+missing+`"
+  - address: "1.1.1.1:853"
+`)
+	assertValidationField(t, err, "upstreams[1].server_name")
+}

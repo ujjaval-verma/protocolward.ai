@@ -25,7 +25,7 @@ import (
 //
 // CABundle, when non-empty, is the path to a PEM file containing one or more
 // CA certificates that pin the upstream's TLS trust. The file is read and
-// parsed by Load; the resulting *x509.CertPool is exposed via RootCAs so
+// parsed by Load (after validation passes); the resulting *x509.CertPool is exposed via RootCAs so
 // serve-time TLS construction does not need to re-touch the filesystem
 // (eliminating an invariant-8 error branch). When CABundle is empty, RootCAs
 // is nil and system roots are used by the upstream client (the existing
@@ -345,7 +345,38 @@ func Load(path string) (Config, error) {
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
+	// File I/O happens only after every pure check has passed, so other
+	// validation errors take precedence over a ca_bundle error.
+	if err := loadCABundles(cfg.Upstreams); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// loadCABundles reads each upstream's ca_bundle PEM file and sets RootCAs.
+// Upstreams without a ca_bundle are left untouched (RootCAs stays nil).
+func loadCABundles(ups []Upstream) error {
+	for i, u := range ups {
+		if u.CABundle == "" {
+			continue
+		}
+		pem, err := os.ReadFile(u.CABundle)
+		if err != nil {
+			return &ValidationError{
+				Field:   fmt.Sprintf("upstreams[%d].ca_bundle", i),
+				Message: fmt.Sprintf("cannot read PEM file %q: %v — remediation: set ca_bundle to a readable PEM file path, or omit the field to use system roots", u.CABundle, err),
+			}
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return &ValidationError{
+				Field:   fmt.Sprintf("upstreams[%d].ca_bundle", i),
+				Message: fmt.Sprintf("file %q contains no PEM-encoded certificates — remediation: provide a file with one or more PEM CERTIFICATE blocks, or omit the field to use system roots", u.CABundle),
+			}
+		}
+		ups[i].RootCAs = pool
+	}
+	return nil
 }
 
 func (c Config) validate() error {
@@ -401,23 +432,6 @@ func (c Config) validate() error {
 				Field:   fmt.Sprintf("upstreams[%d].server_name", i),
 				Message: "must not be empty — set to the TLS SNI name of the upstream, e.g. \"dns.quad9.net\"",
 			}
-		}
-		if u.CABundle != "" {
-			pem, err := os.ReadFile(u.CABundle)
-			if err != nil {
-				return &ValidationError{
-					Field:   fmt.Sprintf("upstreams[%d].ca_bundle", i),
-					Message: fmt.Sprintf("cannot read PEM file %q: %v — remediation: set ca_bundle to a readable PEM file path, or omit the field to use system roots", u.CABundle, err),
-				}
-			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(pem) {
-				return &ValidationError{
-					Field:   fmt.Sprintf("upstreams[%d].ca_bundle", i),
-					Message: fmt.Sprintf("file %q contains no PEM-encoded certificates — remediation: provide a file with one or more PEM CERTIFICATE blocks, or omit the field to use system roots", u.CABundle),
-				}
-			}
-			c.Upstreams[i].RootCAs = pool
 		}
 	}
 
