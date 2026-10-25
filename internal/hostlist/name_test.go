@@ -94,7 +94,7 @@ func TestFoldName(t *testing.T) {
 		{" a.com", " a.com"}, // no trimming
 		{".", ""},
 		{"", ""},
-		{"\xff\xfeA.com", "\xff\xfea.com"}, // invalid UTF-8 (ToLower maps it to U+FFFD)
+		{"\xff\xfeA.com", "\ufffd\ufffda.com"}, // invalid UTF-8 (ToLower maps each bad byte to U+FFFD)
 		{"Ka.com", "ka.com"},
 	}
 	for _, c := range cases {
@@ -103,9 +103,8 @@ func TestFoldName(t *testing.T) {
 			t.Errorf("FoldName(%q) = %q, differs from inline ToLower/TrimSuffix %q", c.in, got, want)
 		}
 	}
-	// Explicit expectations for the ASCII rows (the invalid-UTF-8 and Kelvin
-	// rows are covered by the parity check above).
-	for _, c := range cases[:7] {
+	// Explicit expectations for every row, in addition to the parity check.
+	for _, c := range cases {
 		if got := hostlist.FoldName(c.in); got != c.want {
 			t.Errorf("FoldName(%q) = %q, want %q", c.in, got, c.want)
 		}
