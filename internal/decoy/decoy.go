@@ -70,15 +70,6 @@ func (e *EmptySourceError) Error() string {
 	return fmt.Sprintf("decoy: source %q at %q yielded zero parseable entries — remediation: verify the file is a hosts-file with \"0.0.0.0 hostname\" or plain \"hostname\" lines", e.ID, e.Path)
 }
 
-// DuplicateIDError is returned when two decoy sources share an id.
-type DuplicateIDError struct {
-	ID string
-}
-
-func (e *DuplicateIDError) Error() string {
-	return fmt.Sprintf("decoy: duplicate source id %q — remediation: each decoys[*].id must be unique", e.ID)
-}
-
 // InvalidEntryError is returned by FromEntries for an entry that cannot be
 // a decoy hostname. Index is the entry's position in the input slice.
 type InvalidEntryError struct {
@@ -123,12 +114,11 @@ type Set struct {
 	entries map[string]string // normalized hostname -> decoy_id
 }
 
-// New parses sources into a Set. Sources are processed in order; a
-// duplicate-id collision returns an error without partial state.
+// New parses sources into a Set. Sources are processed in order. Source ids
+// are expected to be unique (config.Load rejects duplicates); New does not
+// re-check. A hostname listed in more than one source is attributed to the
+// first source that lists it.
 func New(sources []hostlist.Source) (*Set, []Stats, error) {
-	if err := checkDuplicateIDs(sources); err != nil {
-		return nil, nil, err
-	}
 	s := &Set{entries: make(map[string]string)}
 	stats := make([]Stats, 0, len(sources))
 	for _, src := range sources {
@@ -264,15 +254,4 @@ func normalize(s string) string {
 	out := strings.ToLower(strings.TrimSpace(s))
 	out = strings.TrimSuffix(out, ".")
 	return out
-}
-
-func checkDuplicateIDs(sources []hostlist.Source) error {
-	seen := make(map[string]struct{}, len(sources))
-	for _, s := range sources {
-		if _, dup := seen[s.ID]; dup {
-			return &DuplicateIDError{ID: s.ID}
-		}
-		seen[s.ID] = struct{}{}
-	}
-	return nil
 }
