@@ -11,8 +11,9 @@
 // internal/dataplane.handleQuery exactly: decoy short-circuit first (an
 // allowlist cannot mask a decoy), then policy.Engine.Decide (allow >
 // block > forward). Only a decoy hit alerts. Input is validated first
-// (normalizeName); that front gate is stricter than the dataplane's
-// lowercase + trailing-dot strip, but it never changes the order.
+// (normalizeName, a wrapper over hostlist.NormalizeName); that front gate
+// is stricter than the dataplane's lowercase + trailing-dot strip, but it
+// never changes the order.
 //
 // Assess is flag-only: no Decision is ever derived from it. Unlike ward
 // serve, it does not skip LAN-client OS connectivity probes (S2 DD9); it
@@ -27,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"protocolward.ai/ward/internal/configexport"
 	"protocolward.ai/ward/internal/decoy"
@@ -42,11 +42,8 @@ const (
 	// wasm heap balloon.
 	MaxEntriesPerList = 10_000
 	// MaxInputLen bounds any single Init entry. Decide/Assess input is
-	// bounded more tightly by normalizeName (253).
+	// bounded more tightly by normalizeName (hostlist.MaxNameLen, 253).
 	MaxInputLen = 1024
-
-	maxHostnameLen = 253
-	maxLabelLen    = 63
 )
 
 // Fixed values of the exported demo document. A real ward.yaml holds these
@@ -81,7 +78,7 @@ const (
 
 var (
 	// ErrInvalidHostname is returned for input that is not a hostname
-	// (empty, > 253 chars, bad labels). The UI shows its text verbatim.
+	// (empty, > hostlist.MaxNameLen chars, bad labels, non-ASCII). The UI shows its text verbatim.
 	ErrInvalidHostname = errors.New("not a valid hostname")
 	// ErrTooManyEntries is returned when an Init list exceeds MaxEntriesPerList.
 	ErrTooManyEntries = fmt.Errorf("too many entries (limit %d)", MaxEntriesPerList)
@@ -212,24 +209,14 @@ func ErrorMessage(err error) string {
 	return err.Error()
 }
 
-// normalizeName lowercases, trims spaces and one trailing dot, then
-// validates RFC 1035-ish shape (underscore allowed for SRV-style labels).
+// normalizeName validates and folds raw with hostlist.NormalizeName, the
+// one hostname rule set shared with the blocklist, allowlist and decoy
+// loaders (see its doc for the exact rules). It returns ErrInvalidHostname
+// when the name is invalid.
 func normalizeName(raw string) (string, error) {
-	n := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
-	if n == "" || len(n) > maxHostnameLen {
+	n, ok := hostlist.NormalizeName(raw)
+	if !ok {
 		return "", ErrInvalidHostname
-	}
-	for _, label := range strings.Split(n, ".") {
-		if label == "" || len(label) > maxLabelLen || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", ErrInvalidHostname
-		}
-		for i := 0; i < len(label); i++ {
-			switch c := label[i]; {
-			case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
-			default:
-				return "", ErrInvalidHostname
-			}
-		}
 	}
 	return n, nil
 }
@@ -295,9 +282,10 @@ func (d *Demo) Assess(ctx context.Context, name string) (Assessment, error) {
 	}
 	a, err := d.detector.Assess(ctx, model.Input{Hostname: q})
 	if err != nil {
-		// normalizeName is stricter than the detector's own validation, so
-		// detect.ErrInvalidHostname cannot occur here; anything else is a
-		// real failure.
+		// normalizeName is not a superset of the detector's validation: an
+		// all-digit TLD such as "a.123" passes hostlist.NormalizeName but
+		// pkg/detect rejects it with detect.ErrInvalidHostname. That error
+		// is returned wrapped (not mapped to demo.ErrInvalidHostname).
 		return Assessment{}, fmt.Errorf("assess: %w", err)
 	}
 	// Reuse schema's canonical wire names ("benign", ...) rather than

@@ -113,6 +113,9 @@ func TestDecide_RejectsInvalidHostnames(t *testing.T) {
 		strings.Repeat("a", 64) + ".com",      // label > 63
 		strings.Repeat("abcdefghi.", 26),      // 259 chars after trailing-dot strip > 253
 		strings.Repeat("x", demo.MaxInputLen), // oversized single label
+		// strings.ToLower folds these to ASCII; the shared rule set rejects
+		// non-ASCII before folding (U+212A Kelvin sign, U+0130 dotted I).
+		"\u212Aa.com", "\u0130x.com",
 	}
 	for _, q := range rows {
 		if _, err := d.Decide(q); !errors.Is(err, demo.ErrInvalidHostname) {
@@ -228,5 +231,24 @@ func TestCheckListLen(t *testing.T) {
 	}
 	if err := demo.CheckListLen("decoys", demo.MaxEntriesPerList+1); !errors.Is(err, demo.ErrTooManyEntries) {
 		t.Errorf("over limit: %v", err)
+	}
+}
+
+func TestInit_AcceptsUnderscoreBlocklistEntry(t *testing.T) {
+	d := demo.New()
+	if err := d.Init(demo.Config{Blocklist: []string{"_ldap._tcp.corp.lan"}}); err != nil {
+		t.Fatalf("Init(underscore blocklist entry): %v", err)
+	}
+	if got, _ := d.Decide("_ldap._tcp.corp.lan"); got.Source != demo.SourceBlocklist {
+		t.Errorf("Decide(underscore name) = %+v; want blocklist hit", got)
+	}
+}
+
+func TestInit_RejectsOverlongLabelEntry(t *testing.T) {
+	long := strings.Repeat("a", 64) + ".example.com"
+	err := demo.New().Init(demo.Config{Blocklist: []string{long}})
+	var iee *hostlist.InvalidEntryError
+	if !errors.As(err, &iee) || !strings.Contains(err.Error(), "blocklist") {
+		t.Fatalf("Init(64-byte label) err = %v; want *hostlist.InvalidEntryError naming the blocklist", err)
 	}
 }
