@@ -437,8 +437,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	flagLog := web.NewFlagLog()
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
-	// Deferred here so EVERY return path (including the early serveErr-channel
-	// exit at step 7) reaps the child. The defer fires AFTER any inline
+	// Deferred here so every return path (including the early serveErr-channel
+	// exit at step 7) reaps the child; the exception is the second-signal
+	// os.Exit(130) in step 7, which skips defers. The defer fires AFTER any inline
 	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
 	// defers run at function exit, after the inline shutdown completes.
 	defer closeClassifier()
