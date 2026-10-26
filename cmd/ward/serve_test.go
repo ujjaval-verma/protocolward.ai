@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1112,6 +1113,26 @@ func serveMinimalCfg(t *testing.T, extra string) string {
 	return cfgPath
 }
 
+// serveCfgListen reads the listen: address back out of a serveMinimalCfg file.
+func serveCfgListen(t *testing.T, cfgPath string) string {
+	t.Helper()
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "listen: "); ok {
+			u, err := strconv.Unquote(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return u
+		}
+	}
+	t.Fatal("no listen: line in config")
+	return ""
+}
+
 // TestServe_DataplaneInitFails_DashboardNotListening: when dataplane
 // construction fails (or the constructor misbehaves and returns a nil server
 // with a nil error), serveRun returns the init-failed error and leaves no
@@ -1189,6 +1210,7 @@ func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "reaped")
 	extra := fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - 'cat >/dev/null; : > \"$1\"'\n    - sh\n    - %q\n", marker)
 	cfgPath := serveMinimalCfg(t, extra)
+	dnsAddr := serveCfgListen(t, cfgPath)
 	serr := serveRun(context.Background(), serveOpts{configPath: cfgPath, dashListenAddr: l.Addr().String()})
 	var se *serveError
 	if !errors.As(serr, &se) || se.Code != 1 || !strings.Contains(se.Message, "dashboard listen failed") {
@@ -1199,6 +1221,13 @@ func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("model child was not reaped before serveRun returned: %v", err)
+	}
+	// NewServer binds nothing: the DNS address must still be free.
+	pc, err := net.ListenPacket("udp", dnsAddr)
+	if err != nil {
+		t.Errorf("DNS listen address %s is bound after the dashboard failed: %v", dnsAddr, err)
+	} else {
+		pc.Close()
 	}
 }
 
