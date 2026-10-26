@@ -461,13 +461,17 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		ShutdownTimeout: cfg.Timeouts.Shutdown,
 		Classifier:      classifier,
 	})
-	if err == nil && srv == nil {
+	nilServer := err == nil && srv == nil
+	if nilServer {
 		err = errors.New("newDataplane returned a nil server")
 	}
 	if err != nil {
 		// Adapter cleanup runs via the deferred close above.
 		msg := fmt.Sprintf("dataplane init failed: %v", err)
-		rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+		rem := "internal error: the dataplane constructor returned no server; report this as a bug"
+		if !nilServer {
+			rem = bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+		}
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}

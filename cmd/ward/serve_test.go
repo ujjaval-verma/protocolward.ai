@@ -1118,11 +1118,12 @@ func serveMinimalCfg(t *testing.T, extra string) string {
 // dashboard listening.
 func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
 	cases := []struct {
-		name string
-		fake func(dataplane.Config) (*dataplane.Server, error)
+		name    string
+		fake    func(dataplane.Config) (*dataplane.Server, error)
+		wantRem string // substring of the remediation; "" means any non-empty
 	}{
-		{"error", func(dataplane.Config) (*dataplane.Server, error) { return nil, errors.New("boom") }},
-		{"nil server and nil error", func(dataplane.Config) (*dataplane.Server, error) { return nil, nil }},
+		{"error", func(dataplane.Config) (*dataplane.Server, error) { return nil, errors.New("boom") }, ""},
+		{"nil server and nil error", func(dataplane.Config) (*dataplane.Server, error) { return nil, nil }, "report this as a bug"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1146,6 +1147,9 @@ func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
 			}
 			if se.Remediation == "" {
 				t.Error("serveError.Remediation is empty; invariant 8 requires one")
+			}
+			if !strings.Contains(se.Remediation, c.wantRem) {
+				t.Errorf("remediation = %q; want it to contain %q", se.Remediation, c.wantRem)
 			}
 			if conn, derr := net.DialTimeout("tcp", dashAddr, 200*time.Millisecond); derr == nil {
 				conn.Close()
