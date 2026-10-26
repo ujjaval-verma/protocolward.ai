@@ -1190,6 +1190,9 @@ func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
 	if !errors.As(serr, &se) || se.Code != 1 || !strings.Contains(se.Message, "dashboard listen failed") {
 		t.Fatalf("serveRun err = %v; want *serveError code 1 containing %q", serr, "dashboard listen failed")
 	}
+	if !strings.Contains(se.Remediation, "--dash-listen-addr") {
+		t.Errorf("remediation = %q; want it to name --dash-listen-addr", se.Remediation)
+	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("model child was not reaped before serveRun returned: %v", err)
 	}

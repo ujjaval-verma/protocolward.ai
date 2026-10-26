@@ -258,7 +258,7 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 	dashListener, err := dashListen(addr)
 	if err != nil {
 		msg := fmt.Sprintf("dashboard listen failed: %v", err)
-		rem := "verify nothing else is using " + addr + "; the dashboard port is fixed today (a dashboard config option is planned)"
+		rem := "verify nothing else is using " + addr + ", or pass --dash-listen-addr with another loopback address"
 		printStartupError("dashboard error", msg, rem)
 		return nil, &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
