@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,6 +89,9 @@ type serveOpts struct {
 	// use ward.yaml. Unlike ward.yaml's listen:, port 0 is allowed: the
 	// kernel picks the port and ward holds it (tests rely on this).
 	listenAddr string
+	// newDataplane overrides the dataplane constructor. Nil means
+	// dataplane.NewServer. Only tests set it (to inject an init failure).
+	newDataplane func(dataplane.Config) (*dataplane.Server, error)
 }
 
 // lipgloss styles for startup-error stderr output.
@@ -165,6 +167,111 @@ func resolveConfigPath(flag string) (string, error) {
 		Message:     fmt.Sprintf("no config file found; searched: %s", searched),
 		Remediation: fmt.Sprintf("create ward.yaml at one of the searched paths or pass --config PATH; see ward.example.yaml for a template"),
 	}
+}
+
+// newServeClassifier builds the slow-path classifier from cfg.Model. It
+// returns a nil classifier when no model is configured or a command model
+// fails to start (startFailed is then true and ward runs fast-path-only).
+// closeFn is never nil; it reaps the model child, if any.
+func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
+	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
+	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
+	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
+	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
+	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
+	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
+	var adapterToClose *model.Adapter
+	switch {
+	case cfg.Model == nil:
+		// No model: stanza — fast-path-only.
+	case cfg.Model.Builtin == config.ModelBuiltinLexical:
+		// In-process detector: no sibling, nothing to close, no
+		// ErrUnavailable latch. Flag-only (ADR-0006).
+		c = detect.New()
+		slog.Info("policy: model loaded",
+			"builtin", cfg.Model.Builtin,
+			"mode", "flag-only",
+		)
+	default:
+		ad, mErr := model.New(context.Background(), model.Config{
+			Command: cfg.Model.Command,
+			Env:     cfg.Model.Env,
+		})
+		if mErr != nil {
+			startFailed = true
+			// Continue with nil classifier — ward runs fast-path-only.
+			// Single canonical `policy: model unavailable` slog line so
+			// operators see one event, not two (Ralph N3). stderr still
+			// gets the lipgloss-styled startup line for human eyes; the
+			// slog stream gets the canonical msg.
+			msg := fmt.Sprintf("policy: model unavailable: %v", mErr)
+			rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
+			fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
+			fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
+			fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
+			slog.Warn("policy: model unavailable",
+				"error", mErr.Error(),
+				"remediation", rem,
+			)
+		} else {
+			c = ad
+			adapterToClose = ad
+			slog.Info("policy: model loaded",
+				"command", cfg.Model.Command[0],
+				"argc", len(cfg.Model.Command),
+			)
+		}
+	}
+	closeFn = func() {
+		if adapterToClose != nil {
+			if cErr := adapterToClose.Close(); cErr != nil {
+				// Per Adapter.Close docstring: a non-nil error here is the
+				// normal shutdown signature (poison or SIGKILL), not
+				// actionable. Debug-level so it doesn't alarm operators.
+				slog.Debug("policy: model close (non-fatal)", "error", cErr.Error())
+			}
+		}
+	}
+	return c, closeFn, startFailed
+}
+
+// startDashboard builds the dashboard handler, binds addr, serves in a
+// goroutine and logs dashboard: ready with the bound address. On a bind
+// failure it prints the startup error and returns a *serveError (Code 1).
+func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
+	dashSrv := &http.Server{
+		Addr: addr,
+		Handler: web.HandlerWithOptions(store, web.Options{
+			Flags:           flags,
+			ClassifyDropped: srv.ClassifyDropped,
+			Classifier: func() string {
+				// A model that failed to start leaves classification off until
+				// ward restarts: report unavailable, not none. Checked first.
+				if modelStartFailed {
+					return dataplane.ClassifierStateUnavailable
+				}
+				return srv.ClassifierState()
+			},
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	dashListener, err := dashListen(addr)
+	if err != nil {
+		msg := fmt.Sprintf("dashboard listen failed: %v", err)
+		rem := "verify nothing else is using " + addr + ", or pass --dash-listen-addr with another loopback address"
+		printStartupError("dashboard error", msg, rem)
+		return nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+	}
+	go func() {
+		if err := dashSrv.Serve(dashListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("dashboard: serve error",
+				"error", err.Error(),
+				"remediation", "check the dashboard listener; this is unexpected",
+			)
+		}
+	}()
+	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
+	return dashSrv, nil
 }
 
 // serveRun is the testable core of the serve subcommand. It returns a
@@ -309,10 +416,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		logEngineReadyBanner(allowSet, blockSet, cfg.BlockResponse, totalDecoys)
 	}
 
-	// ── Step 4d: Dashboard last-decision store + HTTP server ────────────────
+	// ── Step 4d: Dashboard store, flag log and loopback check ───────────────
 	// The store is constructed before the dataplane so we can pass it as the
 	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
-	// corollary (internal/web package doc).
+	// corollary (internal/web package doc); the check runs before any bind.
+	// The dashboard itself starts in step 5b, once the dataplane server exists.
 	dashAddr := opts.dashListenAddr
 	if dashAddr == "" {
 		dashAddr = dashboardListenAddr
@@ -327,122 +435,21 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
-	// dpSrv is set once the dataplane server exists (step 5); until then
-	// /healthz reports classify_dropped 0 and classifier none. The
-	// dashboard starts first, so the handler reads the server through this
-	// pointer. modelStartFailed is set in step 4e when a configured model
-	// fails to start: the server then runs with no classifier (and would
-	// say none), but classification is off until ward restarts, so
-	// /healthz reports classifier unavailable. It is checked first.
-	var dpSrv atomic.Pointer[dataplane.Server]
-	var modelStartFailed atomic.Bool
-	dashSrv := &http.Server{
-		Addr: dashAddr,
-		Handler: web.HandlerWithOptions(dashStore, web.Options{
-			Flags: flagLog,
-			ClassifyDropped: func() uint64 {
-				if s := dpSrv.Load(); s != nil {
-					return s.ClassifyDropped()
-				}
-				return 0
-			},
-			Classifier: func() string {
-				if modelStartFailed.Load() {
-					return dataplane.ClassifierStateUnavailable
-				}
-				if s := dpSrv.Load(); s != nil {
-					return s.ClassifierState()
-				}
-				return dataplane.ClassifierStateNone
-			},
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	dashListener, err := dashListen(dashAddr)
-	if err != nil {
-		msg := fmt.Sprintf("dashboard listen failed: %v", err)
-		rem := "verify nothing else is using " + dashAddr + "; the dashboard port is fixed today (a dashboard config option is planned)"
-		printStartupError("dashboard error", msg, rem)
-		return &serveError{Code: 1, Message: msg, Remediation: rem}
-	}
-	go func() {
-		if err := dashSrv.Serve(dashListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("dashboard: serve error",
-				"error", err.Error(),
-				"remediation", "check the dashboard listener; this is unexpected",
-			)
-		}
-	}()
-	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
-
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
-	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
-	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
-	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
-	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
-	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
-	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
-	var classifier dataplane.SlowPathClassifier
-	var adapterToClose *model.Adapter
-	switch {
-	case cfg.Model == nil:
-		// No model: stanza — fast-path-only.
-	case cfg.Model.Builtin == config.ModelBuiltinLexical:
-		// In-process detector: no sibling, nothing to close, no
-		// ErrUnavailable latch. Flag-only (ADR-0006).
-		classifier = detect.New()
-		slog.Info("policy: model loaded",
-			"builtin", cfg.Model.Builtin,
-			"mode", "flag-only",
-		)
-	default:
-		ad, mErr := model.New(context.Background(), model.Config{
-			Command: cfg.Model.Command,
-			Env:     cfg.Model.Env,
-		})
-		if mErr != nil {
-			modelStartFailed.Store(true)
-			// Continue with nil classifier — ward runs fast-path-only.
-			// Single canonical `policy: model unavailable` slog line so
-			// operators see one event, not two (Ralph N3). stderr still
-			// gets the lipgloss-styled startup line for human eyes; the
-			// slog stream gets the canonical msg.
-			msg := fmt.Sprintf("policy: model unavailable: %v", mErr)
-			rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
-			fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
-			fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
-			fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
-			slog.Warn("policy: model unavailable",
-				"error", mErr.Error(),
-				"remediation", rem,
-			)
-		} else {
-			classifier = ad
-			adapterToClose = ad
-			slog.Info("policy: model loaded",
-				"command", cfg.Model.Command[0],
-				"argc", len(cfg.Model.Command),
-			)
-		}
-	}
-	// Adapter close is deferred here so EVERY return path (including the
-	// early serveErr-channel exit at step 7) reaps the child. The defer
-	// fires AFTER any inline srv.Shutdown has drained classifyAsync
-	// goroutines (Risk #2 mitigation): defers run at function exit, after
-	// the inline shutdown completes.
-	defer func() {
-		if adapterToClose != nil {
-			if cErr := adapterToClose.Close(); cErr != nil {
-				// Per Adapter.Close docstring: a non-nil error here is the
-				// normal shutdown signature (poison or SIGKILL), not
-				// actionable. Debug-level so it doesn't alarm operators.
-				slog.Debug("policy: model close (non-fatal)", "error", cErr.Error())
-			}
-		}
-	}()
+	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
+	// Deferred here so every return path (including the early serveErr-channel
+	// exit at step 7) reaps the child; the exception is the second-signal
+	// os.Exit(130) in step 7, which skips defers. The defer fires AFTER any inline
+	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
+	// defers run at function exit, after the inline shutdown completes.
+	defer closeClassifier()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
-	srv, err := dataplane.NewServer(dataplane.Config{
+	newDP := opts.newDataplane
+	if newDP == nil {
+		newDP = dataplane.NewServer
+	}
+	srv, err := newDP(dataplane.Config{
 		ListenAddr:      cfg.Listen,
 		Resolvers:       clients,
 		Engine:          engine,
@@ -455,14 +462,30 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		ShutdownTimeout: cfg.Timeouts.Shutdown,
 		Classifier:      classifier,
 	})
+	nilServer := err == nil && srv == nil
+	if nilServer {
+		err = errors.New("newDataplane returned a nil server")
+	}
 	if err != nil {
 		// Adapter cleanup runs via the deferred close above.
 		msg := fmt.Sprintf("dataplane init failed: %v", err)
-		rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+		rem := "internal error: the dataplane constructor returned no server; report this as a bug"
+		if !nilServer {
+			rem = bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+		}
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
-	dpSrv.Store(srv)
+
+	// ── Step 5b: Start the dashboard ─────────────────────────────────────────
+	// Only now, so /healthz can read the server and the model state from its
+	// first answer. NewServer binds nothing, so a listen failure here needs no
+	// dataplane cleanup.
+	dashSrv, err := startDashboard(dashAddr, dashStore, flagLog, srv, modelStartFailed)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dashSrv.Close() }()
 
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
