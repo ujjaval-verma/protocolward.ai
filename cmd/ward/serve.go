@@ -90,6 +90,9 @@ type serveOpts struct {
 	// use ward.yaml. Unlike ward.yaml's listen:, port 0 is allowed: the
 	// kernel picks the port and ward holds it (tests rely on this).
 	listenAddr string
+	// newDataplane overrides the dataplane constructor. Nil means
+	// dataplane.NewServer. Only tests set it (to inject an init failure).
+	newDataplane func(dataplane.Config) (*dataplane.Server, error)
 }
 
 // lipgloss styles for startup-error stderr output.
@@ -442,7 +445,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
-	srv, err := dataplane.NewServer(dataplane.Config{
+	newDP := opts.newDataplane
+	if newDP == nil {
+		newDP = dataplane.NewServer
+	}
+	srv, err := newDP(dataplane.Config{
 		ListenAddr:      cfg.Listen,
 		Resolvers:       clients,
 		Engine:          engine,
@@ -455,6 +462,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		ShutdownTimeout: cfg.Timeouts.Shutdown,
 		Classifier:      classifier,
 	})
+	if err == nil && srv == nil {
+		err = errors.New("newDataplane returned a nil server")
+	}
 	if err != nil {
 		// Adapter cleanup runs via the deferred close above.
 		msg := fmt.Sprintf("dataplane init failed: %v", err)
