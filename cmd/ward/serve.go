@@ -170,6 +170,72 @@ func resolveConfigPath(flag string) (string, error) {
 	}
 }
 
+// newServeClassifier builds the slow-path classifier from cfg.Model. It
+// returns a nil classifier when no model is configured or a command model
+// fails to start (startFailed is then true and ward runs fast-path-only).
+// closeFn is never nil; it reaps the model child, if any.
+func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
+	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
+	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
+	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
+	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
+	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
+	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
+	var adapterToClose *model.Adapter
+	switch {
+	case cfg.Model == nil:
+		// No model: stanza — fast-path-only.
+	case cfg.Model.Builtin == config.ModelBuiltinLexical:
+		// In-process detector: no sibling, nothing to close, no
+		// ErrUnavailable latch. Flag-only (ADR-0006).
+		c = detect.New()
+		slog.Info("policy: model loaded",
+			"builtin", cfg.Model.Builtin,
+			"mode", "flag-only",
+		)
+	default:
+		ad, mErr := model.New(context.Background(), model.Config{
+			Command: cfg.Model.Command,
+			Env:     cfg.Model.Env,
+		})
+		if mErr != nil {
+			startFailed = true
+			// Continue with nil classifier — ward runs fast-path-only.
+			// Single canonical `policy: model unavailable` slog line so
+			// operators see one event, not two (Ralph N3). stderr still
+			// gets the lipgloss-styled startup line for human eyes; the
+			// slog stream gets the canonical msg.
+			msg := fmt.Sprintf("policy: model unavailable: %v", mErr)
+			rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
+			fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
+			fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
+			fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
+			slog.Warn("policy: model unavailable",
+				"error", mErr.Error(),
+				"remediation", rem,
+			)
+		} else {
+			c = ad
+			adapterToClose = ad
+			slog.Info("policy: model loaded",
+				"command", cfg.Model.Command[0],
+				"argc", len(cfg.Model.Command),
+			)
+		}
+	}
+	closeFn = func() {
+		if adapterToClose != nil {
+			if cErr := adapterToClose.Close(); cErr != nil {
+				// Per Adapter.Close docstring: a non-nil error here is the
+				// normal shutdown signature (poison or SIGKILL), not
+				// actionable. Debug-level so it doesn't alarm operators.
+				slog.Debug("policy: model close (non-fatal)", "error", cErr.Error())
+			}
+		}
+	}
+	return c, closeFn, startFailed
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -379,70 +445,15 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
-	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
-	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
-	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
-	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
-	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
-	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
-	var classifier dataplane.SlowPathClassifier
-	var adapterToClose *model.Adapter
-	switch {
-	case cfg.Model == nil:
-		// No model: stanza — fast-path-only.
-	case cfg.Model.Builtin == config.ModelBuiltinLexical:
-		// In-process detector: no sibling, nothing to close, no
-		// ErrUnavailable latch. Flag-only (ADR-0006).
-		classifier = detect.New()
-		slog.Info("policy: model loaded",
-			"builtin", cfg.Model.Builtin,
-			"mode", "flag-only",
-		)
-	default:
-		ad, mErr := model.New(context.Background(), model.Config{
-			Command: cfg.Model.Command,
-			Env:     cfg.Model.Env,
-		})
-		if mErr != nil {
-			modelStartFailed.Store(true)
-			// Continue with nil classifier — ward runs fast-path-only.
-			// Single canonical `policy: model unavailable` slog line so
-			// operators see one event, not two (Ralph N3). stderr still
-			// gets the lipgloss-styled startup line for human eyes; the
-			// slog stream gets the canonical msg.
-			msg := fmt.Sprintf("policy: model unavailable: %v", mErr)
-			rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
-			fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
-			fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
-			fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
-			slog.Warn("policy: model unavailable",
-				"error", mErr.Error(),
-				"remediation", rem,
-			)
-		} else {
-			classifier = ad
-			adapterToClose = ad
-			slog.Info("policy: model loaded",
-				"command", cfg.Model.Command[0],
-				"argc", len(cfg.Model.Command),
-			)
-		}
+	classifier, closeClassifier, startFailed := newServeClassifier(cfg)
+	if startFailed {
+		modelStartFailed.Store(true)
 	}
-	// Adapter close is deferred here so EVERY return path (including the
-	// early serveErr-channel exit at step 7) reaps the child. The defer
-	// fires AFTER any inline srv.Shutdown has drained classifyAsync
-	// goroutines (Risk #2 mitigation): defers run at function exit, after
-	// the inline shutdown completes.
-	defer func() {
-		if adapterToClose != nil {
-			if cErr := adapterToClose.Close(); cErr != nil {
-				// Per Adapter.Close docstring: a non-nil error here is the
-				// normal shutdown signature (poison or SIGKILL), not
-				// actionable. Debug-level so it doesn't alarm operators.
-				slog.Debug("policy: model close (non-fatal)", "error", cErr.Error())
-			}
-		}
-	}()
+	// Deferred here so EVERY return path (including the early serveErr-channel
+	// exit at step 7) reaps the child. The defer fires AFTER any inline
+	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
+	// defers run at function exit, after the inline shutdown completes.
+	defer closeClassifier()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
 	newDP := opts.newDataplane
