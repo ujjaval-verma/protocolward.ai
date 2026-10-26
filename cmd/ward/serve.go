@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -236,6 +235,45 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 	return c, closeFn, startFailed
 }
 
+// startDashboard builds the dashboard handler, binds addr, serves in a
+// goroutine and logs dashboard: ready with the bound address. On a bind
+// failure it prints the startup error and returns a *serveError (Code 1).
+func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
+	dashSrv := &http.Server{
+		Addr: addr,
+		Handler: web.HandlerWithOptions(store, web.Options{
+			Flags:           flags,
+			ClassifyDropped: srv.ClassifyDropped,
+			Classifier: func() string {
+				// A model that failed to start leaves classification off until
+				// ward restarts: report unavailable, not none. Checked first.
+				if modelStartFailed {
+					return dataplane.ClassifierStateUnavailable
+				}
+				return srv.ClassifierState()
+			},
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	dashListener, err := dashListen(addr)
+	if err != nil {
+		msg := fmt.Sprintf("dashboard listen failed: %v", err)
+		rem := "verify nothing else is using " + addr + "; the dashboard port is fixed today (a dashboard config option is planned)"
+		printStartupError("dashboard error", msg, rem)
+		return nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+	}
+	go func() {
+		if err := dashSrv.Serve(dashListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("dashboard: serve error",
+				"error", err.Error(),
+				"remediation", "check the dashboard listener; this is unexpected",
+			)
+		}
+	}()
+	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
+	return dashSrv, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -378,10 +416,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		logEngineReadyBanner(allowSet, blockSet, cfg.BlockResponse, totalDecoys)
 	}
 
-	// ── Step 4d: Dashboard last-decision store + HTTP server ────────────────
+	// ── Step 4d: Dashboard store, flag log and loopback check ───────────────
 	// The store is constructed before the dataplane so we can pass it as the
 	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
-	// corollary (internal/web package doc).
+	// corollary (internal/web package doc); the check runs before any bind.
+	// The dashboard itself starts in step 5b, once the dataplane server exists.
 	dashAddr := opts.dashListenAddr
 	if dashAddr == "" {
 		dashAddr = dashboardListenAddr
@@ -396,59 +435,8 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
-	// dpSrv is set once the dataplane server exists (step 5); until then
-	// /healthz reports classify_dropped 0 and classifier none. The
-	// dashboard starts first, so the handler reads the server through this
-	// pointer. modelStartFailed is set in step 4e when a configured model
-	// fails to start: the server then runs with no classifier (and would
-	// say none), but classification is off until ward restarts, so
-	// /healthz reports classifier unavailable. It is checked first.
-	var dpSrv atomic.Pointer[dataplane.Server]
-	var modelStartFailed atomic.Bool
-	dashSrv := &http.Server{
-		Addr: dashAddr,
-		Handler: web.HandlerWithOptions(dashStore, web.Options{
-			Flags: flagLog,
-			ClassifyDropped: func() uint64 {
-				if s := dpSrv.Load(); s != nil {
-					return s.ClassifyDropped()
-				}
-				return 0
-			},
-			Classifier: func() string {
-				if modelStartFailed.Load() {
-					return dataplane.ClassifierStateUnavailable
-				}
-				if s := dpSrv.Load(); s != nil {
-					return s.ClassifierState()
-				}
-				return dataplane.ClassifierStateNone
-			},
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	dashListener, err := dashListen(dashAddr)
-	if err != nil {
-		msg := fmt.Sprintf("dashboard listen failed: %v", err)
-		rem := "verify nothing else is using " + dashAddr + "; the dashboard port is fixed today (a dashboard config option is planned)"
-		printStartupError("dashboard error", msg, rem)
-		return &serveError{Code: 1, Message: msg, Remediation: rem}
-	}
-	go func() {
-		if err := dashSrv.Serve(dashListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("dashboard: serve error",
-				"error", err.Error(),
-				"remediation", "check the dashboard listener; this is unexpected",
-			)
-		}
-	}()
-	slog.Info("dashboard: ready", "listen", dashListener.Addr().String())
-
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
-	classifier, closeClassifier, startFailed := newServeClassifier(cfg)
-	if startFailed {
-		modelStartFailed.Store(true)
-	}
+	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
 	// Deferred here so EVERY return path (including the early serveErr-channel
 	// exit at step 7) reaps the child. The defer fires AFTER any inline
 	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
@@ -483,7 +471,16 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		printStartupError("startup error", msg, rem)
 		return &serveError{Code: 1, Message: msg, Remediation: rem}
 	}
-	dpSrv.Store(srv)
+
+	// ── Step 5b: Start the dashboard ─────────────────────────────────────────
+	// Only now, so /healthz can read the server and the model state from its
+	// first answer. NewServer binds nothing, so a listen failure here needs no
+	// dataplane cleanup.
+	dashSrv, err := startDashboard(dashAddr, dashStore, flagLog, srv, modelStartFailed)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dashSrv.Close() }()
 
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
