@@ -27,6 +27,11 @@ BENCH         ?= .
 BENCH_TIME    ?= 1s
 BENCH_COUNT   ?= 1
 BENCH_TIMEOUT ?= 10m
+# make fuzz knobs: FUZZTIME=d FUZZ_MINIMIZE_TIME=d FUZZ_PARALLEL=n
+FUZZTIME           ?= 60s
+FUZZ_MINIMIZE_TIME ?= 5s
+FUZZ_PARALLEL      ?=
+FUZZ_PARALLEL_FLAG  = $(if $(FUZZ_PARALLEL),-parallel=$(FUZZ_PARALLEL))
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
@@ -132,6 +137,14 @@ test: ## Run unit tests with race detector (the pre-push hook runs this target)
 .PHONY: bench
 bench: ## Run the hot-path benchmarks with -benchmem (BENCH=regex BENCH_TIME=1s|Nx BENCH_COUNT=n BENCH_TIMEOUT=d)
 	$(Q)$(GO) test -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCH_TIME) -count=$(BENCH_COUNT) -timeout=$(BENCH_TIMEOUT) $(PKG)
+
+.PHONY: fuzz
+fuzz: ## Run each fuzz target for FUZZTIME (default 60s); FUZZ_PARALLEL=n limits workers
+	$(Q)rc=0; \
+	$(GO) test -run='^$$' -fuzz='^FuzzParseLine$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/hostlist || rc=1; \
+	$(GO) test -run='^$$' -fuzz='^FuzzDecoyParseLine$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/decoy || rc=1; \
+	$(GO) test -run='^$$' -fuzz='^FuzzLoad$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/config || rc=1; \
+	exit $$rc
 
 .PHONY: test-cover
 test-cover: ## Run tests with coverage report
