@@ -47,7 +47,7 @@ This adds `Signed-off-by: Your Name <your@email>`. It certifies that you have th
 | `scripts/` | Repo tooling and the DoD harness |
 | `deploy/`, `web/` | Placeholders for packaging and a future dashboard |
 | `testdata/` | Test and demo fixtures (blocklists, eval suites, signed update fixtures, DoD harness config) |
-| `.github/` | Tag-triggered release workflow and nightly verification of `main` (no PR CI, ADR-0002) |
+| `.github/` | Tag-triggered release workflow and `main-verify` verification of `main` (no PR CI, ADR-0002) |
 | `docs/` | Product, engineering, design docs |
 
 ## Licensing of contributions
