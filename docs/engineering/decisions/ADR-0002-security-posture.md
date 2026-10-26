@@ -137,3 +137,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - `.pre-commit-config.yaml` — hook tiering
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
+
+## Amendment (2026-10-26): renamed to main-verify
+
+The `nightly.yml` workflow is renamed `main-verify.yml` (workflow name `main verify`, concurrency group `main-verify-<ref>`, failure label `ci:main-verify-failure`). In practice it verifies `main` after each merge: the factory dispatches it with `force_full=true`, and the daily cron is only a backstop (a vulnerability scan when `main` is unchanged). Behaviour, permissions and the cron expression are unchanged. "Nightly" and `nightly.yml` in the body and earlier amendments of this ADR, and in the commit history, now mean the main-verify workflow.

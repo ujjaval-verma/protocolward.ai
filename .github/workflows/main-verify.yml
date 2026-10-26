@@ -1,10 +1,12 @@
-# Protocol Ward — nightly verification of main (ADR-0002 §1, amendment of 2026-10-20).
+# Protocol Ward — main verify: verification of main (ADR-0002 §1, amendment of 2026-10-20).
+# Verifies main. The factory dispatches it with force_full=true after each
+# merge; the daily cron is a backstop (when main is unchanged since the last
+# successful run, only govulncheck runs, as a vuln scan).
 # Post-merge detection only: never a required check, never runs on pushes or
-# pull requests. When main is unchanged since this workflow's last successful
-# run, only govulncheck runs. A failure opens or updates one issue labelled
-# ci:nightly-failure; the next green run closes it. The full run ends with
+# pull requests. A failure opens or updates one issue labelled
+# ci:main-verify-failure; the next green run closes it. The full run ends with
 # `make fuzz` (60 s per fuzz target; issue #23).
-name: nightly
+name: main verify
 
 on:
   schedule:
@@ -23,11 +25,11 @@ on:
 permissions: {}
 
 concurrency:
-  group: nightly-${{ github.ref }}
+  group: main-verify-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  FAILURE_LABEL: 'ci:nightly-failure'
+  FAILURE_LABEL: 'ci:main-verify-failure'
 
 jobs:
   gate:
@@ -48,7 +50,7 @@ jobs:
           SELFTEST_FAILURE: ${{ inputs.selftest_failure }}
         run: |
           set -euo pipefail
-          if ! last="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=main&status=success&per_page=1" \
+          if ! last="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/main-verify.yml/runs?branch=main&status=success&per_page=1" \
                 --jq '.workflow_runs[0].head_sha // ""')"; then
             echo "::warning::could not list earlier runs; running the full verification"
             last=""
@@ -175,7 +177,7 @@ jobs:
     permissions:
       issues: write   # create the label; open, comment on and close the failure issue
     steps:
-      - name: Open, update or close the ci:nightly-failure issue
+      - name: Open, update or close the ci:main-verify-failure issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -186,20 +188,20 @@ jobs:
         run: |
           set -euo pipefail
           gh label create "${FAILURE_LABEL}" --color B60205 \
-            --description 'Nightly verification of main failed (ADR-0002)' --force >/dev/null
+            --description 'Main verification failed (ADR-0002)' --force >/dev/null
           open="$(gh issue list --label "${FAILURE_LABEL}" --state open --limit 1 \
             --json number --jq '.[0].number // ""')"
           details="$(printf 'Run: %s\nCommit: %s\nTrigger: %s; scope: %s\nJobs: gate=%s, verify=%s' \
             "${RUN_URL}" "${GITHUB_SHA}" "${GITHUB_EVENT_NAME}" "${MODE:-unknown}" "${GATE}" "${VERIFY}")"
           if [[ "${GATE}" == success && "${VERIFY}" == success ]]; then
             if [[ -n "${open}" ]]; then
-              gh issue close "${open}" --comment "$(printf 'Nightly verification of main is green again.\n\n%s' "${details}")"
+              gh issue close "${open}" --comment "$(printf 'Main verification is green again.\n\n%s' "${details}")"
             fi
             exit 0
           fi
           if [[ -n "${open}" ]]; then
             gh issue comment "${open}" --body "$(printf 'Failed again.\n\n%s' "${details}")"
           else
-            gh issue create --title 'Nightly verification of main failed' --label "${FAILURE_LABEL}" \
-              --body "$(printf '%s\n\nThis issue stays open while the nightly workflow fails. Later failures comment here; the next green run closes it (ADR-0002 §1).' "${details}")"
+            gh issue create --title 'Main verification failed' --label "${FAILURE_LABEL}" \
+              --body "$(printf '%s\n\nThis issue stays open while the main-verify workflow fails. Later failures comment here; the next green run closes it (ADR-0002 §1).' "${details}")"
           fi

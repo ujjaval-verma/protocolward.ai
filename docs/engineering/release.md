@@ -18,7 +18,7 @@ The release process for Protocol Ward. Every change to `main` passes the local g
 - `make ci`: lint, vet, race tests, testing-doc, SPDX, public-content, third-party-licence and Actions SHA-pin (`check-actions-pinned`) gates, workflow lint (actionlint), build, js/wasm compile and 5 MB size gate. The release workflow runs it again on the tag.
 - `make dod`: the versioned acceptance harness ([`definition-of-done.md`](definition-of-done.md)). Every bullet PASS, exit 0.
 - `make audit`: `go mod verify`, govulncheck, `goreleaser check`.
-- Nightly workflow: `gh api repos/{owner}/{repo}/actions/workflows/nightly.yml --jq .state` prints `active`, and `gh run list --workflow nightly.yml --branch main --limit 1` shows `completed success` (GitHub disables schedules after 60 quiet days; re-enable with `gh workflow enable nightly.yml`).
+- Main-verify workflow: `gh api repos/{owner}/{repo}/actions/workflows/main-verify.yml --jq .state` prints `active`, and `gh run list --workflow main-verify.yml --branch main --limit 1` shows `completed success` (GitHub disables schedules after 60 quiet days; re-enable with `gh workflow enable main-verify.yml`).
 - Actions policy: `gh api repos/{owner}/{repo}/actions/permissions` prints `allowed_actions: selected` and `sha_pinning_required: true`; a release that adds a new third-party action (a new owner/repo) updates the allowlist first (ADR-0002 §1).
 
 Run from a fresh clone (or `make distclean && make bootstrap`) on the commit you are about to tag, to prove no working-tree pollution. This gate is sufficient for a beta (pre-release) tag.
@@ -53,7 +53,7 @@ This repository is the development repository; there is no separate publish step
 
 ## Tagged release build
 
-Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. `.github/workflows/nightly.yml` re-verifies `main` daily after merge; those are the only two GitHub Actions workflows, and there is no PR CI (ADR-0002).
+Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. `.github/workflows/main-verify.yml` re-verifies `main` after each merge (daily cron as a backstop); those are the only two GitHub Actions workflows, and there is no PR CI (ADR-0002).
 
 Each release archive (`ward_<os>_<arch>.tar.gz`) carries `THIRD_PARTY_LICENSES/`: the licence, NOTICE and PATENTS files of every Go module linked into `ward` on the released platforms, plus the Go standard library's licence, with `MODULES.txt` listing each module and version. The goreleaser `before` hook generates it with `scripts/third-party-licenses.sh` (not committed; gitignored) and fails the release if a linked module has no licence file. `make check` runs `scripts/check-third-party-licenses.sh`, so a dependency without a licence is caught when it is added, not at tag time.
 
