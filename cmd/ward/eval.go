@@ -263,7 +263,7 @@ func evalRunWith(out io.Writer, opts evalOpts, clf pmodel.Classifier) error {
 // constructed.
 //
 // context.Background() is passed to model.New so the adapter's lifetime
-// is owned solely by Close — same pattern as cmd/ward/serve.go:314 (per
+// is owned solely by Close — same pattern as newServeClassifier in cmd/ward/serve.go (per
 // SP10b Ralph F1).
 func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
 	cfgPath, err := resolveConfigPath(configPath)
