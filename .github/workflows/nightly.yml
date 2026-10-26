@@ -154,7 +154,7 @@ jobs:
         if: env.MODE == 'full'
         run: .tools/goreleaser release --snapshot --clean --skip=sign
 
-      - name: make fuzz (60 s per target)
+      - name: make fuzz
         if: env.MODE == 'full'
         run: make fuzz
 
