@@ -14,6 +14,7 @@
 - **Amended:** 2026-10-23 — Dependabot alerts and private vulnerability reporting on; automated security-update PRs off (§1, §4; issue #41)
 - **Amended:** 2026-10-23 — pre-push budget raised to 30 s cold; all pre-push gates run concurrently in one make target (§2)
 - **Amended:** 2026-10-26 — nightly runs the fuzz targets for 60 s each via make fuzz (§1; issue #23)
+- **Amended:** 2026-10-26 — `nightly.yml` renamed `main-verify.yml`; "nightly" in this ADR now means that workflow (§1)
 
 ## Context
 
@@ -49,6 +50,8 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 - Automated security-update PRs stay off. Read back with `gh api repos/{owner}/{repo} --jq .security_and_analysis.dependabot_security_updates.status` (`disabled`). With no PR CI, nothing would gate the PRs Dependabot opens, so the maintainer triages alerts by hand. There is no release-checklist gate for alerts.
 
 **Amendment (2026-10-26, issue #23).** The nightly full run now also runs `make fuzz` as its last step, after the goreleaser snapshot, so a fuzz finding never hides a later break. It fuzzes the hostlist line parser, the decoy line parser and `config.Load` for 60 s each, asserting no panic, typed errors and idempotent normalisation. On failure the next step prints the failing input from `testdata/fuzz/` into the log, because the runner is ephemeral. Like the rest of the nightly it is detection only: not a required check, no new action, and `permissions` are unchanged.
+
+**Amendment (2026-10-26, rename).** The `nightly.yml` workflow is renamed `main-verify.yml` (workflow name `main verify`, concurrency group `main-verify-<ref>`, failure label `ci:main-verify-failure`). It verifies `main` after merge: it is dispatched with `force_full=true` after automated merges, and otherwise runs on the daily cron, which is a backstop (a vulnerability scan when `main` is unchanged). It is detection only and gates nothing. Behaviour, permissions and the cron expression are unchanged. "Nightly" and `nightly.yml` elsewhere in this ADR, and in the commit history, now mean the main-verify workflow.
 
 ### 2. Hook tiering with strict latency budgets
 
@@ -132,12 +135,8 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 ## References
 
 - `Makefile` — `make audit` ladder; `.tools/govulncheck` install target
-- `.github/workflows/nightly.yml` — nightly post-merge verification of `main` (§1 amendment of 2026-10-20)
+- `.github/workflows/main-verify.yml` — post-merge verification of `main` (§1 amendments of 2026-10-20 and 2026-10-26)
 - GitHub repository settings (Actions permissions, secret scanning; Dependabot alerts, private vulnerability reporting): recorded in the §1 amendments of 2026-10-21 and 2026-10-23 (issues #12, #41); not in version control
 - `.pre-commit-config.yaml` — hook tiering
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
-
-## Amendment (2026-10-26): renamed to main-verify
-
-The `nightly.yml` workflow is renamed `main-verify.yml` (workflow name `main verify`, concurrency group `main-verify-<ref>`, failure label `ci:main-verify-failure`). In practice it verifies `main` after each merge: the factory dispatches it with `force_full=true`, and the daily cron is only a backstop (a vulnerability scan when `main` is unchanged). Behaviour, permissions and the cron expression are unchanged. "Nightly" and `nightly.yml` in the body and earlier amendments of this ADR, and in the commit history, now mean the main-verify workflow.

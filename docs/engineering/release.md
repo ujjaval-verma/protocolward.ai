@@ -53,7 +53,7 @@ This repository is the development repository; there is no separate publish step
 
 ## Tagged release build
 
-Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. `.github/workflows/main-verify.yml` re-verifies `main` after each merge (daily cron as a backstop); those are the only two GitHub Actions workflows, and there is no PR CI (ADR-0002).
+Tagged releases (`v*.*.*`) build with goreleaser and are signed with cosign by `.github/workflows/release.yml`. `.github/workflows/main-verify.yml` re-verifies `main` after merge: dispatched (with `force_full`) after automated merges, otherwise by the daily cron as a backstop; those are the only two GitHub Actions workflows, and there is no PR CI (ADR-0002).
 
 Each release archive (`ward_<os>_<arch>.tar.gz`) carries `THIRD_PARTY_LICENSES/`: the licence, NOTICE and PATENTS files of every Go module linked into `ward` on the released platforms, plus the Go standard library's licence, with `MODULES.txt` listing each module and version. The goreleaser `before` hook generates it with `scripts/third-party-licenses.sh` (not committed; gitignored) and fails the release if a linked module has no licence file. `make check` runs `scripts/check-third-party-licenses.sh`, so a dependency without a licence is caught when it is added, not at tag time.
 

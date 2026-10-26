@@ -1,7 +1,7 @@
-# Protocol Ward — main verify: verification of main (ADR-0002 §1, amendment of 2026-10-20).
-# Verifies main. The factory dispatches it with force_full=true after each
-# merge; the daily cron is a backstop (when main is unchanged since the last
-# successful run, only govulncheck runs, as a vuln scan).
+# Protocol Ward — main verify (ADR-0002 §1, amendments of 2026-10-20 and 2026-10-26).
+# Verifies main after merge: dispatched with force_full=true after automated
+# merges, otherwise run by the daily cron as a backstop (when main is unchanged
+# since the last successful run, only govulncheck runs, as a vuln scan).
 # Post-merge detection only: never a required check, never runs on pushes or
 # pull requests. A failure opens or updates one issue labelled
 # ci:main-verify-failure; the next green run closes it. The full run ends with
