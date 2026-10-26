@@ -26,6 +26,10 @@ import (
 // skipped only if the parsed upstreams value contains a ca_bundle key at any
 // depth; otherwise Load rejects the type error in its first Decode, before any
 // file I/O, and the input runs.
+//
+// A panic inside this function comes from yaml.v3 parsing the same bytes that
+// Load would parse, so Load would hit it too: report it as a panic reachable
+// through Load, not as a bug in the harness.
 func hasCABundle(data []byte) (skip bool) {
 	var probe struct {
 		Upstreams []struct {
