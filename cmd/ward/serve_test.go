@@ -24,6 +24,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"protocolward.ai/ward/internal/dataplane"
 	"protocolward.ai/ward/pkg/detect"
 	pmodel "protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
@@ -1096,5 +1097,152 @@ func TestServe_DashboardReady_LogsBoundAddr(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/healthz status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// serveMinimalCfg writes a valid ward.yaml (dead-ish upstream, kernel-picked
+// DNS port, short shutdown) plus extra YAML and returns its path.
+func serveMinimalCfg(t *testing.T, extra string) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
+	body := fmt.Sprintf("upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: %q\ntimeouts:\n  shutdown: \"50ms\"\n", freeUDPAddr(t)) + extra
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+// TestServe_DataplaneInitFails_DashboardNotListening: when dataplane
+// construction fails (or the constructor misbehaves and returns a nil server
+// with a nil error), serveRun returns the init-failed error and leaves no
+// dashboard listening.
+func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
+	cases := []struct {
+		name string
+		fake func(dataplane.Config) (*dataplane.Server, error)
+	}{
+		{"error", func(dataplane.Config) (*dataplane.Server, error) { return nil, errors.New("boom") }},
+		{"nil server and nil error", func(dataplane.Config) (*dataplane.Server, error) { return nil, nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dashAddr := freeTCPAddr(t)
+			cfgPath := serveMinimalCfg(t, "")
+			called := false
+			err := serveRun(context.Background(), serveOpts{
+				configPath:     cfgPath,
+				dashListenAddr: dashAddr,
+				newDataplane: func(cfg dataplane.Config) (*dataplane.Server, error) {
+					called = true
+					return c.fake(cfg)
+				},
+			})
+			if !called {
+				t.Fatal("fake newDataplane was not called")
+			}
+			var se *serveError
+			if !errors.As(err, &se) || se.Code != 1 || !strings.Contains(se.Message, "dataplane init failed") {
+				t.Fatalf("serveRun err = %v; want *serveError code 1 containing %q", err, "dataplane init failed")
+			}
+			if se.Remediation == "" {
+				t.Error("serveError.Remediation is empty; invariant 8 requires one")
+			}
+			if conn, derr := net.DialTimeout("tcp", dashAddr, 200*time.Millisecond); derr == nil {
+				conn.Close()
+				t.Fatalf("dashboard still listening on %s after dataplane init failed (leak)", dashAddr)
+			}
+		})
+	}
+}
+
+// TestServe_DashboardReadyAfterModelLoaded: the dashboard must not announce
+// itself until the model is loaded (and so /healthz can report it).
+func TestServe_DashboardReadyAfterModelLoaded(t *testing.T) {
+	w := startWard(t, deadUpstreamCfg+"model:\n  builtin: lexical\n")
+	if _, err := w.waitFor("policy: model loaded"); err != nil {
+		t.Fatal(err)
+	}
+	log := w.out.String()
+	loaded := strings.Index(log, `"msg":"policy: model loaded"`)
+	ready := strings.Index(log, `"msg":"dashboard: ready"`)
+	if loaded < 0 || ready < 0 {
+		t.Fatalf("missing log lines (model loaded at %d, dashboard ready at %d)\nlog:\n%s", loaded, ready, log)
+	}
+	if loaded > ready {
+		t.Errorf("dashboard: ready (offset %d) logged before policy: model loaded (offset %d)\nlog:\n%s", ready, loaded, log)
+	}
+}
+
+// TestServe_DashboardPortBusy_ReapsModel: a dashboard bind failure still
+// reaps the model child (it sees stdin EOF and writes the marker) before
+// serveRun returns.
+func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	marker := filepath.Join(t.TempDir(), "reaped")
+	extra := fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - 'cat >/dev/null; : > \"$1\"'\n    - sh\n    - %q\n", marker)
+	cfgPath := serveMinimalCfg(t, extra)
+	serr := serveRun(context.Background(), serveOpts{configPath: cfgPath, dashListenAddr: l.Addr().String()})
+	var se *serveError
+	if !errors.As(serr, &se) || se.Code != 1 || !strings.Contains(se.Message, "dashboard listen failed") {
+		t.Fatalf("serveRun err = %v; want *serveError code 1 containing %q", serr, "dashboard listen failed")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("model child was not reaped before serveRun returned: %v", err)
+	}
+}
+
+// TestServe_Healthz_BuiltinModel_NeverNone pins that with a model configured
+// /healthz never reports classifier "none", from the first answer on.
+func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
+	dashAddr := freeTCPAddr(t)
+	cfgPath := serveMinimalCfg(t, "model:\n  builtin: lexical\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: dashAddr}) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("serveRun did not return within 5s of cancel")
+		}
+	}()
+	poll := func() (string, bool) {
+		resp, err := http.Get("http://" + dashAddr + "/healthz")
+		if err != nil {
+			return "", false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", false
+		}
+		var body map[string]any
+		if json.NewDecoder(resp.Body).Decode(&body) != nil {
+			return "", false
+		}
+		s, _ := body["classifier"].(string)
+		return s, true
+	}
+	first, got := "", false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if first, got = poll(); got {
+			break
+		}
+	}
+	if !got {
+		t.Fatal("/healthz did not answer 200 within 5s")
+	}
+	if first != "ok" {
+		t.Fatalf("first /healthz classifier = %q; want ok", first)
+	}
+	for i := 0; i < 20; i++ {
+		if c, ok := poll(); ok && c == "none" {
+			t.Fatalf("poll %d: /healthz classifier = none with a model configured", i)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
