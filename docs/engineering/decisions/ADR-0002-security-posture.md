@@ -13,6 +13,7 @@
 - **Amended:** 2026-10-23 — Actions SHA-pin gate (check-actions-pinned) in make check and on pre-push (§1, §2; issue #42)
 - **Amended:** 2026-10-23 — Dependabot alerts and private vulnerability reporting on; automated security-update PRs off (§1, §4; issue #41)
 - **Amended:** 2026-10-23 — pre-push budget raised to 30 s cold; all pre-push gates run concurrently in one make target (§2)
+- **Amended:** 2026-10-26 — nightly runs the fuzz targets for 60 s each via make fuzz (§1; issue #23)
 
 ## Context
 
@@ -46,6 +47,8 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 - Dependabot alerts are enabled. Read back with `gh api -i repos/{owner}/{repo}/vulnerability-alerts` (HTTP 204 means on).
 - Private vulnerability reporting is enabled. Read back with `gh api repos/{owner}/{repo}/private-vulnerability-reporting` (`{"enabled":true}`). Reporters use "Report a vulnerability" on the Security tab, and `SECURITY.md` points to it as the preferred channel.
 - Automated security-update PRs stay off. Read back with `gh api repos/{owner}/{repo} --jq .security_and_analysis.dependabot_security_updates.status` (`disabled`). With no PR CI, nothing would gate the PRs Dependabot opens, so the maintainer triages alerts by hand. There is no release-checklist gate for alerts.
+
+**Amendment (2026-10-26, issue #23).** The nightly full run now also runs `make fuzz` as its last step, after the goreleaser snapshot, so a fuzz finding never hides a later break. It fuzzes the hostlist line parser, the decoy line parser and `config.Load` for 60 s each, asserting no panic, typed errors and idempotent normalisation. On failure the next step prints the failing input from `testdata/fuzz/` into the log, because the runner is ephemeral. Like the rest of the nightly it is detection only: not a required check, no new action, and `permissions` are unchanged.
 
 ### 2. Hook tiering with strict latency budgets
 

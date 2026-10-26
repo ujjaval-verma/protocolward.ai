@@ -38,6 +38,7 @@ make check      # lint + vet + test + testing-doc + spdx + public-content + thir
 make ci         # check + build + wasm compile/size gate (run before pushing; there is no PR CI)
 make test       # tests with race detector
 make bench      # hot-path benchmarks (-benchmem)
+make fuzz       # fuzz targets, FUZZTIME each (default 60s; nightly runs it)
 make lint       # golangci-lint (pinned)
 make fmt        # gofumpt -w
 make vuln       # govulncheck (also runs on pre-push)
