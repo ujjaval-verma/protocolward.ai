@@ -19,8 +19,13 @@ import (
 // that path (a device or FIFO could block), so such inputs are never fuzzed.
 // The decision uses the decoded value, not the raw bytes, because YAML escapes
 // and folding hide the key and the path. skip is true when the input must not
-// reach Load. A YAML syntax error is rejected by Load before any file I/O, so
-// it is not skipped.
+// reach Load.
+//
+// A YAML syntax error is rejected by Load before any file I/O, so it is not
+// skipped. When the probe fails only on a type or aliasing error, the input is
+// skipped only if the parsed upstreams value contains a ca_bundle key at any
+// depth; otherwise Load rejects the type error in its first Decode, before any
+// file I/O, and the input runs.
 func hasCABundle(data []byte) (skip bool) {
 	var probe struct {
 		Upstreams []struct {
@@ -28,12 +33,75 @@ func hasCABundle(data []byte) (skip bool) {
 		} `yaml:"upstreams"`
 	}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
-		// Syntax error: Load's decoder fails first. Type or aliasing error:
-		// the probe could not see ca_bundle, so skip.
-		return yaml.Unmarshal(data, new(yaml.Node)) == nil
+		var doc yaml.Node
+		if yaml.Unmarshal(data, &doc) != nil {
+			return false // syntax error: Load fails before any file I/O
+		}
+		if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
+			return false
+		}
+		seen := map[*yaml.Node]bool{}
+		for _, up := range upstreamsNodes(doc.Content[0], seen) {
+			if containsKey(up, "ca_bundle", seen) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, u := range probe.Upstreams {
 		if u.CABundle != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// upstreamsNodes returns the value nodes of the "upstreams" key of a root
+// mapping, including keys pulled in through YAML merge keys ("<<").
+func upstreamsNodes(n *yaml.Node, seen map[*yaml.Node]bool) []*yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	if n.Kind != yaml.MappingNode || seen[n] {
+		return nil
+	}
+	seen[n] = true
+	defer delete(seen, n)
+	var out []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		switch {
+		case k.Value == "upstreams":
+			out = append(out, v)
+		case k.Value == "<<":
+			if v.Kind == yaml.SequenceNode {
+				for _, m := range v.Content {
+					out = append(out, upstreamsNodes(m, seen)...)
+				}
+			} else {
+				out = append(out, upstreamsNodes(v, seen)...)
+			}
+		}
+	}
+	return out
+}
+
+// containsKey reports whether any mapping under n, at any depth and through
+// aliases, has the given scalar key.
+func containsKey(n *yaml.Node, key string, seen map[*yaml.Node]bool) bool {
+	if n == nil || seen[n] {
+		return false
+	}
+	seen[n] = true
+	defer delete(seen, n)
+	if n.Kind == yaml.AliasNode {
+		return containsKey(n.Alias, key, seen)
+	}
+	for i, c := range n.Content {
+		if n.Kind == yaml.MappingNode && i%2 == 0 && c.Value == key {
+			return true
+		}
+		if containsKey(c, key, seen) {
 			return true
 		}
 	}
@@ -56,6 +124,14 @@ func FuzzLoad(f *testing.F) {
 		"listen: \"127.0.0.1:5353\"\n---\nlisten: \"127.0.0.1:5354\"\n",
 		"listen: \"127.0.0.1:5353\"\ntimeouts:\n  dial: soon\n",
 		"",
+		// Non-mapping roots and a type error under upstreams without ca_bundle:
+		// these must reach Load, which rejects them with a *ParseError.
+		"foo",
+		"[1]",
+		"upstreams: 5\n",
+		"upstreams:\n  - address: [1]\n",
+		// A type error with a ca_bundle key under upstreams is skipped.
+		"upstreams:\n  - ca_bundle: [1]\n",
 	} {
 		f.Add([]byte(s))
 	}
