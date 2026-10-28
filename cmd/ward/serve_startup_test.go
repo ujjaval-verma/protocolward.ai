@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"protocolward.ai/ward/internal/config"
+	"protocolward.ai/ward/internal/dataplane"
 	"protocolward.ai/ward/internal/hostlist"
 	"protocolward.ai/ward/internal/policy"
 )
@@ -423,6 +424,104 @@ func TestLoadServePolicy(t *testing.T) {
 		}
 		if strings.Contains(buf.String(), "decoy: ready") {
 			t.Errorf("decoys loaded before the list error: %s", buf.String())
+		}
+	})
+}
+
+func TestServeDashAddr(t *testing.T) {
+	t.Run("empty uses default", func(t *testing.T) {
+		got, err := serveDashAddr(serveOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != dashboardListenAddr {
+			t.Errorf("got %q, want %q", got, dashboardListenAddr)
+		}
+	})
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0", "localhost:0"} {
+		t.Run("loopback "+addr, func(t *testing.T) {
+			got, err := serveDashAddr(serveOpts{dashListenAddr: addr})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != addr {
+				t.Errorf("got %q, want %q", got, addr)
+			}
+		})
+	}
+	t.Run("non-loopback", func(t *testing.T) {
+		_, err := serveDashAddr(serveOpts{dashListenAddr: "0.0.0.0:18987"})
+		se := asServeError(t, err, 1)
+		if !strings.Contains(se.Message, "non-loopback") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.HasPrefix(se.Remediation, "bind 127.0.0.1, ::1, or localhost only") {
+			t.Errorf("Remediation = %q", se.Remediation)
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		_, err := serveDashAddr(serveOpts{dashListenAddr: "nonsense"})
+		se := asServeError(t, err, 1)
+		if !strings.HasPrefix(se.Message, "invalid --dash-listen-addr") {
+			t.Errorf("Message = %q", se.Message)
+		}
+	})
+}
+
+func TestNewServeDataplane(t *testing.T) {
+	t.Run("real constructor rejects empty resolvers", func(t *testing.T) {
+		captureSlog(t)
+		srv, err := newServeDataplane(serveOpts{}, dataplane.Config{ListenAddr: "127.0.0.1:0"})
+		se := asServeError(t, err, 1)
+		if srv != nil {
+			t.Errorf("srv = %v, want nil", srv)
+		}
+		if !strings.HasPrefix(se.Message, "dataplane init failed") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if want := "check listen address and port availability in ward.yaml"; se.Remediation != want {
+			t.Errorf("Remediation = %q, want %q", se.Remediation, want)
+		}
+	})
+	t.Run("flag remediation", func(t *testing.T) {
+		captureSlog(t)
+		_, err := newServeDataplane(serveOpts{listenAddr: "127.0.0.1:0"}, dataplane.Config{ListenAddr: "127.0.0.1:0"})
+		se := asServeError(t, err, 1)
+		if want := "check the --listen-addr address and port availability"; se.Remediation != want {
+			t.Errorf("Remediation = %q, want %q", se.Remediation, want)
+		}
+	})
+	t.Run("nil server from constructor", func(t *testing.T) {
+		captureSlog(t)
+		opts := serveOpts{newDataplane: func(dataplane.Config) (*dataplane.Server, error) { return nil, nil }}
+		srv, err := newServeDataplane(opts, dataplane.Config{ListenAddr: "127.0.0.1:0"})
+		se := asServeError(t, err, 1)
+		if srv != nil {
+			t.Errorf("srv = %v, want nil", srv)
+		}
+		if !strings.Contains(se.Message, "newDataplane returned a nil server") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.Contains(se.Remediation, "report this as a bug") {
+			t.Errorf("Remediation = %q", se.Remediation)
+		}
+	})
+	t.Run("success returns the constructed server", func(t *testing.T) {
+		want := &dataplane.Server{}
+		var seen dataplane.Config
+		opts := serveOpts{newDataplane: func(c dataplane.Config) (*dataplane.Server, error) {
+			seen = c
+			return want, nil
+		}}
+		got, err := newServeDataplane(opts, dataplane.Config{ListenAddr: "127.0.0.1:5354"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("got %p, want %p", got, want)
+		}
+		if seen.ListenAddr != "127.0.0.1:5354" {
+			t.Errorf("constructor saw ListenAddr %q", seen.ListenAddr)
 		}
 	})
 }

@@ -444,6 +444,49 @@ func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
 	return engine, decoySet, nil
 }
 
+// serveDashAddr resolves the dashboard bind address (default when unset) and
+// enforces the loopback-only rule of invariant 4 before anything binds. A
+// rejected address prints the startup error and returns a *serveError (Code 1).
+func serveDashAddr(opts serveOpts) (string, error) {
+	dashAddr := opts.dashListenAddr
+	if dashAddr == "" {
+		dashAddr = dashboardListenAddr
+	}
+	if err := requireLoopbackDashAddr(dashAddr); err != nil {
+		msg := err.Error()
+		rem := "bind 127.0.0.1, ::1, or localhost only; non-loopback dashboard bind requires a separate invariant 4 re-review (see internal/web package doc)"
+		printStartupError("dashboard error", msg, rem)
+		return "", &serveError{Code: 1, Message: msg, Remediation: rem}
+	}
+	return dashAddr, nil
+}
+
+// newServeDataplane constructs the dataplane server from dpCfg using
+// opts.newDataplane (dataplane.NewServer when nil). A failure, including a
+// constructor that returns no server, prints the startup error and returns a
+// *serveError (Code 1) whose remediation names the listen address.
+func newServeDataplane(opts serveOpts, dpCfg dataplane.Config) (*dataplane.Server, error) {
+	newDP := opts.newDataplane
+	if newDP == nil {
+		newDP = dataplane.NewServer
+	}
+	srv, err := newDP(dpCfg)
+	nilServer := err == nil && srv == nil
+	if nilServer {
+		err = errors.New("newDataplane returned a nil server")
+	}
+	if err != nil {
+		msg := fmt.Sprintf("dataplane init failed: %v", err)
+		rem := "internal error: the dataplane constructor returned no server; report this as a bug"
+		if !nilServer {
+			rem = bindErrRemediationFor(err, dpCfg.ListenAddr, opts.listenAddr != "")
+		}
+		printStartupError("startup error", msg, rem)
+		return nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+	}
+	return srv, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -474,15 +517,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
 	// corollary (internal/web package doc); the check runs before any bind.
 	// The dashboard itself starts in step 5b, once the dataplane server exists.
-	dashAddr := opts.dashListenAddr
-	if dashAddr == "" {
-		dashAddr = dashboardListenAddr
-	}
-	if err := requireLoopbackDashAddr(dashAddr); err != nil {
-		msg := err.Error()
-		rem := "bind 127.0.0.1, ::1, or localhost only; non-loopback dashboard bind requires a separate invariant 4 re-review (see internal/web package doc)"
-		printStartupError("dashboard error", msg, rem)
-		return &serveError{Code: 1, Message: msg, Remediation: rem}
+	dashAddr, err := serveDashAddr(opts)
+	if err != nil {
+		return err
 	}
 	dashStore := web.NewStore()
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
@@ -498,11 +535,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	defer closeClassifier()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
-	newDP := opts.newDataplane
-	if newDP == nil {
-		newDP = dataplane.NewServer
-	}
-	srv, err := newDP(dataplane.Config{
+	srv, err := newServeDataplane(opts, dataplane.Config{
 		ListenAddr:      cfg.Listen,
 		Resolvers:       clients,
 		Engine:          engine,
@@ -515,19 +548,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		ShutdownTimeout: cfg.Timeouts.Shutdown,
 		Classifier:      classifier,
 	})
-	nilServer := err == nil && srv == nil
-	if nilServer {
-		err = errors.New("newDataplane returned a nil server")
-	}
 	if err != nil {
 		// Adapter cleanup runs via the deferred close above.
-		msg := fmt.Sprintf("dataplane init failed: %v", err)
-		rem := "internal error: the dataplane constructor returned no server; report this as a bug"
-		if !nilServer {
-			rem = bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
-		}
-		printStartupError("startup error", msg, rem)
-		return &serveError{Code: 1, Message: msg, Remediation: rem}
+		return err
 	}
 
 	// ── Step 5b: Start the dashboard ─────────────────────────────────────────
