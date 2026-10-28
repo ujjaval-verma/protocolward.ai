@@ -340,6 +340,53 @@ func newUpstreamClients(cfg config.Config) ([]dataplane.Resolver, error) {
 	return clients, nil
 }
 
+// loadHostLists compiles the configured blocklists and allowlists. An
+// unconfigured list is returned as a nil policy.Matcher interface: block and
+// allow are assigned only inside their len(...) > 0 branches, so a nil
+// *hostlist.Set never ends up in a non-nil interface. A load failure prints
+// the startup error and returns a *serveError (Code 1).
+func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
+	if len(cfg.Blocklists) == 0 && len(cfg.Allowlists) == 0 {
+		slog.Info("policy: not configured — running as pure DNS forwarder",
+			"remediation", "add a blocklists: or allowlists: section to ward.yaml to enable policy",
+		)
+	} else {
+		if len(cfg.Blocklists) > 0 {
+			set, stats, err := hostlist.Load(cfg.Blocklists)
+			if err != nil {
+				msg := fmt.Sprintf("blocklist load failed: %v", err)
+				rem := "check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template"
+				printStartupError("blocklist error", msg, rem)
+				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+			}
+			logListSourceStats(stats)
+			slog.Info("blocklist: ready",
+				"sources", len(stats),
+				"total_entries", totalEntries(stats),
+			)
+			block = set
+		}
+		if len(cfg.Allowlists) > 0 {
+			set, stats, err := allowlist.Load(cfg.Allowlists)
+			if err != nil {
+				msg := fmt.Sprintf("allowlist load failed: %v", err)
+				rem := "check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template"
+				printStartupError("allowlist error", msg, rem)
+				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+			}
+			logListSourceStats(stats)
+			slog.Info("allowlist: ready",
+				"sources", len(stats),
+				"total_entries", totalEntries(stats),
+			)
+			allow = set
+		}
+		// engineReadyBanner emission deferred until after decoy load so the
+		// banner can include decoys_loaded in a single line.
+	}
+	return allow, block, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -360,47 +407,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	// ── Step 4b: Compile blocklists and allowlists (if any) ──────────────────
-	var (
-		blockSet, allowSet policy.Matcher // policy.Matcher; both may stay nil
-	)
-
-	if len(cfg.Blocklists) == 0 && len(cfg.Allowlists) == 0 {
-		slog.Info("policy: not configured — running as pure DNS forwarder",
-			"remediation", "add a blocklists: or allowlists: section to ward.yaml to enable policy",
-		)
-	} else {
-		if len(cfg.Blocklists) > 0 {
-			set, stats, err := hostlist.Load(cfg.Blocklists)
-			if err != nil {
-				msg := fmt.Sprintf("blocklist load failed: %v", err)
-				rem := "check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("blocklist error", msg, rem)
-				return &serveError{Code: 1, Message: msg, Remediation: rem}
-			}
-			logListSourceStats(stats)
-			slog.Info("blocklist: ready",
-				"sources", len(stats),
-				"total_entries", totalEntries(stats),
-			)
-			blockSet = set
-		}
-		if len(cfg.Allowlists) > 0 {
-			set, stats, err := allowlist.Load(cfg.Allowlists)
-			if err != nil {
-				msg := fmt.Sprintf("allowlist load failed: %v", err)
-				rem := "check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("allowlist error", msg, rem)
-				return &serveError{Code: 1, Message: msg, Remediation: rem}
-			}
-			logListSourceStats(stats)
-			slog.Info("allowlist: ready",
-				"sources", len(stats),
-				"total_entries", totalEntries(stats),
-			)
-			allowSet = set
-		}
-		// engineReadyBanner emission deferred until after decoy load so the
-		// banner can include decoys_loaded in a single line.
+	allowSet, blockSet, err := loadHostLists(cfg)
+	if err != nil {
+		return err
 	}
 
 	// engine may be nil-nil; dataplane respects nil Engine as pure-forwarder.

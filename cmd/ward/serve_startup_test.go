@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"protocolward.ai/ward/internal/config"
+	"protocolward.ai/ward/internal/hostlist"
 )
 
 // captureSlog swaps slog.Default() for a JSON handler at Debug level that
@@ -169,6 +170,118 @@ func TestNewUpstreamClients(t *testing.T) {
 		}
 		if strings.Contains(buf.String(), "starting with N upstreams") {
 			t.Errorf("count line logged on failure: %s", buf.String())
+		}
+	})
+}
+
+// writeHostFile writes "0.0.0.0 <host>" lines to a new file and returns its path.
+func writeHostFile(t *testing.T, name string, hosts ...string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, h := range hosts {
+		b.WriteString("0.0.0.0 " + h + "\n")
+	}
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadHostLists(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.txt")
+
+	t.Run("none", func(t *testing.T) {
+		buf := captureSlog(t)
+		allow, block, err := loadHostLists(config.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Interface comparison: a typed-nil *hostlist.Set would be non-nil here.
+		if allow != nil || block != nil {
+			t.Errorf("allow=%v block=%v, want both nil interfaces", allow, block)
+		}
+		if !strings.Contains(buf.String(), "policy: not configured") {
+			t.Errorf("missing pure-forwarder line: %s", buf.String())
+		}
+	})
+	t.Run("block only", func(t *testing.T) {
+		buf := captureSlog(t)
+		bl := writeHostFile(t, "block.txt", "blocked.test")
+		allow, block, err := loadHostLists(config.Config{Blocklists: []hostlist.Source{{ID: "bl-1", Path: bl}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if allow != nil {
+			t.Errorf("allow = %v, want nil interface", allow)
+		}
+		if block == nil {
+			t.Fatal("block = nil")
+		}
+		if id, _, ok := block.Match("blocked.test"); !ok || id != "bl-1" {
+			t.Errorf("Match = %q, %v", id, ok)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "hostlist: loaded source") || !strings.Contains(out, "blocklist: ready") || !strings.Contains(out, `"total_entries":1`) {
+			t.Errorf("log: %s", out)
+		}
+	})
+	t.Run("allow only", func(t *testing.T) {
+		buf := captureSlog(t)
+		al := writeHostFile(t, "allow.txt", "allowed.test")
+		allow, block, err := loadHostLists(config.Config{Allowlists: []hostlist.Source{{ID: "al-1", Path: al}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if block != nil {
+			t.Errorf("block = %v, want nil interface", block)
+		}
+		if allow == nil {
+			t.Fatal("allow = nil")
+		}
+		if id, _, ok := allow.Match("allowed.test"); !ok || id != "al-1" {
+			t.Errorf("Match = %q, %v", id, ok)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "allowlist: ready") || !strings.Contains(out, `"total_entries":1`) {
+			t.Errorf("log: %s", out)
+		}
+	})
+	t.Run("both", func(t *testing.T) {
+		captureSlog(t)
+		bl := writeHostFile(t, "block.txt", "blocked.test")
+		al := writeHostFile(t, "allow.txt", "allowed.test")
+		allow, block, err := loadHostLists(config.Config{
+			Blocklists: []hostlist.Source{{ID: "bl-1", Path: bl}},
+			Allowlists: []hostlist.Source{{ID: "al-1", Path: al}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if allow == nil || block == nil {
+			t.Errorf("allow=%v block=%v, want both non-nil", allow, block)
+		}
+	})
+	t.Run("missing blocklist", func(t *testing.T) {
+		captureSlog(t)
+		_, _, err := loadHostLists(config.Config{Blocklists: []hostlist.Source{{ID: "bl-1", Path: missing}}})
+		se := asServeError(t, err, 1)
+		if !strings.HasPrefix(se.Message, "blocklist load failed:") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.Contains(se.Remediation, "blocklists[*].path") {
+			t.Errorf("Remediation = %q", se.Remediation)
+		}
+	})
+	t.Run("missing allowlist", func(t *testing.T) {
+		captureSlog(t)
+		_, _, err := loadHostLists(config.Config{Allowlists: []hostlist.Source{{ID: "al-1", Path: missing}}})
+		se := asServeError(t, err, 1)
+		if !strings.HasPrefix(se.Message, "allowlist load failed:") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.Contains(se.Remediation, "allowlists[*].path") {
+			t.Errorf("Remediation = %q", se.Remediation)
 		}
 	})
 }
