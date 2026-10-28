@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"log"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -18,17 +19,38 @@ import (
 )
 
 // captureSlog swaps slog.Default() for a JSON handler at Debug level that
-// writes to the returned buffer, and restores the previous default on
-// cleanup. Only non-parallel tests may use it: top-level t.Parallel() tests
+// writes to the returned buffer, and restores the previous default (and the
+// log package's writer and flags) on cleanup. Only non-parallel tests may use it: top-level t.Parallel() tests
 // resume after every sequential test has finished, so no parallel serveRun
 // (which calls slog.SetDefault) runs at the same time.
 func captureSlog(t *testing.T) *safeBuffer {
 	t.Helper()
 	buf := &safeBuffer{}
 	prev := slog.Default()
+	prevW, prevF := log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		// SetDefault with a non-default handler also rewires the log
+		// package; restoring a stock default logger does not undo that.
+		log.SetOutput(prevW)
+		log.SetFlags(prevF)
+	})
 	return buf
+}
+
+// TestCaptureSlogRestoresLogPackage guards the helper itself: slog.SetDefault
+// with a non-default handler redirects the log package, so the helper must
+// put the log package's writer and flags back when its scope ends.
+func TestCaptureSlogRestoresLogPackage(t *testing.T) {
+	wantW, wantF := log.Writer(), log.Flags()
+	t.Run("scope", func(t *testing.T) { captureSlog(t) })
+	if got := log.Writer(); got != wantW {
+		t.Errorf("log.Writer() = %T after captureSlog scope, want the original writer %T", got, wantW)
+	}
+	if got := log.Flags(); got != wantF {
+		t.Errorf("log.Flags() = %d after captureSlog scope, want %d", got, wantF)
+	}
 }
 
 // asServeError asserts err is a non-nil *serveError with the given code.
