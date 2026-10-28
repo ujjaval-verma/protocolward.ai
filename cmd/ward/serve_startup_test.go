@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"protocolward.ai/ward/internal/config"
 )
 
 // captureSlog swaps slog.Default() for a JSON handler at Debug level that
@@ -125,6 +127,48 @@ func TestLoadServeConfig(t *testing.T) {
 		}
 		if want := filepath.Join(xdg, "protocol-ward", "ward.yaml"); !strings.Contains(se.Message, want) {
 			t.Errorf("Message = %q, want it to name %s", se.Message, want)
+		}
+	})
+}
+
+func TestNewUpstreamClients(t *testing.T) {
+	t.Run("two valid upstreams", func(t *testing.T) {
+		buf := captureSlog(t)
+		cfg := config.Config{Upstreams: []config.Upstream{
+			{Address: "127.0.0.1:9991", ServerName: "a.test"},
+			{Address: "127.0.0.1:9992", ServerName: "b.test"},
+		}}
+		clients, err := newUpstreamClients(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(clients) != 2 {
+			t.Fatalf("len(clients) = %d, want 2", len(clients))
+		}
+		out := buf.String()
+		if !strings.Contains(out, "ward serve: starting with N upstreams") || !strings.Contains(out, `"upstreams":2`) {
+			t.Errorf("missing upstream-count line: %s", out)
+		}
+	})
+	t.Run("second upstream fails", func(t *testing.T) {
+		buf := captureSlog(t)
+		cfg := config.Config{Upstreams: []config.Upstream{
+			{Address: "127.0.0.1:9991", ServerName: "a.test"},
+			{Address: "127.0.0.1:9992", ServerName: ""},
+		}}
+		clients, err := newUpstreamClients(cfg)
+		se := asServeError(t, err, 1)
+		if clients != nil {
+			t.Errorf("clients = %v, want nil on failure", clients)
+		}
+		if !strings.HasPrefix(se.Message, `upstream "127.0.0.1:9992" construction failed:`) {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.Contains(se.Remediation, `"127.0.0.1:9992"`) {
+			t.Errorf("Remediation = %q, want it to name the address", se.Remediation)
+		}
+		if strings.Contains(buf.String(), "starting with N upstreams") {
+			t.Errorf("count line logged on failure: %s", buf.String())
 		}
 	})
 }

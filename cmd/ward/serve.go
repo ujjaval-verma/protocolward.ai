@@ -310,6 +310,36 @@ func loadServeConfig(opts serveOpts) (config.Config, error) {
 	return cfg, nil
 }
 
+// newUpstreamClients constructs one upstream client per configured upstream,
+// in order, and logs the upstream count. The first failure prints the startup
+// error and returns a *serveError (Code 1).
+func newUpstreamClients(cfg config.Config) ([]dataplane.Resolver, error) {
+	clients := make([]dataplane.Resolver, 0, len(cfg.Upstreams))
+	for _, u := range cfg.Upstreams {
+		upCfg := upstream.Config{
+			Address:     u.Address,
+			ServerName:  u.ServerName,
+			DialTimeout: cfg.Timeouts.Dial,
+			TLSConfig:   buildUpstreamTLSConfig(u),
+		}
+		c, err := upstream.New(upCfg)
+		if err != nil {
+			msg := fmt.Sprintf("upstream %q construction failed: %v", u.Address, err)
+			rem := fmt.Sprintf("check the address and server_name for upstream %q in ward.yaml", u.Address)
+			printStartupError("upstream error", msg, rem)
+			return nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+		}
+		clients = append(clients, c)
+	}
+
+	// Name the upstream count so
+	// single-unreachable-upstream behavior is auditable.
+	slog.Info("ward serve: starting with N upstreams; queries will SERVFAIL if all are unreachable",
+		"upstreams", len(clients),
+	)
+	return clients, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -324,29 +354,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	slog.SetDefault(logger)
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
-	clients := make([]dataplane.Resolver, 0, len(cfg.Upstreams))
-	for _, u := range cfg.Upstreams {
-		upCfg := upstream.Config{
-			Address:     u.Address,
-			ServerName:  u.ServerName,
-			DialTimeout: cfg.Timeouts.Dial,
-			TLSConfig:   buildUpstreamTLSConfig(u),
-		}
-		c, err := upstream.New(upCfg)
-		if err != nil {
-			msg := fmt.Sprintf("upstream %q construction failed: %v", u.Address, err)
-			rem := fmt.Sprintf("check the address and server_name for upstream %q in ward.yaml", u.Address)
-			printStartupError("upstream error", msg, rem)
-			return &serveError{Code: 1, Message: msg, Remediation: rem}
-		}
-		clients = append(clients, c)
+	clients, err := newUpstreamClients(cfg)
+	if err != nil {
+		return err
 	}
-
-	// Name the upstream count so
-	// single-unreachable-upstream behavior is auditable.
-	slog.Info("ward serve: starting with N upstreams; queries will SERVFAIL if all are unreachable",
-		"upstreams", len(clients),
-	)
 
 	// ── Step 4b: Compile blocklists and allowlists (if any) ──────────────────
 	var (
