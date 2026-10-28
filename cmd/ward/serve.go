@@ -418,6 +418,32 @@ func loadDecoys(cfg config.Config) (decoys *decoy.Set, total int, err error) {
 	return decoys, total, nil
 }
 
+// loadServePolicy loads the host lists, builds the policy engine, loads the
+// decoys and then emits the engine-ready banner so it can carry decoys_loaded.
+// A list error returns before any decoy loads. The engine is always non-nil on
+// success: with nil allow and block it forwards everything.
+func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
+	allowSet, blockSet, err := loadHostLists(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// The engine is always non-nil; with nil allow and block it forwards everything.
+	engine := policy.NewEngine(allowSet, blockSet)
+
+	// ── Step 4c: Compile decoys (if any) ─────────────────────────────────────
+	decoySet, totalDecoys, err := loadDecoys(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Emit the engine ready banner now that decoys are loaded so the line
+	// can carry decoys_loaded alongside the policy mode + block-response shape.
+	if allowSet != nil || blockSet != nil {
+		logEngineReadyBanner(allowSet, blockSet, cfg.BlockResponse, totalDecoys)
+	}
+	return engine, decoySet, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -437,24 +463,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		return err
 	}
 
-	// ── Step 4b: Compile blocklists and allowlists (if any) ──────────────────
-	allowSet, blockSet, err := loadHostLists(cfg)
+	// ── Step 4b-4c: Compile lists and decoys, build the policy engine ────────
+	engine, decoySet, err := loadServePolicy(cfg)
 	if err != nil {
 		return err
-	}
-
-	// engine may be nil-nil; dataplane respects nil Engine as pure-forwarder.
-	engine := policy.NewEngine(allowSet, blockSet)
-
-	// ── Step 4c: Compile decoys (if any) ─────────────────────────────────────
-	decoySet, totalDecoys, err := loadDecoys(cfg)
-	if err != nil {
-		return err
-	}
-	// Emit the engine ready banner now that decoys are loaded so the line
-	// can carry decoys_loaded alongside the policy mode + block-response shape.
-	if allowSet != nil || blockSet != nil {
-		logEngineReadyBanner(allowSet, blockSet, cfg.BlockResponse, totalDecoys)
 	}
 
 	// ── Step 4d: Dashboard store, flag log and loopback check ───────────────

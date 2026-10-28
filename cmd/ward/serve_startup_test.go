@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"protocolward.ai/ward/internal/config"
 	"protocolward.ai/ward/internal/hostlist"
+	"protocolward.ai/ward/internal/policy"
 )
 
 // captureSlog swaps slog.Default() for a JSON handler at Debug level that
@@ -328,6 +330,99 @@ func TestLoadDecoys(t *testing.T) {
 		}
 		if !strings.Contains(se.Remediation, "decoys[*].path") {
 			t.Errorf("Remediation = %q", se.Remediation)
+		}
+	})
+}
+
+func TestLoadServePolicy(t *testing.T) {
+	t.Run("allow block decoys", func(t *testing.T) {
+		buf := captureSlog(t)
+		bl := writeHostFile(t, "block.txt", "both.test", "blocked.test")
+		al := writeHostFile(t, "allow.txt", "both.test")
+		dc := writeHostFile(t, "decoys.txt", "decoy.test")
+		cfg := config.Config{
+			Blocklists: []hostlist.Source{{ID: "bl-1", Path: bl}},
+			Allowlists: []hostlist.Source{{ID: "al-1", Path: al}},
+			Decoys:     []hostlist.Source{{ID: "d-1", Path: dc}},
+			BlockResponse: config.BlockResponseConfig{
+				Mode: config.BlockResponseModeAddress,
+				A:    netip.MustParseAddr("0.0.0.0"),
+				AAAA: netip.MustParseAddr("::"),
+			},
+		}
+		engine, decoys, err := loadServePolicy(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine == nil || decoys == nil {
+			t.Fatalf("engine=%v decoys=%v, want both non-nil", engine, decoys)
+		}
+		if got := engine.Decide("both.test").Action; got != policy.ActionAllow {
+			t.Errorf("both.test = %v, want Allow", got)
+		}
+		if got := engine.Decide("blocked.test").Action; got != policy.ActionBlock {
+			t.Errorf("blocked.test = %v, want Block", got)
+		}
+		if got := engine.Decide("other.test").Action; got != policy.ActionForward {
+			t.Errorf("other.test = %v, want Forward", got)
+		}
+		out := buf.String()
+		if n := strings.Count(out, "policy: engine ready"); n != 1 {
+			t.Fatalf("banner count = %d, want 1: %s", n, out)
+		}
+		for _, want := range []string{`mode":"allowlist+blocklist"`, "block_response_a", "decoys_loaded"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("banner missing %q: %s", want, out)
+			}
+		}
+	})
+	t.Run("nothing configured", func(t *testing.T) {
+		buf := captureSlog(t)
+		engine, decoys, err := loadServePolicy(config.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine == nil {
+			t.Fatal("engine = nil, want non-nil forwarder")
+		}
+		if decoys != nil {
+			t.Errorf("decoys = %v, want nil", decoys)
+		}
+		if got := engine.Decide("any.test").Action; got != policy.ActionForward {
+			t.Errorf("Decide = %v, want Forward", got)
+		}
+		if strings.Contains(buf.String(), "policy: engine ready") {
+			t.Errorf("unexpected banner: %s", buf.String())
+		}
+	})
+	t.Run("decoys only", func(t *testing.T) {
+		buf := captureSlog(t)
+		dc := writeHostFile(t, "decoys.txt", "decoy.test")
+		engine, decoys, err := loadServePolicy(config.Config{Decoys: []hostlist.Source{{ID: "d-1", Path: dc}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if engine == nil || decoys == nil {
+			t.Fatalf("engine=%v decoys=%v, want both non-nil", engine, decoys)
+		}
+		if strings.Contains(buf.String(), "policy: engine ready") {
+			t.Errorf("unexpected banner: %s", buf.String())
+		}
+	})
+	t.Run("missing blocklist fails before decoys load", func(t *testing.T) {
+		buf := captureSlog(t)
+		dc := writeHostFile(t, "decoys.txt", "decoy.test")
+		cfg := config.Config{
+			Blocklists: []hostlist.Source{{ID: "bl-1", Path: filepath.Join(t.TempDir(), "missing.txt")}},
+			Decoys:     []hostlist.Source{{ID: "d-1", Path: dc}},
+		}
+		engine, decoys, err := loadServePolicy(cfg)
+		asServeError(t, err, 1)
+		if engine != nil || decoys != nil {
+			t.Errorf("engine=%v decoys=%v on error, want nil", engine, decoys)
+		}
+		if strings.Contains(buf.String(), "decoy: ready") {
+			t.Errorf("decoys loaded before the list error: %s", buf.String())
 		}
 	})
 }
