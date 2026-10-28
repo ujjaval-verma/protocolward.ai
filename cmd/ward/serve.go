@@ -506,7 +506,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		return err
 	}
 
-	// ── Step 4b-4c: Compile lists and decoys, build the policy engine ────────
+	// ── Steps 4b-4c: Compile lists and decoys, build the policy engine ───────
 	engine, decoySet, err := loadServePolicy(cfg)
 	if err != nil {
 		return err
@@ -525,6 +525,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
 	flagLog := web.NewFlagLog()
+
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
 	// Deferred here so every return path (including the early serveErr-channel
