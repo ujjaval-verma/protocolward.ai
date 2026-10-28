@@ -276,7 +276,7 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 
 // loadServeConfig resolves the config path, loads and validates the config and
 // applies the --listen-addr override. It returns an untyped nil or a
-// *serveError (Code 2), printing the startup error exactly where serveRun did.
+// *serveError (Code 2), printing the startup error before it returns.
 func loadServeConfig(opts serveOpts) (config.Config, error) {
 	// ── Step 1: Resolve config path ──────────────────────────────────────────
 	cfgPath, err := resolveConfigPath(opts.configPath)
@@ -431,7 +431,7 @@ func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
 	// The engine is always non-nil; with nil allow and block it forwards everything.
 	engine := policy.NewEngine(allowSet, blockSet)
 
-	// ── Step 4c: Compile decoys (if any) ─────────────────────────────────────
+	// Compile decoys (if any).
 	decoySet, totalDecoys, err := loadDecoys(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -445,8 +445,9 @@ func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
 }
 
 // serveDashAddr resolves the dashboard bind address (default when unset) and
-// enforces the loopback-only rule of invariant 4 before anything binds. A
-// rejected address prints the startup error and returns a *serveError (Code 1).
+// enforces the loopback-only rule of invariant 4. Callers must run it before
+// binding anything. A rejected address prints the startup error and returns a
+// *serveError (Code 1).
 func serveDashAddr(opts serveOpts) (string, error) {
 	dashAddr := opts.dashListenAddr
 	if dashAddr == "" {
@@ -464,7 +465,8 @@ func serveDashAddr(opts serveOpts) (string, error) {
 // newServeDataplane constructs the dataplane server from dpCfg using
 // opts.newDataplane (dataplane.NewServer when nil). A failure, including a
 // constructor that returns no server, prints the startup error and returns a
-// *serveError (Code 1) whose remediation names the listen address.
+// *serveError (Code 1) whose remediation comes from bindErrRemediationFor (or
+// a report-a-bug note when the constructor returns no server).
 func newServeDataplane(opts serveOpts, dpCfg dataplane.Config) (*dataplane.Server, error) {
 	newDP := opts.newDataplane
 	if newDP == nil {
