@@ -274,25 +274,26 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 	return dashSrv, nil
 }
 
-// serveRun is the testable core of the serve subcommand. It returns a
-// *serveError on error (Code 1 or 2). A nil return means clean exit.
-func serveRun(ctx context.Context, opts serveOpts) error {
+// loadServeConfig resolves the config path, loads and validates the config and
+// applies the --listen-addr override. It returns an untyped nil or a
+// *serveError (Code 2), printing the startup error exactly where serveRun did.
+func loadServeConfig(opts serveOpts) (config.Config, error) {
 	// ── Step 1: Resolve config path ──────────────────────────────────────────
 	cfgPath, err := resolveConfigPath(opts.configPath)
 	if err != nil {
 		var se *serveError
 		if errors.As(err, &se) {
 			printStartupError("config error", se.Message, se.Remediation)
-			return se
+			return config.Config{}, se
 		}
 		printStartupError("config error", err.Error(), "")
-		return &serveError{Code: 2, Message: err.Error()}
+		return config.Config{}, &serveError{Code: 2, Message: err.Error()}
 	}
 
 	// ── Step 2: Load + validate config ───────────────────────────────────────
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return mapConfigLoadError(cfgPath, err)
+		return config.Config{}, mapConfigLoadError(cfgPath, err)
 	}
 	// The flag is validated here, not in internal/config, because it allows
 	// port 0 while ward.yaml's listen: must keep rejecting it. It runs before
@@ -302,9 +303,20 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 			msg := fmt.Sprintf("invalid --listen-addr %q: %v", opts.listenAddr, err)
 			rem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
 			printStartupError("config error", msg, rem)
-			return &serveError{Code: 2, Message: msg, Remediation: rem}
+			return config.Config{}, &serveError{Code: 2, Message: msg, Remediation: rem}
 		}
 		cfg.Listen = opts.listenAddr
+	}
+	return cfg, nil
+}
+
+// serveRun is the testable core of the serve subcommand. It returns a
+// *serveError on error (Code 1 or 2). A nil return means clean exit.
+func serveRun(ctx context.Context, opts serveOpts) error {
+	// ── Steps 1-2: Resolve, load and validate config ─────────────────────────
+	cfg, err := loadServeConfig(opts)
+	if err != nil {
+		return err
 	}
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
