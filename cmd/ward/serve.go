@@ -387,6 +387,37 @@ func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
 	return allow, block, nil
 }
 
+// loadDecoys compiles the configured decoy sources. With none configured it
+// returns nil, 0, nil. A load failure prints the startup error and returns a
+// *serveError (Code 1). total is the entry count across all sources.
+func loadDecoys(cfg config.Config) (decoys *decoy.Set, total int, err error) {
+	if len(cfg.Decoys) > 0 {
+		set, stats, err := decoy.New(cfg.Decoys)
+		if err != nil {
+			msg := fmt.Sprintf("decoy load failed: %v", err)
+			rem := "check decoys[*].path values in ward.yaml"
+			printStartupError("decoy error", msg, rem)
+			return nil, 0, &serveError{Code: 1, Message: msg, Remediation: rem}
+		}
+		for _, st := range stats {
+			slog.Info("decoy: loaded source",
+				"id", st.ID,
+				"path", st.Path,
+				"entries", st.Entries,
+				"skipped_lines", st.SkippedLines,
+				"load_duration_ms", st.LoadDuration.Milliseconds(),
+			)
+			total += st.Entries
+		}
+		slog.Info("decoy: ready",
+			"sources", len(stats),
+			"total_entries", total,
+		)
+		decoys = set
+	}
+	return decoys, total, nil
+}
+
 // serveRun is the testable core of the serve subcommand. It returns a
 // *serveError on error (Code 1 or 2). A nil return means clean exit.
 func serveRun(ctx context.Context, opts serveOpts) error {
@@ -416,31 +447,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	engine := policy.NewEngine(allowSet, blockSet)
 
 	// ── Step 4c: Compile decoys (if any) ─────────────────────────────────────
-	var decoySet *decoy.Set
-	var totalDecoys int
-	if len(cfg.Decoys) > 0 {
-		set, stats, err := decoy.New(cfg.Decoys)
-		if err != nil {
-			msg := fmt.Sprintf("decoy load failed: %v", err)
-			rem := "check decoys[*].path values in ward.yaml"
-			printStartupError("decoy error", msg, rem)
-			return &serveError{Code: 1, Message: msg, Remediation: rem}
-		}
-		for _, st := range stats {
-			slog.Info("decoy: loaded source",
-				"id", st.ID,
-				"path", st.Path,
-				"entries", st.Entries,
-				"skipped_lines", st.SkippedLines,
-				"load_duration_ms", st.LoadDuration.Milliseconds(),
-			)
-			totalDecoys += st.Entries
-		}
-		slog.Info("decoy: ready",
-			"sources", len(stats),
-			"total_entries", totalDecoys,
-		)
-		decoySet = set
+	decoySet, totalDecoys, err := loadDecoys(cfg)
+	if err != nil {
+		return err
 	}
 	// Emit the engine ready banner now that decoys are loaded so the line
 	// can carry decoys_loaded alongside the policy mode + block-response shape.

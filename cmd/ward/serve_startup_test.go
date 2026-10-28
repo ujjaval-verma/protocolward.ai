@@ -285,3 +285,49 @@ func TestLoadHostLists(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadDecoys(t *testing.T) {
+	t.Run("none", func(t *testing.T) {
+		set, total, err := loadDecoys(config.Config{})
+		if set != nil || total != 0 || err != nil {
+			t.Errorf("got %v, %d, %v; want nil, 0, nil", set, total, err)
+		}
+	})
+	t.Run("one source two names", func(t *testing.T) {
+		buf := captureSlog(t)
+		p := writeHostFile(t, "decoys.txt", "decoy-a.test", "decoy-b.test")
+		set, total, err := loadDecoys(config.Config{Decoys: []hostlist.Source{{ID: "d-1", Path: p}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if set == nil {
+			t.Fatal("set = nil")
+		}
+		for _, h := range []string{"decoy-a.test", "decoy-b.test"} {
+			if _, _, ok := set.Match(h); !ok {
+				t.Errorf("Match(%q) = false", h)
+			}
+		}
+		if total != 2 {
+			t.Errorf("total = %d, want 2", total)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "decoy: loaded source") || !strings.Contains(out, "decoy: ready") {
+			t.Errorf("log: %s", out)
+		}
+	})
+	t.Run("missing file", func(t *testing.T) {
+		captureSlog(t)
+		set, total, err := loadDecoys(config.Config{Decoys: []hostlist.Source{{ID: "d-1", Path: filepath.Join(t.TempDir(), "missing.txt")}}})
+		se := asServeError(t, err, 1)
+		if set != nil || total != 0 {
+			t.Errorf("got %v, %d on error", set, total)
+		}
+		if !strings.HasPrefix(se.Message, "decoy load failed:") {
+			t.Errorf("Message = %q", se.Message)
+		}
+		if !strings.Contains(se.Remediation, "decoys[*].path") {
+			t.Errorf("Remediation = %q", se.Remediation)
+		}
+	})
+}
