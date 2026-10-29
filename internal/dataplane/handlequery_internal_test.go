@@ -11,6 +11,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -166,4 +167,32 @@ func TestIsConnectivityProbe(t *testing.T) {
 			t.Errorf("isConnectivityProbe(%q) = %v, want %v", tc.qname, got, tc.want)
 		}
 	}
+}
+
+// failingResponseWriter fails every WriteMsg.
+type failingResponseWriter struct{ stubResponseWriter }
+
+func (*failingResponseWriter) WriteMsg(*dns.Msg) error { return errors.New("write failed") }
+
+// TestWriteBlockResponse_WriteFailureLogsFoldedQname pins that the write
+// failure line names the query the way the other policy lines do: folded.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestWriteBlockResponse_WriteFailureLogsFoldedQname(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+
+	s := &Server{cfg: Config{BlockResponse: config.BlockResponseConfig{Mode: config.BlockResponseModeNXDOMAIN}}}
+	req := new(dns.Msg)
+	req.SetQuestion("Ads.Example.COM.", dns.TypeA)
+	s.writeBlockResponse(&failingResponseWriter{}, req)
+
+	for _, rec := range obs.Captured(t) {
+		if msg, _ := rec["msg"].(string); strings.Contains(msg, "failed to write block response") {
+			if got := rec["qname"]; got != "ads.example.com" {
+				t.Errorf("qname = %v, want ads.example.com", got)
+			}
+			return
+		}
+	}
+	t.Fatalf("no write-failure line captured: %v", obs.Captured(t))
 }

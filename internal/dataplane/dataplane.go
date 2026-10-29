@@ -705,7 +705,7 @@ func (s *Server) writeBlockResponse(w dns.ResponseWriter, req *dns.Msg) {
 	if err := w.WriteMsg(resp); err != nil {
 		slog.Error("dataplane: failed to write block response",
 			"error", err.Error(),
-			"qname", strings.TrimSuffix(q.Name, "."),
+			"qname", hostlist.FoldName(q.Name),
 			"remediation", "check the dns.ResponseWriter implementation — this is unexpected for an in-process responder",
 		)
 	}
