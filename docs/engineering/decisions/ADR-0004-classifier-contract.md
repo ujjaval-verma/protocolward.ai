@@ -5,6 +5,7 @@
 - **Author:** Ujjaval Verma
 - **Spec:** SP10a design notes (internal, not published); this ADR is the durable summary
 - **Amends:** ADR-0003 SP10a (Model contracts) — no scope change; this ADR captures the interface decisions reached during SP10a slice 2 that future contributors would need to *unwind* to change.
+- **Amended:** 2026-10-29 — D4 rationale: `hostnameRE` replaced by `hostlist.NormalizeName` (#65; issue #22)
 - **Amended by:** ADR-0006 (2026-10-05) — adds `schema.Assessment` and the optional `model.Assessor`; the classical on-device detector (`pkg/detect`) is the primary classifier and the sibling adapter becomes the "reference sibling adapter" for an optional LLM explainer.
 
 ## Context
@@ -53,7 +54,9 @@ Allow and blocklist are re-consulted (not assumed pre-cleared by the caller) so 
 
 ### D4 — `MatchedLabel = "(model)"` is the sentinel for model-sourced blocks
 
-The sentinel cannot collide with real hostnames (`hostnameRE` in `internal/hostlist/parser.go`, `^[a-z0-9.-]+$`, rejects `(`). Reusing `KindBlock` avoids `kind_string.go` regen and exhaustive-switch ripple in v0.2. SP10c MAY introduce `KindModelTelemetry` / `KindModelMalicious` variants if observability needs to switch on them.
+The sentinel cannot collide with real hostnames (`hostlist.NormalizeName` rejects `(`; originally the `hostnameRE` pattern `^[a-z0-9.-]+$` did). Reusing `KindBlock` avoids `kind_string.go` regen and exhaustive-switch ripple in v0.2. SP10c MAY introduce `KindModelTelemetry` / `KindModelMalicious` variants if observability needs to switch on them.
+
+**Amended 2026-10-29:** `hostnameRE` was replaced by `hostlist.NormalizeName` (#65), which also rejects `(`, so the sentinel still cannot collide with a real hostname.
 
 ## Consequences
 

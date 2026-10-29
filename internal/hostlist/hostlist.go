@@ -132,15 +132,20 @@ func truncateEntry(s string) string {
 // retained at 1M 22-byte names, of which roughly 38 B is the index including
 // map overhead. Match probes the full name and then each label-bounded suffix,
 // longest first, and verifies every candidate against the arena, so a hash
-// collision can never produce a false hit. Names that cannot be packed (longer
-// than 255 bytes) or that collide with a different name live in the overflow
-// map.
+// collision can never produce a false hit. Names that cannot be packed live in
+// the overflow map: hash collisions, arena-offset overflow and (defensive)
+// names longer than maxPackedLen.
 type Set struct {
 	ids   []string            // list index -> list_id (source ID, or InlineSourceID)
 	hash  func(string) uint64 // per-Set seeded hash; tests may override
 	index map[uint64]uint64   // hash(host) -> off<<offShift | len<<lenShift | listIdx
 	arena []byte              // concatenated hostnames, forward order, no separators
-	over  map[string]uint16   // hostnames that cannot use index: collisions and len > maxPackedLen
+	// over holds hostnames that cannot use index: hash collisions, arena-offset
+	// overflow, and (defensive) len > maxPackedLen. The last is unreachable from
+	// Load/FromEntries because NormalizeName caps names at MaxNameLen;
+	// TestLoad_MaxNameLen_StaysPacked, TestLoad_OverlongNamesSkipped and
+	// TestFromEntries_MaxNameLen_StaysPacked pin it.
+	over map[string]uint16
 }
 
 const (
@@ -156,6 +161,9 @@ const (
 	listIdxMask   uint64 = 1<<lenShift - 1
 	packedLenMask uint64 = 1<<(offShift-lenShift) - 1
 )
+
+// Does not compile if MaxNameLen ever exceeds maxPackedLen.
+const _ = uint(maxPackedLen - MaxNameLen)
 
 // TooManySourcesError is returned by Load when more sources are configured
 // than a Set can attribute matches to.

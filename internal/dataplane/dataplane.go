@@ -35,6 +35,7 @@ import (
 
 	"protocolward.ai/ward/internal/config"
 	"protocolward.ai/ward/internal/decoy"
+	"protocolward.ai/ward/internal/hostlist"
 	adapter "protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/policy"
 	"protocolward.ai/ward/pkg/detect"
@@ -550,7 +551,12 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	qname := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+	// The decoy set and the list matchers fold again inside Match, as before.
+	// The second fold changes only a name ending in an escaped dot (`\.`, as in
+	// `example.com\..`); every probe of the result ends in `\`, which no list
+	// entry can contain because NormalizeName rejects it, so the outcome is the
+	// same.
+	qname := hostlist.FoldName(q.Name)
 
 	// Decoy short-circuit: fires BEFORE Engine.Decide so a decoy hit cannot
 	// be masked by an allowlist override. A matched decoy emits a Warn-level
@@ -699,7 +705,7 @@ func (s *Server) writeBlockResponse(w dns.ResponseWriter, req *dns.Msg) {
 	if err := w.WriteMsg(resp); err != nil {
 		slog.Error("dataplane: failed to write block response",
 			"error", err.Error(),
-			"qname", strings.TrimSuffix(q.Name, "."),
+			"qname", hostlist.FoldName(q.Name),
 			"remediation", "check the dns.ResponseWriter implementation — this is unexpected for an in-process responder",
 		)
 	}

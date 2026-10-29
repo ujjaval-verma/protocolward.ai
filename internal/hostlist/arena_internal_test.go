@@ -3,6 +3,7 @@
 package hostlist
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -315,5 +316,50 @@ func TestLoad_IDSourceMismatch(t *testing.T) {
 	}
 	if s.len() != 0 {
 		t.Errorf("len = %d, want 0 (nothing loaded)", s.len())
+	}
+}
+
+// TestLoad_MaxNameLen_StaysPacked pins that the longest name NormalizeName
+// accepts is stored in the packed index, so the overflow map's long-name arm
+// is unreachable through Load. TestLoad_OverlongNamesSkipped covers the other
+// side (254 bytes is rejected).
+func TestLoad_MaxNameLen_StaysPacked(t *testing.T) {
+	name := nameOfLen(t, MaxNameLen)
+	p := writeHosts(t, t.TempDir(), "long.txt", []string{name})
+	s, _, err := Load([]Source{{ID: "L", Path: p}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.over) != 0 {
+		t.Errorf("len(over) = %d, want 0", len(s.over))
+	}
+	if len(s.index) != 1 {
+		t.Errorf("len(index) = %d, want 1", len(s.index))
+	}
+	if _, _, ok := s.Match(name); !ok {
+		t.Error("Match of the 253-byte name missed")
+	}
+}
+
+// TestFromEntries_MaxNameLen_StaysPacked is the FromEntries counterpart of
+// TestLoad_MaxNameLen_StaysPacked: a 253-byte name is packed, and a 254-byte
+// one is rejected with an InvalidEntryError.
+func TestFromEntries_MaxNameLen_StaysPacked(t *testing.T) {
+	name := nameOfLen(t, MaxNameLen)
+	s, err := FromEntries([]string{name})
+	if err != nil {
+		t.Fatalf("FromEntries(253 bytes): %v", err)
+	}
+	if len(s.over) != 0 || len(s.index) != 1 {
+		t.Errorf("len(over) = %d, len(index) = %d, want 0 and 1", len(s.over), len(s.index))
+	}
+	if _, _, ok := s.Match(name); !ok {
+		t.Error("Match of the 253-byte name missed")
+	}
+
+	_, err = FromEntries([]string{nameOfLen(t, MaxNameLen+1)})
+	var ie *InvalidEntryError
+	if !errors.As(err, &ie) {
+		t.Fatalf("FromEntries(254 bytes) err = %v, want *InvalidEntryError", err)
 	}
 }

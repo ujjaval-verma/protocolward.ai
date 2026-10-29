@@ -144,6 +144,7 @@ func TestMatch_ZeroAllocs(t *testing.T) {
 		"exact":  "example.com",
 		"suffix": "a.b.example.com",
 		"miss":   "nothere.unlisted.org",
+		"dot":    "a.b.example.com.",
 	} {
 		if n := testing.AllocsPerRun(100, func() { sinkMatch(set, q) }); n != 0 {
 			t.Errorf("%s: allocs = %v, want 0", name, n)
@@ -208,5 +209,31 @@ func TestMatch_ConcurrentRace(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
+	}
+}
+
+// TestMatch_FoldTable pins, with literal expected results, how Match folds a
+// raw query string: lowercase and strip exactly one trailing dot. The U+212A
+// (Kelvin sign) row documents that a raw string handed straight to Match folds
+// to "k"; no caller does that today (the DNS path carries non-ASCII as \DDD
+// escapes and the wasm demo rejects it in NormalizeName first).
+func TestMatch_FoldTable(t *testing.T) {
+	set := loadSimple(t, "example.com", "ka.com")
+	cases := []struct {
+		in          string
+		wantMatched string // "" means miss
+	}{
+		{"EXAMPLE.COM", "example.com"},
+		{"example.com.", "example.com"},
+		{"Ads.Example.Com.", "example.com"},
+		{"example.com..", ""},
+		{".", ""},
+		{"\u212Aa.com", "ka.com"},
+	}
+	for _, c := range cases {
+		_, matched, ok := set.Match(c.in)
+		if ok != (c.wantMatched != "") || matched != c.wantMatched {
+			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
+		}
 	}
 }
