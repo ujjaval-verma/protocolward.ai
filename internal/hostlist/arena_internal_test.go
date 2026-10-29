@@ -317,3 +317,25 @@ func TestLoad_IDSourceMismatch(t *testing.T) {
 		t.Errorf("len = %d, want 0 (nothing loaded)", s.len())
 	}
 }
+
+// TestLoad_MaxNameLen_StaysPacked pins that the longest name NormalizeName
+// accepts is stored in the packed index, so the overflow map's long-name arm
+// is unreachable through Load. TestLoad_OverlongNamesSkipped covers the other
+// side (254 bytes is rejected).
+func TestLoad_MaxNameLen_StaysPacked(t *testing.T) {
+	name := nameOfLen(t, MaxNameLen)
+	p := writeHosts(t, t.TempDir(), "long.txt", []string{name})
+	s, _, err := Load([]Source{{ID: "L", Path: p}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.over) != 0 {
+		t.Errorf("len(over) = %d, want 0", len(s.over))
+	}
+	if len(s.index) != 1 {
+		t.Errorf("len(index) = %d, want 1", len(s.index))
+	}
+	if _, _, ok := s.Match(name); !ok {
+		t.Error("Match of the 253-byte name missed")
+	}
+}
