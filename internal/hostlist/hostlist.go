@@ -143,7 +143,8 @@ type Set struct {
 	// over holds hostnames that cannot use index: hash collisions, arena-offset
 	// overflow, and (defensive) len > maxPackedLen. The last is unreachable from
 	// Load/FromEntries because NormalizeName caps names at MaxNameLen;
-	// TestLoad_MaxNameLen_StaysPacked and TestLoad_OverlongNamesSkipped pin it.
+	// TestLoad_MaxNameLen_StaysPacked, TestLoad_OverlongNamesSkipped and
+	// TestFromEntries_MaxNameLen_StaysPacked pin it.
 	over map[string]uint16
 }
 
