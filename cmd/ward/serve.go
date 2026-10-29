@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -92,6 +93,100 @@ type serveOpts struct {
 	// newDataplane overrides the dataplane constructor. Nil means
 	// dataplane.NewServer. Only tests set it (to inject an init failure).
 	newDataplane func(dataplane.Config) (*dataplane.Server, error)
+	// notifySignals overrides how the second-signal exit hatch subscribes to
+	// SIGINT/SIGTERM. Nil means notifyShutdownSignals. Only tests set it.
+	notifySignals signalNotifier
+	// exit overrides the hatch's exit function. Nil means os.Exit. Only tests
+	// set it.
+	exit func(int)
+}
+
+// signalNotifier subscribes to the shutdown signals and returns the channel
+// they arrive on and a function that unsubscribes.
+type signalNotifier func() (<-chan os.Signal, func())
+
+// notifyShutdownSignals is the production signalNotifier: SIGINT and SIGTERM
+// on a 1-buffered channel.
+func notifyShutdownSignals() (<-chan os.Signal, func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	return ch, func() { signal.Stop(ch) }
+}
+
+// exitHatch is the second-signal escape hatch. Once armed, a SIGINT or
+// SIGTERM closes the dashboard and exits 130 at once, skipping the drain and
+// every deferred cleanup. It does not call Adapter.Close: Close waits behind
+// an in-flight Classify and then up to CloseGrace for the child, which would
+// defeat an immediate exit. When ward exits the kernel closes the child's
+// stdin, the same EOF Close sends, and init reaps the orphan.
+//
+// arm and disarm must be ordered by happens-before (the same goroutine or a
+// channel handoff); the hatch has no mutex.
+type exitHatch struct {
+	notify   signalNotifier
+	exit     func(int)
+	done     chan struct{} // closed by disarm; nil until armed
+	finished chan struct{} // closed when the hatch goroutine has returned
+	disarmed bool
+}
+
+// newExitHatch returns an unarmed hatch. A nil notify means
+// notifyShutdownSignals; a nil exit means os.Exit.
+func newExitHatch(notify signalNotifier, exit func(int)) *exitHatch {
+	if notify == nil {
+		notify = notifyShutdownSignals
+	}
+	if exit == nil {
+		exit = os.Exit
+	}
+	return &exitHatch{notify: notify, exit: exit}
+}
+
+// arm subscribes to the shutdown signals and starts the goroutine that fires
+// on the next one. The subscription ends when budget elapses or at disarm,
+// whichever comes first.
+func (h *exitHatch) arm(budget time.Duration, dash io.Closer) {
+	sigCh, stop := h.notify()
+	h.done, h.finished = make(chan struct{}), make(chan struct{})
+	done, finished := h.done, h.finished
+	fire := func() {
+		_ = dash.Close()
+		// Second signal during shutdown → immediate exit (130 = 128+SIGINT).
+		h.exit(130)
+	}
+	go func() {
+		// Registered first so it runs last: disarm cannot return while the
+		// goroutine is still subscribed.
+		defer close(finished)
+		defer stop()
+		select {
+		case <-sigCh:
+			fire()
+		case <-time.After(budget):
+			// Drain budget elapsed; outer logic handles the forced close.
+		case <-done:
+			// A signal that arrived before disarm still fires.
+			select {
+			case <-sigCh:
+				fire()
+			default:
+			}
+		}
+	}()
+}
+
+// disarm ends the subscription and waits for the hatch goroutine to return,
+// so once it returns nothing is subscribed and exit can no longer be called.
+// It is a no-op on an unarmed hatch and safe to call more than once.
+func (h *exitHatch) disarm() {
+	if h.done == nil {
+		return
+	}
+	if !h.disarmed {
+		h.disarmed = true
+		close(h.done)
+	}
+	<-h.finished
 }
 
 // lipgloss styles for startup-error stderr output.
@@ -530,11 +625,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
-	// Deferred here so every return path (including the early serveErr-channel
-	// exit at step 7) reaps the child; the exception is the second-signal
-	// os.Exit(130) in step 7, which skips defers. The defer fires AFTER any inline
-	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
-	// defers run at function exit, after the inline shutdown completes.
+	hatch := newExitHatch(opts.notifySignals, opts.exit)
+	defer hatch.disarm()
+	// Deferred so every return path reaps the child after any srv.Shutdown has drained classifyAsync (Risk #2).
+	// The hatch is disarmed after the reap: while its budget (timeouts.shutdown + 2s from the first
+	// signal) lasts, a second signal during the reap still exits 130 (the exit skips the defers).
 	defer closeClassifier()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
@@ -583,18 +678,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	case <-ctx.Done():
 		// Context cancelled — arm the second-signal escape hatch NOW so that a
 		// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			select {
-			case <-sigCh:
-				// Second signal during shutdown → immediate exit (130 = 128+SIGINT).
-				os.Exit(130)
-			case <-time.After(cfg.Timeouts.Shutdown + 2*time.Second):
-				// Drain budget elapsed; outer logic handles the forced close.
-				signal.Stop(sigCh)
-			}
-		}()
+		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dashSrv)
 	case err := <-serveErr:
 		// The dataplane has already stopped both DNS listeners and drained
 		// in-flight queries. Close the dashboard too, so an early exit
