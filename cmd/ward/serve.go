@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -92,6 +93,107 @@ type serveOpts struct {
 	// newDataplane overrides the dataplane constructor. Nil means
 	// dataplane.NewServer. Only tests set it (to inject an init failure).
 	newDataplane func(dataplane.Config) (*dataplane.Server, error)
+	// notifySignals overrides how the second-signal exit hatch subscribes to
+	// SIGINT/SIGTERM. Nil means notifyShutdownSignals. Only tests set it.
+	notifySignals signalNotifier
+	// exit overrides the hatch's exit function. Nil means os.Exit. Only tests
+	// set it.
+	exit func(int)
+}
+
+// signalNotifier subscribes to the shutdown signals and returns the channel
+// they arrive on and a function that unsubscribes.
+type signalNotifier func() (<-chan os.Signal, func())
+
+// notifyShutdownSignals is the production signalNotifier: SIGINT and SIGTERM
+// on a 1-buffered channel.
+func notifyShutdownSignals() (<-chan os.Signal, func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	return ch, func() { signal.Stop(ch) }
+}
+
+// exitHatch is the second-signal escape hatch. Once armed, a SIGINT or
+// SIGTERM closes the dashboard and exits 130 at once, skipping the drain and
+// every deferred cleanup. It does not call Adapter.Close: Close waits behind
+// an in-flight Classify and then up to CloseGrace for the child, which would
+// defeat an immediate exit. When ward exits the kernel closes the child's
+// stdin, the same EOF Close sends, and init reaps the orphan.
+//
+// arm and disarm must be ordered by happens-before (the same goroutine or a
+// channel handoff); the hatch has no mutex.
+type exitHatch struct {
+	notify   signalNotifier
+	exit     func(int)
+	done     chan struct{} // closed by disarm; nil until armed
+	finished chan struct{} // closed when the hatch goroutine has returned
+	disarmed bool
+}
+
+// newExitHatch returns an unarmed hatch. A nil notify means
+// notifyShutdownSignals; a nil exit means os.Exit.
+func newExitHatch(notify signalNotifier, exit func(int)) *exitHatch {
+	if notify == nil {
+		notify = notifyShutdownSignals
+	}
+	if exit == nil {
+		exit = os.Exit
+	}
+	return &exitHatch{notify: notify, exit: exit}
+}
+
+// arm subscribes to the shutdown signals and starts the goroutine that fires
+// on the next one. The subscription ends when budget elapses or at disarm,
+// whichever comes first. A hatch arms at most once: a second call is a no-op,
+// so disarm always ends the one subscription there is.
+func (h *exitHatch) arm(budget time.Duration, dash io.Closer) {
+	if h.done != nil {
+		return
+	}
+	sigCh, stop := h.notify()
+	h.done, h.finished = make(chan struct{}), make(chan struct{})
+	done, finished := h.done, h.finished
+	fire := func() {
+		_ = dash.Close()
+		// Second signal during shutdown → immediate exit (130 = 128+SIGINT).
+		h.exit(130)
+	}
+	go func() {
+		// Registered first so it runs last: disarm cannot return while the
+		// goroutine is still subscribed.
+		defer close(finished)
+		defer stop()
+		select {
+		case <-sigCh:
+			fire()
+		case <-time.After(budget):
+			// Drain budget elapsed; outer logic handles the forced close.
+		case <-done:
+			// A signal that arrived before disarm still fires.
+			select {
+			case <-sigCh:
+				fire()
+			default:
+			}
+		}
+	}()
+}
+
+// disarm ends the subscription and waits for the hatch goroutine to return,
+// so once it returns nothing is subscribed and exit can no longer be called.
+// It is a no-op on an unarmed hatch and safe to call more than once. A signal
+// that arrives after disarm is handled only by the NotifyContext in
+// newServeCmd, whose context is already cancelled, so the process exits
+// through the normal path rather than with 130.
+func (h *exitHatch) disarm() {
+	if h.done == nil {
+		return
+	}
+	if !h.disarmed {
+		h.disarmed = true
+		close(h.done)
+	}
+	<-h.finished
 }
 
 // lipgloss styles for startup-error stderr output.
@@ -125,11 +227,11 @@ func printStartupError(label, message, remediation string) {
 //  2. $XDG_CONFIG_HOME/protocol-ward/ward.yaml
 //  3. /etc/protocolward/ward.yaml
 //
-// Returns the first path where the file exists, or an error naming all
-// searched locations if none are found. If --config was given explicitly, it
-// is returned immediately even if the file is absent (Load will produce the
-// right typed error with the path named).
-func resolveConfigPath(flag string) (string, error) {
+// Returns the first path where the file exists, or a *serveError (Code 2)
+// naming all searched locations if none are found. If --config was given
+// explicitly, it is returned immediately even if the file is absent (Load will
+// produce the right typed error with the path named).
+func resolveConfigPath(flag string) (string, *serveError) {
 	if flag != "" {
 		return flag, nil
 	}
@@ -279,15 +381,10 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 // *serveError (Code 2), printing the startup error before it returns.
 func loadServeConfig(opts serveOpts) (config.Config, error) {
 	// ── Step 1: Resolve config path ──────────────────────────────────────────
-	cfgPath, err := resolveConfigPath(opts.configPath)
-	if err != nil {
-		var se *serveError
-		if errors.As(err, &se) {
-			printStartupError("config error", se.Message, se.Remediation)
-			return config.Config{}, se
-		}
-		printStartupError("config error", err.Error(), "")
-		return config.Config{}, &serveError{Code: 2, Message: err.Error()}
+	cfgPath, se := resolveConfigPath(opts.configPath)
+	if se != nil {
+		printStartupError("config error", se.Message, se.Remediation)
+		return config.Config{}, se
 	}
 
 	// ── Step 2: Load + validate config ───────────────────────────────────────
@@ -499,8 +596,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
-	logger := obs.NewLogger(cfg.LogLevel)
-	slog.SetDefault(logger)
+	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
@@ -518,7 +614,6 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// The store is constructed before the dataplane so we can pass it as the
 	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
 	// corollary (internal/web package doc); the check runs before any bind.
-	// The dashboard itself starts in step 5b, once the dataplane server exists.
 	dashAddr, err := serveDashAddr(opts)
 	if err != nil {
 		return err
@@ -530,11 +625,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
 	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
-	// Deferred here so every return path (including the early serveErr-channel
-	// exit at step 7) reaps the child; the exception is the second-signal
-	// os.Exit(130) in step 7, which skips defers. The defer fires AFTER any inline
-	// srv.Shutdown has drained classifyAsync goroutines (Risk #2 mitigation):
-	// defers run at function exit, after the inline shutdown completes.
+	hatch := newExitHatch(opts.notifySignals, opts.exit)
+	defer hatch.disarm()
+	// Deferred so every return path reaps the child after any srv.Shutdown has drained classifyAsync (Risk #2).
+	// The hatch is disarmed after the reap: while its budget (timeouts.shutdown + 2s from the first
+	// signal) lasts, a second signal during the reap still exits 130 (the exit skips the defers).
 	defer closeClassifier()
 
 	// ── Step 5: Construct dataplane server ───────────────────────────────────
@@ -566,6 +661,16 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 	defer func() { _ = dashSrv.Close() }()
 
+	// ── Steps 6-8: Serve, wait for a signal or a listener exit, shut down ─────
+	return serveUntilStopped(ctx, srv, dashSrv, hatch, cfg, opts.listenAddr != "")
+}
+
+// serveUntilStopped serves until the listener exits or ctx is cancelled. On a
+// listener exit it closes the dashboard and returns an untyped nil or a
+// *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
+// drain, runs shutdownServe and returns nil. fromFlag says the listen address
+// came from --listen-addr.
+func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
 	go func() {
@@ -573,36 +678,24 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}()
 
 	// ── Step 7: Wait for signal or context cancel ─────────────────────────────
-	// Rely solely on ctx for signal delivery. In production, ctx comes from
-	// signal.NotifyContext (in newServeCmd), which handles SIGINT/SIGTERM.
-	// Tests inject cancellation directly via context cancel. A single
-	// registration point eliminates the double-registration race where a
-	// SIGTERM arriving via ctx.Done() bypassed the escape-hatch goroutine.
+	// The first signal arrives through ctx: in production ctx comes from
+	// signal.NotifyContext (in newServeCmd), which handles SIGINT/SIGTERM, and
+	// tests inject cancellation directly. The second-signal hatch subscribes
+	// separately and only once ctx is done, so no first signal can bypass it.
 
 	select {
 	case <-ctx.Done():
 		// Context cancelled — arm the second-signal escape hatch NOW so that a
 		// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			select {
-			case <-sigCh:
-				// Second signal during shutdown → immediate exit (130 = 128+SIGINT).
-				os.Exit(130)
-			case <-time.After(cfg.Timeouts.Shutdown + 2*time.Second):
-				// Drain budget elapsed; outer logic handles the forced close.
-				signal.Stop(sigCh)
-			}
-		}()
+		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
 	case err := <-serveErr:
 		// The dataplane has already stopped both DNS listeners and drained
 		// in-flight queries. Close the dashboard too, so an early exit
 		// (e.g. the DNS port is taken) leaves no listener behind.
-		_ = dashSrv.Close()
+		_ = dash.Close()
 		if err != nil {
 			msg := fmt.Sprintf("listener error: %v", err)
-			rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+			rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
 			printStartupError("startup error", msg, rem)
 			return &serveError{Code: 1, Message: msg, Remediation: rem}
 		}
@@ -613,8 +706,21 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		"shutdown_budget", cfg.Timeouts.Shutdown.String(),
 	)
 
+	shutdownServe(srv, dash, serveErr, cfg.Timeouts.Shutdown)
+	return nil
+}
+
+// dashServer is the part of *http.Server the shutdown steps use.
+type dashServer interface {
+	Close() error
+	Shutdown(context.Context) error
+}
+
+// shutdownServe is the graceful shutdown: the dashboard first (1 s), then
+// the dataplane drain within budget, then a bounded wait for Serve to return.
+func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration) {
 	// ── Step 8: Graceful shutdown ─────────────────────────────────────────────
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), budget)
 	defer shutdownCancel()
 
 	// Shut the dashboard down first — it's bounded by ReadHeaderTimeout and
@@ -622,7 +728,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// healthz probe can't block the listener close.
 	dashShutdownCtx, dashCancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer dashCancel()
-	if err := dashSrv.Shutdown(dashShutdownCtx); err != nil {
+	if err := dash.Shutdown(dashShutdownCtx); err != nil {
 		slog.Warn("dashboard: shutdown error", "error", err.Error())
 	}
 
@@ -652,7 +758,6 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	slog.Info("ward serve: stopped")
-	return nil
 }
 
 // buildUpstreamTLSConfig returns a *tls.Config that pins the upstream to the

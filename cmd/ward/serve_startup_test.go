@@ -547,3 +547,40 @@ func TestNewServeDataplane(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveConfigPath_ReturnsServeError(t *testing.T) {
+	if _, err := os.Stat("/etc/protocolward/ward.yaml"); err == nil {
+		t.Skip("/etc/protocolward/ward.yaml exists on this machine; the not-found case cannot be reached")
+	}
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	_, se := resolveConfigPath("")
+	if se == nil {
+		t.Fatal("resolveConfigPath = nil error, want a *serveError")
+	}
+	if se.Code != 2 {
+		t.Errorf("Code = %d, want 2", se.Code)
+	}
+	if !strings.HasPrefix(se.Message, "no config file found; searched:") {
+		t.Errorf("Message = %q, want prefix %q", se.Message, "no config file found; searched:")
+	}
+	if !strings.Contains(se.Remediation, "--config PATH") {
+		t.Errorf("Remediation = %q, want it to name --config PATH", se.Remediation)
+	}
+
+	want := filepath.Join(xdg, "protocol-ward", "ward.yaml")
+	if err := os.MkdirAll(filepath.Dir(want), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte(startupMinimalCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, se := resolveConfigPath("")
+	if se != nil {
+		t.Fatalf("resolveConfigPath = %v, want nil", se)
+	}
+	if got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+}

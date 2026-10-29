@@ -72,15 +72,10 @@ func probeUpstream(address string, timeout time.Duration) upstreamProbeResult {
 // the cobra layer can exit non-zero. Config-load errors return *serveError
 // with Code=2 (same envelope as ward serve / ward config export).
 func doctorRun(out io.Writer, opts doctorOpts) error {
-	cfgPath, err := resolveConfigPath(opts.configPath)
-	if err != nil {
-		var se *serveError
-		if errors.As(err, &se) {
-			printStartupError("config error", se.Message, se.Remediation)
-			return se
-		}
-		printStartupError("config error", err.Error(), "")
-		return &serveError{Code: 2, Message: err.Error()}
+	cfgPath, se := resolveConfigPath(opts.configPath)
+	if se != nil {
+		printStartupError("config error", se.Message, se.Remediation)
+		return se
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

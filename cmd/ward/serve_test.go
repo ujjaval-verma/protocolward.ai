@@ -816,6 +816,7 @@ type wardProc struct {
 	out      *wakeBuffer
 	exited   chan struct{} // closed once cmd.Wait returned (pipe fully copied)
 	exitCode int           // valid once exited is closed
+	proc     *os.Process   // the ward process, for sending signals
 }
 
 // launchWard writes cfgBody (which must NOT contain a listen: key; launchWard
@@ -842,6 +843,7 @@ func launchWard(t *testing.T, cfgBody, listenAddr string) *wardProc {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start ward: %v", err)
 	}
+	w.proc = cmd.Process
 	go func() {
 		_ = cmd.Wait()
 		w.exitCode = cmd.ProcessState.ExitCode()
