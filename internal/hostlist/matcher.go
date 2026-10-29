@@ -8,8 +8,8 @@ import "strings"
 // that is an ancestor (or the same as) the queried hostname. Returns the
 // list_id, the matched suffix (lowercased, no trailing dot), and ok=true on
 // hit; ok=false on miss. Empty / lone-dot hostnames return ok=false. Match
-// folds the hostname with FoldName and does not allocate for an already
-// lowercase name (a trailing dot is also free).
+// does not allocate for an already lowercase name (a trailing dot is also
+// free).
 // A zero-value Set matches nothing.
 //
 // The returned matched string may be a substring of hostname and shares its
@@ -18,9 +18,9 @@ import "strings"
 //
 // Algorithm: fold the hostname with FoldName (lowercase, strip one trailing
 // dot, reject empty), then probe the full name and each label-bounded suffix
-// after a dot, longest first. Each probe hashes the candidate, looks it up in the index and
-// verifies the arena bytes, so the first hit is the longest matching suffix
-// and a hash collision cannot cause a false hit.
+// after a dot, longest first. Each probe hashes the candidate, looks it up in
+// the index and verifies the arena bytes, so the first hit is the longest
+// matching suffix and a hash collision cannot cause a false hit.
 //
 // Example: list = {example.com, ads.example.com}, qname = "tracker.ads.example.com"
 //
