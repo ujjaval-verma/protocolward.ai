@@ -268,6 +268,22 @@ func TestExitHatch(t *testing.T) {
 			}
 		}
 	})
+	t.Run("armed twice", func(t *testing.T) {
+		sig, rec := newFakeSignals(), &hatchRecorder{}
+		h := newExitHatch(sig.notify, rec.exit)
+		h.arm(hatchBudget, rec)
+		h.arm(hatchBudget, rec)
+		if n := sig.notifyCalls(); n != 1 {
+			t.Fatalf("notifier called %d times by two arms, want 1", n)
+		}
+		h.disarm()
+		if !isClosed(sig.stopped) {
+			t.Fatal("still subscribed after one disarm of a twice-armed hatch")
+		}
+		if got := rec.got(); len(got) != 0 {
+			t.Fatalf("events = %q, want none", got)
+		}
+	})
 	t.Run("unarmed and twice", func(t *testing.T) {
 		sig, rec := newFakeSignals(), &hatchRecorder{}
 		h := newExitHatch(sig.notify, rec.exit)

@@ -144,8 +144,12 @@ func newExitHatch(notify signalNotifier, exit func(int)) *exitHatch {
 
 // arm subscribes to the shutdown signals and starts the goroutine that fires
 // on the next one. The subscription ends when budget elapses or at disarm,
-// whichever comes first.
+// whichever comes first. A hatch arms at most once: a second call is a no-op,
+// so disarm always ends the one subscription there is.
 func (h *exitHatch) arm(budget time.Duration, dash io.Closer) {
+	if h.done != nil {
+		return
+	}
 	sigCh, stop := h.notify()
 	h.done, h.finished = make(chan struct{}), make(chan struct{})
 	done, finished := h.done, h.finished
