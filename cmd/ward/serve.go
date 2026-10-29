@@ -181,7 +181,10 @@ func (h *exitHatch) arm(budget time.Duration, dash io.Closer) {
 
 // disarm ends the subscription and waits for the hatch goroutine to return,
 // so once it returns nothing is subscribed and exit can no longer be called.
-// It is a no-op on an unarmed hatch and safe to call more than once.
+// It is a no-op on an unarmed hatch and safe to call more than once. A signal
+// that arrives after disarm is handled only by the NotifyContext in
+// newServeCmd, whose context is already cancelled, so the process exits
+// through the normal path rather than with 130.
 func (h *exitHatch) disarm() {
 	if h.done == nil {
 		return
