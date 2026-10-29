@@ -18,6 +18,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"protocolward.ai/ward/internal/config"
 	"protocolward.ai/ward/internal/dataplane"
 	"protocolward.ai/ward/internal/upstream"
 )
@@ -153,6 +154,7 @@ type fakeSignals struct {
 	stopOnce sync.Once
 	mu       sync.Mutex
 	calls    int
+	onNotify func() // optional; runs inside notify
 }
 
 func newFakeSignals() *fakeSignals {
@@ -163,6 +165,9 @@ func (f *fakeSignals) notify() (<-chan os.Signal, func()) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
+	if f.onNotify != nil {
+		f.onNotify()
+	}
 	return f.ch, func() { f.stopOnce.Do(func() { close(f.stopped) }) }
 }
 
@@ -504,6 +509,129 @@ func TestShutdownServe(t *testing.T) {
 		}
 		if logIndex(logLines(t, buf), msgStopped) < 0 {
 			t.Errorf("no %q line\nlog:\n%s", msgStopped, buf.String())
+		}
+	})
+}
+
+func TestServeUntilStopped(t *testing.T) {
+	const budget = 2 * time.Second
+	// run calls serveUntilStopped in a goroutine and returns its result. It
+	// disarms the hatch only after the result arrived, so arm and disarm are
+	// ordered by the channel handoff; on a timeout it fails without disarming.
+	run := func(t *testing.T, ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool, started func()) error {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- serveUntilStopped(ctx, srv, dash, hatch, cfg, fromFlag) }()
+		if started != nil {
+			started()
+		}
+		select {
+		case err := <-done:
+			hatch.disarm()
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatal("serveUntilStopped did not return within 5s")
+			return nil
+		}
+	}
+
+	t.Run("listener exit", func(t *testing.T) {
+		for _, tc := range []struct {
+			fromFlag bool
+			wantRem  string
+		}{
+			{false, "; stop the process using that port or change listen in ward.yaml"},
+			{true, "; stop the process using that port or change --listen-addr"},
+		} {
+			captureSlog(t)
+			held, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := held.LocalAddr().String()
+			srv := newTestDataplane(t, addr)
+			sig, rec := newFakeSignals(), &hatchRecorder{}
+			dash := newFakeDash(rec)
+			cfg := config.Config{Listen: addr, Timeouts: config.Timeouts{Shutdown: budget}}
+			err = run(t, context.Background(), srv, dash, newExitHatch(sig.notify, rec.exit), cfg, tc.fromFlag, nil)
+			_ = held.Close()
+			se := asServeError(t, err, 1)
+			if !strings.HasPrefix(se.Message, "listener error:") {
+				t.Errorf("fromFlag=%v: Message = %q, want prefix %q", tc.fromFlag, se.Message, "listener error:")
+			}
+			if want := "port already in use at " + addr + tc.wantRem; se.Remediation != want {
+				t.Errorf("fromFlag=%v: Remediation = %q, want %q", tc.fromFlag, se.Remediation, want)
+			}
+			if got := rec.got(); !reflect.DeepEqual(got, []string{"close"}) {
+				t.Errorf("fromFlag=%v: events = %q, want the dashboard closed once", tc.fromFlag, got)
+			}
+			if n := sig.notifyCalls(); n != 0 {
+				t.Errorf("fromFlag=%v: hatch armed %d times on the listener-exit path, want 0", tc.fromFlag, n)
+			}
+		}
+	})
+
+	// graceful runs the first-signal path; the returned recorder holds the
+	// dashboard Close and exit calls in one order.
+	graceful := func(t *testing.T, preload bool) (*hatchRecorder, *fakeDash) {
+		t.Helper()
+		buf := captureSlog(t)
+		srv := newTestDataplane(t, "127.0.0.1:0")
+		sig, rec := newFakeSignals(), &hatchRecorder{}
+		if preload {
+			sig.ch <- os.Interrupt
+		}
+		logAtArm := make(chan bool, 1)
+		sig.onNotify = func() { logAtArm <- strings.Contains(buf.String(), msgShutdownReceived) }
+		dash := newFakeDash(rec)
+		cfg := config.Config{Listen: "127.0.0.1:0", Timeouts: config.Timeouts{Shutdown: budget}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		err := run(t, ctx, srv, dash, newExitHatch(sig.notify, rec.exit), cfg, false, func() {
+			deadline := time.Now().Add(5 * time.Second)
+			for srv.Addr() == "" {
+				if time.Now().After(deadline) {
+					t.Fatal("dataplane not serving within 5s")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+		})
+		if err != nil {
+			t.Fatalf("serveUntilStopped = %v, want nil", err)
+		}
+		if n := sig.notifyCalls(); n != 1 {
+			t.Fatalf("hatch armed %d times, want 1", n)
+		}
+		if <-logAtArm {
+			t.Errorf("%q was logged before the hatch was armed", msgShutdownReceived)
+		}
+		lines := logLines(t, buf)
+		rcv, st := logIndex(lines, msgShutdownReceived), logIndex(lines, msgStopped)
+		if rcv < 0 || st < 0 || rcv > st {
+			t.Fatalf("want %q then %q; got indices %d, %d\nlog:\n%s", msgShutdownReceived, msgStopped, rcv, st, buf.String())
+		}
+		if _, ok := lines[rcv]["shutdown_budget"]; !ok {
+			t.Errorf("%q has no shutdown_budget field: %v", msgShutdownReceived, lines[rcv])
+		}
+		if n := dash.shutdownCalls(); n != 1 {
+			t.Errorf("dashboard Shutdown calls = %d, want 1", n)
+		}
+		return rec, dash
+	}
+
+	t.Run("graceful", func(t *testing.T) {
+		rec, _ := graceful(t, false)
+		if got := rec.got(); len(got) != 0 {
+			t.Errorf("events = %q, want none on the graceful path", got)
+		}
+	})
+	t.Run("graceful with a pending second signal", func(t *testing.T) {
+		// serveUntilStopped never calls dash.Close on the graceful path, so
+		// "close" can only come from the hatch.
+		rec, _ := graceful(t, true)
+		if got := rec.got(); !reflect.DeepEqual(got, closeThenExit) {
+			t.Errorf("events = %q, want %q", got, closeThenExit)
 		}
 	})
 }

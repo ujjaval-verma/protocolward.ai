@@ -594,8 +594,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
-	logger := obs.NewLogger(cfg.LogLevel)
-	slog.SetDefault(logger)
+	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
@@ -613,7 +612,6 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// The store is constructed before the dataplane so we can pass it as the
 	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
 	// corollary (internal/web package doc); the check runs before any bind.
-	// The dashboard itself starts in step 5b, once the dataplane server exists.
 	dashAddr, err := serveDashAddr(opts)
 	if err != nil {
 		return err
@@ -661,6 +659,16 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 	defer func() { _ = dashSrv.Close() }()
 
+	// ── Steps 6-8: Serve, wait for a signal or a listener exit, shut down ─────
+	return serveUntilStopped(ctx, srv, dashSrv, hatch, cfg, opts.listenAddr != "")
+}
+
+// serveUntilStopped serves until the listener exits or ctx is cancelled. On a
+// listener exit it closes the dashboard and returns an untyped nil or a
+// *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
+// drain, runs shutdownServe and returns nil. fromFlag says the listen address
+// came from --listen-addr.
+func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
 	go func() {
@@ -678,15 +686,15 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	case <-ctx.Done():
 		// Context cancelled — arm the second-signal escape hatch NOW so that a
 		// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
-		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dashSrv)
+		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
 	case err := <-serveErr:
 		// The dataplane has already stopped both DNS listeners and drained
 		// in-flight queries. Close the dashboard too, so an early exit
 		// (e.g. the DNS port is taken) leaves no listener behind.
-		_ = dashSrv.Close()
+		_ = dash.Close()
 		if err != nil {
 			msg := fmt.Sprintf("listener error: %v", err)
-			rem := bindErrRemediationFor(err, cfg.Listen, opts.listenAddr != "")
+			rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
 			printStartupError("startup error", msg, rem)
 			return &serveError{Code: 1, Message: msg, Remediation: rem}
 		}
@@ -697,7 +705,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		"shutdown_budget", cfg.Timeouts.Shutdown.String(),
 	)
 
-	shutdownServe(srv, dashSrv, serveErr, cfg.Timeouts.Shutdown)
+	shutdownServe(srv, dash, serveErr, cfg.Timeouts.Shutdown)
 	return nil
 }
 
