@@ -678,11 +678,10 @@ func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServ
 	}()
 
 	// ── Step 7: Wait for signal or context cancel ─────────────────────────────
-	// Rely solely on ctx for signal delivery. In production, ctx comes from
-	// signal.NotifyContext (in newServeCmd), which handles SIGINT/SIGTERM.
-	// Tests inject cancellation directly via context cancel. A single
-	// registration point eliminates the double-registration race where a
-	// SIGTERM arriving via ctx.Done() bypassed the escape-hatch goroutine.
+	// The first signal arrives through ctx: in production ctx comes from
+	// signal.NotifyContext (in newServeCmd), which handles SIGINT/SIGTERM, and
+	// tests inject cancellation directly. The second-signal hatch subscribes
+	// separately and only once ctx is done, so no first signal can bypass it.
 
 	select {
 	case <-ctx.Done():
