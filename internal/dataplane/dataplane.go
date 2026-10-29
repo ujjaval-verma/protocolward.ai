@@ -551,8 +551,11 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	// The decoy set and the list matchers fold again inside Match, as before;
-	// the second fold is idempotent for any name a list entry can equal.
+	// The decoy set and the list matchers fold again inside Match, as before.
+	// The second fold changes only a name ending in an escaped dot (`\.`, as in
+	// `example.com\..`); every probe of the result ends in `\`, which no list
+	// entry can contain because NormalizeName rejects it, so the outcome is the
+	// same.
 	qname := hostlist.FoldName(q.Name)
 
 	// Decoy short-circuit: fires BEFORE Engine.Decide so a decoy hit cannot
