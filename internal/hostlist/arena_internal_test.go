@@ -3,6 +3,7 @@
 package hostlist
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -337,5 +338,28 @@ func TestLoad_MaxNameLen_StaysPacked(t *testing.T) {
 	}
 	if _, _, ok := s.Match(name); !ok {
 		t.Error("Match of the 253-byte name missed")
+	}
+}
+
+// TestFromEntries_MaxNameLen_StaysPacked is the FromEntries counterpart of
+// TestLoad_MaxNameLen_StaysPacked: a 253-byte name is packed, and a 254-byte
+// one is rejected with an InvalidEntryError.
+func TestFromEntries_MaxNameLen_StaysPacked(t *testing.T) {
+	name := nameOfLen(t, MaxNameLen)
+	s, err := FromEntries([]string{name})
+	if err != nil {
+		t.Fatalf("FromEntries(253 bytes): %v", err)
+	}
+	if len(s.over) != 0 || len(s.index) != 1 {
+		t.Errorf("len(over) = %d, len(index) = %d, want 0 and 1", len(s.over), len(s.index))
+	}
+	if _, _, ok := s.Match(name); !ok {
+		t.Error("Match of the 253-byte name missed")
+	}
+
+	_, err = FromEntries([]string{nameOfLen(t, MaxNameLen+1)})
+	var ie *InvalidEntryError
+	if !errors.As(err, &ie) {
+		t.Fatalf("FromEntries(254 bytes) err = %v, want *InvalidEntryError", err)
 	}
 }
