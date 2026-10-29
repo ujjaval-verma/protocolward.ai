@@ -6,8 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -634,4 +637,110 @@ func TestServeUntilStopped(t *testing.T) {
 			t.Errorf("events = %q, want %q", got, closeThenExit)
 		}
 	})
+}
+
+// A second signal that arrives while serveRun is reaping the model child
+// still exits 130: the hatch is disarmed only after the reap. The child holds
+// the reap open until the close grace kills it, so the signal lands inside it.
+func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
+	captureSlog(t) // registered first, so it is restored last
+	logs := captureStdout(t)
+	sig, rec := newFakeSignals(), &hatchRecorder{}
+	// The child answers one request, records that it did, then ignores stdin
+	// EOF's invitation to exit by sleeping until the close grace kills it. The
+	// adapter starts the child on the first classification, so there is
+	// nothing to reap until a query has been sent.
+	started := filepath.Join(t.TempDir(), "started")
+	script := `read -r _; echo '{"verdict":"benign"}'; : > "$1"; cat >/dev/null; exec sleep 30`
+	cfgPath := serveMinimalCfg(t, fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - %q\n    - sh\n    - %q\n", script, started))
+	dnsAddr := serveCfgListen(t, cfgPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- serveRun(ctx, serveOpts{
+			configPath:     cfgPath,
+			dashListenAddr: freeTCPAddr(t),
+			notifySignals:  sig.notify,
+			exit:           rec.exit,
+		})
+	}()
+	// Bounded on every path: the child is killed by the 2s close grace, and
+	// the deferred wait below blocks until serveRun (and so the reap) is over.
+	returned := false
+	defer func() {
+		cancel()
+		if returned {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("serveRun did not return within 10s")
+		}
+	}()
+
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s not seen within 5s\nlog:\n%s", what, logs.String())
+			}
+		}
+	}
+	waitFor("dns: listening", func() bool { return strings.Contains(logs.String(), "dns: listening") })
+	c := &dns.Client{Timeout: 500 * time.Millisecond}
+	q := new(dns.Msg)
+	q.SetQuestion("example.test.", dns.TypeA)
+	_, _, _ = c.Exchange(q, dnsAddr) // SERVFAIL (dead upstream); the classification still runs
+	waitFor("the model child's reply", func() bool { _, err := os.Stat(started); return err == nil })
+	cancel()
+	waitFor("ward serve: stopped", func() bool { return strings.Contains(logs.String(), "ward serve: stopped") })
+	if got := rec.got(); len(got) != 0 {
+		t.Fatalf("events before the second signal = %q, want none", got)
+	}
+	sig.trySend()
+	select {
+	case err := <-done:
+		returned = true
+		if err != nil {
+			t.Fatalf("serveRun = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveRun did not return within 10s")
+	}
+	// The injected exit returns, so serveRun runs on; disarm then waits for
+	// the hatch goroutine, so by now the exit has been recorded.
+	if got, want := rec.got(), []string{"exit 130"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exit calls = %q, want %q (a second signal during the reap must exit 130)", got, want)
+	}
+	if !isClosed(sig.stopped) {
+		t.Fatal("hatch still subscribed after serveRun returned")
+	}
+}
+
+// captureStdout redirects os.Stdout into the returned buffer until cleanup.
+// serveRun installs a logger that writes to os.Stdout, so this is how an
+// in-process test reads its log lines. Only non-parallel tests may use it.
+func captureStdout(t *testing.T) *safeBuffer {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := &safeBuffer{}
+	copied := make(chan struct{})
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(buf, r)
+	}()
+	prev := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() {
+		os.Stdout = prev
+		_ = w.Close()
+		<-copied
+		_ = r.Close()
+	})
+	return buf
 }
