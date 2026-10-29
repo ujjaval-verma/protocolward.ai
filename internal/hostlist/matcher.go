@@ -8,16 +8,17 @@ import "strings"
 // that is an ancestor (or the same as) the queried hostname. Returns the
 // list_id, the matched suffix (lowercased, no trailing dot), and ok=true on
 // hit; ok=false on miss. Empty / lone-dot hostnames return ok=false. Match
-// does not allocate for an already lowercase name without a trailing dot.
+// folds the hostname with FoldName and does not allocate for an already
+// lowercase name (a trailing dot is also free).
 // A zero-value Set matches nothing.
 //
 // The returned matched string may be a substring of hostname and shares its
 // memory, so callers must pass an immutable string (not one aliasing a
 // mutable byte buffer).
 //
-// Algorithm: normalize the hostname (lowercase, strip trailing dot, reject
-// empty), then probe the full name and each label-bounded suffix after a dot,
-// longest first. Each probe hashes the candidate, looks it up in the index and
+// Algorithm: fold the hostname with FoldName (lowercase, strip one trailing
+// dot, reject empty), then probe the full name and each label-bounded suffix
+// after a dot, longest first. Each probe hashes the candidate, looks it up in the index and
 // verifies the arena bytes, so the first hit is the longest matching suffix
 // and a hash collision cannot cause a false hit.
 //
@@ -29,7 +30,7 @@ func (s *Set) Match(hostname string) (listID, matched string, ok bool) {
 	if s.index == nil && len(s.over) == 0 {
 		return "", "", false
 	}
-	cur := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	cur := FoldName(hostname)
 	if cur == "" {
 		return "", "", false
 	}
