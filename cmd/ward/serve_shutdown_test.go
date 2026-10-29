@@ -4,16 +4,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+
+	"protocolward.ai/ward/internal/dataplane"
+	"protocolward.ai/ward/internal/upstream"
 )
 
 // blackHoleUpstream listens on a kernel-assigned loopback TCP port, accepts
@@ -347,4 +353,157 @@ func TestServeRun_Return_DisarmsHatch(t *testing.T) {
 	if got := rec.got(); len(got) != 0 {
 		t.Fatalf("exit calls = %q, want none", got)
 	}
+}
+
+// fakeDash is a recording dashServer. Close appends "close" to rec (shared
+// with a hatch recorder when a test needs one order across both).
+type fakeDash struct {
+	rec         *hatchRecorder
+	shutdownErr error
+
+	mu        sync.Mutex
+	shutdowns int
+	deadline  time.Duration // time left on the last Shutdown context
+	hasDL     bool
+}
+
+func newFakeDash(rec *hatchRecorder) *fakeDash { return &fakeDash{rec: rec} }
+
+func (d *fakeDash) Close() error {
+	d.rec.add("close")
+	return nil
+}
+
+func (d *fakeDash) Shutdown(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.shutdowns++
+	dl, ok := ctx.Deadline()
+	d.deadline, d.hasDL = time.Until(dl), ok
+	return d.shutdownErr
+}
+
+func (d *fakeDash) shutdownCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.shutdowns
+}
+
+// newTestDataplane builds a real dataplane server on addr with one upstream
+// that refuses connections. It is not served.
+func newTestDataplane(t *testing.T, addr string) *dataplane.Server {
+	t.Helper()
+	up, err := upstream.New(upstream.Config{Address: "127.0.0.1:1", ServerName: "unreachable.test", DialTimeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := dataplane.NewServer(dataplane.Config{ListenAddr: addr, Resolvers: []dataplane.Resolver{up}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
+// logLines decodes the captured slog JSON lines.
+func logLines(t *testing.T, buf *safeBuffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	dec := json.NewDecoder(strings.NewReader(buf.String()))
+	for dec.More() {
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatalf("decode log: %v\nlog:\n%s", err, buf.String())
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// logIndex returns the index of the first captured line whose msg is msg,
+// or -1.
+func logIndex(lines []map[string]any, msg string) int {
+	for i, m := range lines {
+		if m["msg"] == msg {
+			return i
+		}
+	}
+	return -1
+}
+
+const (
+	msgShutdownReceived = "ward serve: shutdown signal received; draining in-flight queries"
+	msgStopped          = "ward serve: stopped"
+	msgNotStarted       = "ward serve: shutdown called before server fully started; nothing to drain"
+)
+
+func TestShutdownServe(t *testing.T) {
+	const budget = 2 * time.Second
+	run := func(t *testing.T, dash *fakeDash, serveErr chan error) time.Duration {
+		t.Helper()
+		srv := newTestDataplane(t, "127.0.0.1:0")
+		done := make(chan struct{})
+		start := time.Now()
+		go func() {
+			defer close(done)
+			shutdownServe(srv, dash, serveErr, budget)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("shutdownServe did not return within 3s")
+		}
+		return time.Since(start)
+	}
+	t.Run("serve already returned", func(t *testing.T) {
+		buf := captureSlog(t)
+		dash := newFakeDash(&hatchRecorder{})
+		serveErr := make(chan error, 1)
+		serveErr <- nil
+		if took := run(t, dash, serveErr); took > 400*time.Millisecond {
+			t.Errorf("shutdownServe took %s with serveErr ready, want <= 400ms", took)
+		}
+		if n := dash.shutdownCalls(); n != 1 {
+			t.Fatalf("dashboard Shutdown calls = %d, want 1", n)
+		}
+		if !dash.hasDL || dash.deadline > time.Second {
+			t.Errorf("dashboard Shutdown deadline = %s (set %v), want <= 1s away", dash.deadline, dash.hasDL)
+		}
+		lines := logLines(t, buf)
+		ns, st := logIndex(lines, msgNotStarted), logIndex(lines, msgStopped)
+		if ns < 0 || st < 0 || ns > st {
+			t.Errorf("want %q then %q; got indices %d, %d\nlog:\n%s", msgNotStarted, msgStopped, ns, st, buf.String())
+		}
+		if ns >= 0 && lines[ns]["level"] != "DEBUG" {
+			t.Errorf("%q level = %v, want DEBUG", msgNotStarted, lines[ns]["level"])
+		}
+		if i := logIndex(lines, "ward serve: shutdown error"); i >= 0 {
+			t.Errorf("unexpected shutdown error line: %v", lines[i])
+		}
+	})
+	t.Run("dashboard shutdown error", func(t *testing.T) {
+		buf := captureSlog(t)
+		dash := newFakeDash(&hatchRecorder{})
+		dash.shutdownErr = errors.New("dash stuck")
+		serveErr := make(chan error, 1)
+		serveErr <- nil
+		run(t, dash, serveErr)
+		lines := logLines(t, buf)
+		i := logIndex(lines, "dashboard: shutdown error")
+		if i < 0 {
+			t.Fatalf("no dashboard: shutdown error line\nlog:\n%s", buf.String())
+		}
+		if lines[i]["level"] != "WARN" || lines[i]["error"] != "dash stuck" {
+			t.Errorf("dashboard: shutdown error line = %v, want WARN with error %q", lines[i], "dash stuck")
+		}
+	})
+	t.Run("serve still running", func(t *testing.T) {
+		buf := captureSlog(t)
+		dash := newFakeDash(&hatchRecorder{})
+		if took := run(t, dash, make(chan error, 1)); took < 500*time.Millisecond {
+			t.Errorf("shutdownServe took %s with serveErr empty, want the 500ms drain", took)
+		}
+		if logIndex(logLines(t, buf), msgStopped) < 0 {
+			t.Errorf("no %q line\nlog:\n%s", msgStopped, buf.String())
+		}
+	})
 }

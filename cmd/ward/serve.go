@@ -697,8 +697,21 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		"shutdown_budget", cfg.Timeouts.Shutdown.String(),
 	)
 
+	shutdownServe(srv, dashSrv, serveErr, cfg.Timeouts.Shutdown)
+	return nil
+}
+
+// dashServer is the part of *http.Server the shutdown steps use.
+type dashServer interface {
+	Close() error
+	Shutdown(context.Context) error
+}
+
+// shutdownServe is the graceful shutdown: the dashboard first (1 s), then
+// the dataplane drain within budget, then a bounded wait for Serve to return.
+func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration) {
 	// ── Step 8: Graceful shutdown ─────────────────────────────────────────────
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), budget)
 	defer shutdownCancel()
 
 	// Shut the dashboard down first — it's bounded by ReadHeaderTimeout and
@@ -706,7 +719,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// healthz probe can't block the listener close.
 	dashShutdownCtx, dashCancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer dashCancel()
-	if err := dashSrv.Shutdown(dashShutdownCtx); err != nil {
+	if err := dash.Shutdown(dashShutdownCtx); err != nil {
 		slog.Warn("dashboard: shutdown error", "error", err.Error())
 	}
 
@@ -736,7 +749,6 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	slog.Info("ward serve: stopped")
-	return nil
 }
 
 // buildUpstreamTLSConfig returns a *tls.Config that pins the upstream to the
