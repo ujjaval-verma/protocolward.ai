@@ -35,6 +35,7 @@ import (
 
 	"protocolward.ai/ward/internal/config"
 	"protocolward.ai/ward/internal/decoy"
+	"protocolward.ai/ward/internal/hostlist"
 	adapter "protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/policy"
 	"protocolward.ai/ward/pkg/detect"
@@ -550,7 +551,9 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	qname := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+	// The decoy set and the list matchers fold again inside Match, as before;
+	// the second fold is idempotent for any name a list entry can equal.
+	qname := hostlist.FoldName(q.Name)
 
 	// Decoy short-circuit: fires BEFORE Engine.Decide so a decoy hit cannot
 	// be masked by an allowlist override. A matched decoy emits a Warn-level

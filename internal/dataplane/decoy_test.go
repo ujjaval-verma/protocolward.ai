@@ -264,6 +264,65 @@ func (c *captureRecorder) all() []captureRecord {
 	return out
 }
 
+// TestHandleQuery_MixedCaseTrailingDot_FoldsQname pins that the dataplane
+// folds the query name (lowercase, one trailing dot stripped) before it
+// reaches the decoy set, the engine and the decision recorder. The decoy
+// subtest has no Engine and the block subtest has no Decoys because the decoy
+// check runs before Engine.Decide. The block subtest's stubMatcher does not
+// fold, so its hit proves the dataplane fold itself.
+func TestHandleQuery_MixedCaseTrailingDot_FoldsQname(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, cfg dataplane.Config, rec *captureRecorder) []captureRecord {
+		t.Helper()
+		cfg.ListenAddr = "127.0.0.1:0"
+		cfg.Resolvers = []dataplane.Resolver{&fakeResolver{addr: "127.0.0.1:9001"}}
+		cfg.QueryTimeout = 1 * time.Second
+		cfg.ShutdownTimeout = 2 * time.Second
+		cfg.Decisions = rec
+		cfg.BlockResponse = defaultBlockResponse()
+		srv, err := dataplane.NewServer(cfg)
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		go srv.Serve()
+		defer srv.Shutdown(context.Background())
+
+		addr, err := waitForAddr(srv, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := new(dns.Msg)
+		msg.SetQuestion("ADS.Example.COM.", dns.TypeA)
+		if _, _, err := new(dns.Client).Exchange(msg, addr); err != nil {
+			t.Fatalf("exchange: %v", err)
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+		return rec.all()
+	}
+
+	t.Run("decoy", func(t *testing.T) {
+		t.Parallel()
+		rec := &captureRecorder{}
+		got := run(t, dataplane.Config{Decoys: newDecoySet(t, "0.0.0.0 ads.example.com\n")}, rec)
+		want := []captureRecord{{Qname: "ads.example.com", Action: "decoy", Matched: "ads.example.com"}}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("records: got %+v want %+v", got, want)
+		}
+	})
+	t.Run("block", func(t *testing.T) {
+		t.Parallel()
+		rec := &captureRecorder{}
+		engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "ads.example.com", listID: "blk"})
+		got := run(t, dataplane.Config{Engine: engine}, rec)
+		want := []captureRecord{{Qname: "ads.example.com", Action: "block", Matched: "ads.example.com"}}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Errorf("records: got %+v want %+v", got, want)
+		}
+	})
+}
+
 // TestHandleQuery_DecisionRecorder_DecoyHit confirms the Record hook fires
 // on the decoy short-circuit branch with action="decoy".
 func TestHandleQuery_DecisionRecorder_DecoyHit(t *testing.T) {
