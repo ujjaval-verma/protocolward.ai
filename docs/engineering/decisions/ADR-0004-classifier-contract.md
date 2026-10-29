@@ -55,6 +55,8 @@ Allow and blocklist are re-consulted (not assumed pre-cleared by the caller) so 
 
 The sentinel cannot collide with real hostnames (`hostnameRE` in `internal/hostlist/parser.go`, `^[a-z0-9.-]+$`, rejects `(`). Reusing `KindBlock` avoids `kind_string.go` regen and exhaustive-switch ripple in v0.2. SP10c MAY introduce `KindModelTelemetry` / `KindModelMalicious` variants if observability needs to switch on them.
 
+**Amended 2026-10-29:** `hostnameRE` was replaced by `hostlist.NormalizeName` (#65), which also rejects `(`, so the sentinel still cannot collide with a real hostname.
+
 ## Consequences
 
 - **SP10b** implements `pkg/model.Classifier` inside `internal/` (sibling-process adapter). The Apache-2.0 surface is locked; field additions are allowed, field renames/removals are not.
