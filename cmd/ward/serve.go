@@ -220,11 +220,11 @@ func printStartupError(label, message, remediation string) {
 //  2. $XDG_CONFIG_HOME/protocol-ward/ward.yaml
 //  3. /etc/protocolward/ward.yaml
 //
-// Returns the first path where the file exists, or an error naming all
-// searched locations if none are found. If --config was given explicitly, it
-// is returned immediately even if the file is absent (Load will produce the
-// right typed error with the path named).
-func resolveConfigPath(flag string) (string, error) {
+// Returns the first path where the file exists, or a *serveError (Code 2)
+// naming all searched locations if none are found. If --config was given
+// explicitly, it is returned immediately even if the file is absent (Load will
+// produce the right typed error with the path named).
+func resolveConfigPath(flag string) (string, *serveError) {
 	if flag != "" {
 		return flag, nil
 	}
@@ -374,15 +374,10 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 // *serveError (Code 2), printing the startup error before it returns.
 func loadServeConfig(opts serveOpts) (config.Config, error) {
 	// ── Step 1: Resolve config path ──────────────────────────────────────────
-	cfgPath, err := resolveConfigPath(opts.configPath)
-	if err != nil {
-		var se *serveError
-		if errors.As(err, &se) {
-			printStartupError("config error", se.Message, se.Remediation)
-			return config.Config{}, se
-		}
-		printStartupError("config error", err.Error(), "")
-		return config.Config{}, &serveError{Code: 2, Message: err.Error()}
+	cfgPath, se := resolveConfigPath(opts.configPath)
+	if se != nil {
+		printStartupError("config error", se.Message, se.Remediation)
+		return config.Config{}, se
 	}
 
 	// ── Step 2: Load + validate config ───────────────────────────────────────

@@ -23,15 +23,10 @@ type configExportOpts struct {
 // *serveError so the CLI can map exit codes the same way `ward serve` does:
 // 2 for config-resolution / load failures, 1 for unexpected internal errors.
 func configExportRun(out io.Writer, opts configExportOpts) error {
-	cfgPath, err := resolveConfigPath(opts.configPath)
-	if err != nil {
-		var se *serveError
-		if errors.As(err, &se) {
-			printStartupError("config error", se.Message, se.Remediation)
-			return se
-		}
-		printStartupError("config error", err.Error(), "")
-		return &serveError{Code: 2, Message: err.Error()}
+	cfgPath, se := resolveConfigPath(opts.configPath)
+	if se != nil {
+		printStartupError("config error", se.Message, se.Remediation)
+		return se
 	}
 
 	cfg, err := config.Load(cfgPath)

@@ -266,15 +266,10 @@ func evalRunWith(out io.Writer, opts evalOpts, clf pmodel.Classifier) error {
 // is owned solely by Close — same pattern as newServeClassifier in cmd/ward/serve.go (per
 // SP10b Ralph F1).
 func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
-	cfgPath, err := resolveConfigPath(configPath)
-	if err != nil {
-		var se *serveError
-		if errors.As(err, &se) {
-			printStartupError("config error", se.Message, se.Remediation)
-			return nil, func() {}, &serveError{Code: 2, Message: se.Message, Remediation: se.Remediation}
-		}
-		printStartupError("config error", err.Error(), "")
-		return nil, func() {}, &serveError{Code: 2, Message: err.Error()}
+	cfgPath, se := resolveConfigPath(configPath)
+	if se != nil {
+		printStartupError("config error", se.Message, se.Remediation)
+		return nil, func() {}, &serveError{Code: 2, Message: se.Message, Remediation: se.Remediation}
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
