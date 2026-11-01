@@ -440,6 +440,8 @@ func ValidateListen(addr string, allowPortZero bool) (uint16, error) {
 	if len(port) < 1 || len(port) > 5 {
 		return bad()
 	}
+	// States the canonical-form rule explicitly (ParseUint would also reject
+	// these); the length guard above must stay, since port[0] below panics on "".
 	for i := 0; i < len(port); i++ {
 		if port[i] < '0' || port[i] > '9' {
 			return bad()
