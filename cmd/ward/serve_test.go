@@ -963,6 +963,12 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	if warn == nil {
 		t.Fatalf("no port-0 Warn in log:\n%s", w.out.String())
 	}
+	out := w.out.String()
+	warnAt := strings.Index(out, `"msg":"ward serve: --listen-addr port 0`)
+	listeningAt := strings.Index(out, `"msg":"dns: listening"`)
+	if warnAt < 0 || listeningAt < 0 || warnAt >= listeningAt {
+		t.Errorf("port-0 Warn must precede dns: listening; warn at %d, listening at %d in:\n%s", warnAt, listeningAt, out)
+	}
 	if warn["level"] != "WARN" {
 		t.Errorf("level = %v, want WARN", warn["level"])
 	}
