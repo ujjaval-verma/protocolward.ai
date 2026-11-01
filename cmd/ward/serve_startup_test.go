@@ -105,6 +105,37 @@ func TestLoadServeConfig(t *testing.T) {
 			t.Errorf("Remediation = %q, want host:port", se.Remediation)
 		}
 	})
+	for _, tc := range []struct{ addr, port string }{
+		{"127.0.0.1:053", "053"},
+		{"127.0.0.1:00", "00"},
+		{"[::1]:0080", "0080"},
+		{"127.0.0.1:+53", "+53"},
+		{"127.0.0.1:99999", "99999"},
+	} {
+		t.Run("listen_flag_noncanonical/"+tc.addr, func(t *testing.T) {
+			p := writeStartupCfg(t, t.TempDir(), startupMinimalCfg)
+			_, err := loadServeConfig(serveOpts{configPath: p, listenAddr: tc.addr})
+			se := asServeError(t, err, 2)
+			wantMsg := `invalid --listen-addr "` + tc.addr + `": port "` + tc.port + `" is not a decimal number from 0 to 65535 (digits only, no sign or leading zeros)`
+			if se.Message != wantMsg {
+				t.Errorf("Message = %q, want %q", se.Message, wantMsg)
+			}
+			wantRem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
+			if se.Remediation != wantRem {
+				t.Errorf("Remediation = %q, want %q", se.Remediation, wantRem)
+			}
+		})
+	}
+	t.Run("yaml_plus53_rejected_even_with_flag", func(t *testing.T) {
+		body := strings.Replace(startupMinimalCfg, `listen: "127.0.0.1:5354"`, `listen: "127.0.0.1:+53"`, 1)
+		p := writeStartupCfg(t, t.TempDir(), body)
+		_, err := loadServeConfig(serveOpts{configPath: p, listenAddr: "127.0.0.1:0"})
+		se := asServeError(t, err, 2)
+		want := `config validation error: field "listen": port "+53" is not a decimal number from 1 to 65535 (digits only, no sign or leading zeros) — remediation: write the port as plain digits from 1 to 65535, e.g. "127.0.0.1:5354"; a kernel-picked port (0) is accepted only by ward serve --listen-addr`
+		if se.Message != want {
+			t.Errorf("Message = %q, want %q", se.Message, want)
+		}
+	})
 	t.Run("listen flag overrides file", func(t *testing.T) {
 		p := writeStartupCfg(t, t.TempDir(), startupMinimalCfg)
 		cfg, err := loadServeConfig(serveOpts{configPath: p, listenAddr: "127.0.0.1:0"})

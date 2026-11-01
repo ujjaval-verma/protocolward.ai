@@ -392,11 +392,9 @@ func loadServeConfig(opts serveOpts) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, mapConfigLoadError(cfgPath, err)
 	}
-	// The flag is validated here, not in internal/config, because it allows
-	// port 0 while ward.yaml's listen: must keep rejecting it. It runs before
-	// anything binds.
+	// The flag uses config.ValidateListen with port 0 allowed.
 	if opts.listenAddr != "" {
-		if err := validateListenFlag(opts.listenAddr); err != nil {
+		if _, err := config.ValidateListen(opts.listenAddr, true); err != nil {
 			msg := fmt.Sprintf("invalid --listen-addr %q: %v", opts.listenAddr, err)
 			rem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
 			printStartupError("config error", msg, rem)
@@ -773,19 +771,6 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    u.RootCAs,
 	}
-}
-
-// validateListenFlag checks a --listen-addr value: host:port with a decimal
-// port in 0-65535 (ParseUint rejects signs and service names).
-func validateListenFlag(addr string) error {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return err
-	}
-	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return fmt.Errorf("port %q is not a number from 0 to 65535", port)
-	}
-	return nil
 }
 
 // bindErrRemediation returns a remediation hint appropriate for the given
