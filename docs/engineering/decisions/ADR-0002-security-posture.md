@@ -141,6 +141,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - The nightly workflow catches, within one month, two breaks on `main` that a pre-merge check would have caught. Pulls PR CI forward.
 - PR CI exists. Reconsider automated Dependabot security-update PRs then, since checks could gate them.
 - A Dependabot alert stays open and unread for more than a release cycle. Set a triage cadence or add a release-checklist check then.
+- A Dependabot version-update PR stays open for more than a release cycle. Set a merge cadence, or reconsider that ecosystem's schedule or the feature.
 
 ## References
 
