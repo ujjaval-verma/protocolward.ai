@@ -4,6 +4,7 @@ package config_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -948,8 +949,10 @@ func TestLoad_Listen_PortForms(t *testing.T) {
 			if !errors.As(err, &ve) || ve.Field != "listen" {
 				t.Fatalf("Load(%q) err = %v, want listen *ValidationError", addr, err)
 			}
-			if !strings.Contains(ve.Message, "must be host:port, got "+`"`+addr+`"`) || !strings.HasSuffix(ve.Message, ` — example: "127.0.0.1:5354"`) {
-				t.Errorf("split message changed: %q", ve.Message)
+			_, _, splitErr := net.SplitHostPort(addr)
+			want := fmt.Sprintf("must be host:port, got %q: %v — example: \"127.0.0.1:5354\"", addr, splitErr)
+			if ve.Message != want {
+				t.Errorf("split message:\n got %q\nwant %q", ve.Message, want)
 			}
 		})
 	}
