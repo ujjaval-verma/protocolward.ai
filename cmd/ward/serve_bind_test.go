@@ -127,8 +127,8 @@ func TestServeRun_DNSPortTaken_ReturnsBindErrorAndClosesDashboard(t *testing.T) 
 	if !errors.As(err, &se) || se.Code != 1 {
 		t.Fatalf("serveRun = %v; want *serveError with Code 1", err)
 	}
-	if want := "port already in use at " + addr; !strings.Contains(se.Remediation, want) {
-		t.Errorf("Remediation = %q; want it to contain %q", se.Remediation, want)
+	if want := "port already in use at " + addr + "; stop the process using that port or change listen in ward.yaml"; se.Remediation != want {
+		t.Errorf("Remediation = %q; want %q", se.Remediation, want)
 	}
 	ln, err := rebindTCP(dashAddr)
 	if err != nil {
