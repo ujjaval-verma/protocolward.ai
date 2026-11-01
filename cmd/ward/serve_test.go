@@ -946,6 +946,9 @@ timeouts:
   shutdown: "2s"
 `
 
+// kernelPortRemediation is the exact remediation of the port-0 Warn.
+const kernelPortRemediation = "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml"
+
 func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	w := startWard(t, deadUpstreamCfg)
 	_, port, err := net.SplitHostPort(w.dnsAddr)
@@ -954,6 +957,20 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	}
 	if w.dnsAddr == placeholderListen {
 		t.Fatalf("dns: listening addr %q is the ward.yaml placeholder; --listen-addr was ignored", w.dnsAddr)
+	}
+	// The Warn is logged before the bind, so startWard has already seen it.
+	warn := w.scan("ward serve: --listen-addr port 0; the kernel picks the DNS port")
+	if warn == nil {
+		t.Fatalf("no port-0 Warn in log:\n%s", w.out.String())
+	}
+	if warn["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", warn["level"])
+	}
+	if warn["listen_addr"] != "127.0.0.1:0" {
+		t.Errorf("listen_addr = %v, want 127.0.0.1:0", warn["listen_addr"])
+	}
+	if warn["remediation"] != kernelPortRemediation {
+		t.Errorf("remediation = %v, want %q", warn["remediation"], kernelPortRemediation)
 	}
 	c := &dns.Client{Timeout: 2 * time.Second}
 	m := new(dns.Msg)

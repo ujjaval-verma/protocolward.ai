@@ -595,6 +595,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
 	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
+	if opts.listenAddr != "" {
+		warnKernelPickedPort(opts.listenAddr)
+	}
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
@@ -771,6 +774,18 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    u.RootCAs,
 	}
+}
+
+// warnKernelPickedPort logs a Warn when listenAddr, a --listen-addr value
+// that loadServeConfig has already validated, asks for port 0.
+func warnKernelPickedPort(listenAddr string) {
+	port, err := config.ValidateListen(listenAddr, true)
+	if err != nil || port != 0 {
+		return
+	}
+	slog.Warn("ward serve: --listen-addr port 0; the kernel picks the DNS port",
+		"listen_addr", listenAddr,
+		"remediation", "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
 }
 
 // bindErrRemediation returns a remediation hint appropriate for the given

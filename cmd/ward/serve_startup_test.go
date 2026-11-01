@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"log/slog"
@@ -614,4 +615,44 @@ func TestResolveConfigPath_ReturnsServeError(t *testing.T) {
 	if got != want {
 		t.Errorf("path = %q, want %q", got, want)
 	}
+}
+
+func TestWarnKernelPickedPort(t *testing.T) {
+	const wantMsg = "ward serve: --listen-addr port 0; the kernel picks the DNS port"
+	records := func(t *testing.T, buf *safeBuffer) []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("bad log line %q: %v", line, err)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
+		t.Run(addr, func(t *testing.T) {
+			buf := captureSlog(t)
+			warnKernelPickedPort(addr)
+			recs := records(t, buf)
+			if len(recs) != 1 {
+				t.Fatalf("got %d records, want 1: %v", len(recs), recs)
+			}
+			m := recs[0]
+			if m["level"] != "WARN" || m["msg"] != wantMsg || m["listen_addr"] != addr || m["remediation"] != kernelPortRemediation {
+				t.Errorf("record = %v", m)
+			}
+		})
+	}
+	t.Run("fixed port logs nothing", func(t *testing.T) {
+		buf := captureSlog(t)
+		warnKernelPickedPort("127.0.0.1:5354")
+		if recs := records(t, buf); len(recs) != 0 {
+			t.Errorf("got records %v, want none", recs)
+		}
+	})
 }
