@@ -414,27 +414,67 @@ func validateSources(field string, srcs []hostlist.Source, msg sourceMessages) e
 	return nil
 }
 
+// ValidateListen checks a listen address: host:port as net.SplitHostPort
+// splits it, with a canonical decimal port: ASCII digits only, no sign, no
+// leading zero (except the single digit "0"), no service name. The port must
+// be 1-65535, or 0-65535 when allowPortZero is true. Port 0 asks the kernel
+// to pick a port. Only `ward serve --listen-addr` and `--dash-listen-addr`
+// pass true; ward.yaml's listen: passes false. The host is not checked: an
+// empty host (all interfaces), IPv4 and bracketed IPv6 literals (with or
+// without a zone) and names are returned by net.SplitHostPort as they are,
+// and the bind reports a bad host. It returns the port. A split failure is
+// returned unwrapped (a *net.AddrError); a port failure is a plain error
+// whose text names the port and the allowed range.
+func ValidateListen(addr string, allowPortZero bool) (uint16, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	minPort := 1
+	if allowPortZero {
+		minPort = 0
+	}
+	bad := func() (uint16, error) {
+		return 0, fmt.Errorf("port %q is not a decimal number from %d to 65535 (digits only, no sign or leading zeros)", truncateEcho(port, 64), minPort)
+	}
+	if len(port) < 1 || len(port) > 5 {
+		return bad()
+	}
+	// States the canonical-form rule explicitly (ParseUint would also reject
+	// these); the length guard above must stay, since port[0] below panics on "".
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return bad()
+		}
+	}
+	if port[0] == '0' && port != "0" {
+		return bad()
+	}
+	v, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || (v == 0 && !allowPortZero) {
+		return bad()
+	}
+	return uint16(v), nil
+}
+
 func (c Config) validate() error {
-	// listen: required, must parse as host:port with port in 1–65535.
+	// listen: required; see ValidateListen for the host:port and port rules.
 	if c.Listen == "" {
 		return &ValidationError{
 			Field:   "listen",
 			Message: "is required — set to host:port, e.g. \"127.0.0.1:5354\" (see ward.example.yaml)",
 		}
 	}
-	host, portStr, err := net.SplitHostPort(c.Listen)
-	if err != nil {
-		return &ValidationError{
-			Field:   "listen",
-			Message: fmt.Sprintf("must be host:port, got %q: %v — example: \"127.0.0.1:5354\"", c.Listen, err),
+	if _, err := ValidateListen(c.Listen, false); err != nil {
+		if errors.As(err, new(*net.AddrError)) {
+			return &ValidationError{
+				Field:   "listen",
+				Message: fmt.Sprintf("must be host:port, got %q: %v — example: \"127.0.0.1:5354\"", c.Listen, err),
+			}
 		}
-	}
-	_ = host
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
 		return &ValidationError{
 			Field:   "listen",
-			Message: fmt.Sprintf("port must be 1–65535, got %q — use a valid port number", portStr),
+			Message: fmt.Sprintf("%v — remediation: write the port as plain digits from 1 to 65535, e.g. \"127.0.0.1:5354\"; a kernel-picked port (0) is accepted only by ward serve --listen-addr", err),
 		}
 	}
 

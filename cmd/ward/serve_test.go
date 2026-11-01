@@ -946,6 +946,9 @@ timeouts:
   shutdown: "2s"
 `
 
+// kernelPortRemediation is the exact remediation of the port-0 Warn.
+const kernelPortRemediation = "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml"
+
 func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	w := startWard(t, deadUpstreamCfg)
 	_, port, err := net.SplitHostPort(w.dnsAddr)
@@ -954,6 +957,26 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	}
 	if w.dnsAddr == placeholderListen {
 		t.Fatalf("dns: listening addr %q is the ward.yaml placeholder; --listen-addr was ignored", w.dnsAddr)
+	}
+	// The Warn is logged before the bind, so startWard has already seen it.
+	warn := w.scan("ward serve: --listen-addr port 0; the kernel picks the DNS port")
+	if warn == nil {
+		t.Fatalf("no port-0 Warn in log:\n%s", w.out.String())
+	}
+	out := w.out.String()
+	warnAt := strings.Index(out, `"msg":"ward serve: --listen-addr port 0`)
+	listeningAt := strings.Index(out, `"msg":"dns: listening"`)
+	if warnAt < 0 || listeningAt < 0 || warnAt >= listeningAt {
+		t.Errorf("port-0 Warn must precede dns: listening; warn at %d, listening at %d in:\n%s", warnAt, listeningAt, out)
+	}
+	if warn["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", warn["level"])
+	}
+	if warn["listen_addr"] != "127.0.0.1:0" {
+		t.Errorf("listen_addr = %v, want 127.0.0.1:0", warn["listen_addr"])
+	}
+	if warn["remediation"] != kernelPortRemediation {
+		t.Errorf("remediation = %v, want %q", warn["remediation"], kernelPortRemediation)
 	}
 	c := &dns.Client{Timeout: 2 * time.Second}
 	m := new(dns.Msg)
@@ -1034,6 +1057,41 @@ func TestServe_ListenAddrOverride_Invalid_ExitsCode2(t *testing.T) {
 				t.Errorf("want a config error whose remediation names host:port:\n%v", err)
 			}
 		})
+	}
+}
+
+func TestServe_DashListenAddrMalformed_ExitsCode2(t *testing.T) {
+	bin, err := buildWardBin()
+	if err != nil {
+		t.Fatalf("could not build ward binary: %v", err)
+	}
+	p := filepath.Join(t.TempDir(), "ward.yaml")
+	if err := os.WriteFile(p, []byte("listen: \""+placeholderListen+"\"\n"+deadUpstreamCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wardWaitBound)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "serve", "--config", p, "--listen-addr", "127.0.0.1:0", "--dash-listen-addr", "nonsense")
+	cmd.WaitDelay = 2 * time.Second
+	out, runErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("ward did not exit within %v:\n%s", wardWaitBound, out)
+	}
+	var ee *exec.ExitError
+	if !errors.As(runErr, &ee) || ee.ExitCode() != 2 {
+		t.Fatalf("exit = %v, want code 2\n%s", runErr, out)
+	}
+	for _, want := range []string{"config error", `invalid --dash-listen-addr "nonsense"`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	// Match the log msg field: the port-0 Warn's remediation text itself
+	// mentions "dns: listening".
+	for _, bad := range []string{`"msg":"dashboard: ready"`, `"msg":"dns: listening"`} {
+		if strings.Contains(string(out), bad) {
+			t.Errorf("output must not contain %q:\n%s", bad, out)
+		}
 	}
 }
 

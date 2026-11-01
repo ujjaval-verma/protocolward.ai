@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"log/slog"
@@ -103,6 +104,37 @@ func TestLoadServeConfig(t *testing.T) {
 		}
 		if !strings.Contains(se.Remediation, "host:port") {
 			t.Errorf("Remediation = %q, want host:port", se.Remediation)
+		}
+	})
+	for _, tc := range []struct{ addr, port string }{
+		{"127.0.0.1:053", "053"},
+		{"127.0.0.1:00", "00"},
+		{"[::1]:0080", "0080"},
+		{"127.0.0.1:+53", "+53"},
+		{"127.0.0.1:99999", "99999"},
+	} {
+		t.Run("listen_flag_noncanonical/"+tc.addr, func(t *testing.T) {
+			p := writeStartupCfg(t, t.TempDir(), startupMinimalCfg)
+			_, err := loadServeConfig(serveOpts{configPath: p, listenAddr: tc.addr})
+			se := asServeError(t, err, 2)
+			wantMsg := `invalid --listen-addr "` + tc.addr + `": port "` + tc.port + `" is not a decimal number from 0 to 65535 (digits only, no sign or leading zeros)`
+			if se.Message != wantMsg {
+				t.Errorf("Message = %q, want %q", se.Message, wantMsg)
+			}
+			wantRem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
+			if se.Remediation != wantRem {
+				t.Errorf("Remediation = %q, want %q", se.Remediation, wantRem)
+			}
+		})
+	}
+	t.Run("yaml_plus53_rejected_even_with_flag", func(t *testing.T) {
+		body := strings.Replace(startupMinimalCfg, `listen: "127.0.0.1:5354"`, `listen: "127.0.0.1:+53"`, 1)
+		p := writeStartupCfg(t, t.TempDir(), body)
+		_, err := loadServeConfig(serveOpts{configPath: p, listenAddr: "127.0.0.1:0"})
+		se := asServeError(t, err, 2)
+		want := `config validation error: field "listen": port "+53" is not a decimal number from 1 to 65535 (digits only, no sign or leading zeros) — remediation: write the port as plain digits from 1 to 65535, e.g. "127.0.0.1:5354"; a kernel-picked port (0) is accepted only by ward serve --listen-addr`
+		if se.Message != want {
+			t.Errorf("Message = %q, want %q", se.Message, want)
 		}
 	})
 	t.Run("listen flag overrides file", func(t *testing.T) {
@@ -481,13 +513,27 @@ func TestServeDashAddr(t *testing.T) {
 			t.Errorf("Remediation = %q", se.Remediation)
 		}
 	})
-	t.Run("malformed", func(t *testing.T) {
-		_, err := serveDashAddr(serveOpts{dashListenAddr: "nonsense"})
-		se := asServeError(t, err, 1)
-		if !strings.HasPrefix(se.Message, "invalid --dash-listen-addr") {
-			t.Errorf("Message = %q", se.Message)
-		}
-	})
+	const portText = " is not a decimal number from 0 to 65535 (digits only, no sign or leading zeros)"
+	const dashRem = "pass --dash-listen-addr as host:port on a loopback host (127.0.0.1, ::1, or localhost) with a port from 0 to 65535, for example 127.0.0.1:18987 (port 0 lets the kernel pick)"
+	for _, tc := range []struct{ addr, inner string }{
+		{"nonsense", "address nonsense: missing port in address"},
+		{"127.0.0.1:", `port ""` + portText},
+		{"127.0.0.1:+80", `port "+80"` + portText},
+		{"127.0.0.1:99999", `port "99999"` + portText},
+		{"localhost:http", `port "http"` + portText},
+		{"[::1]:018987", `port "018987"` + portText},
+	} {
+		t.Run("malformed/"+tc.addr, func(t *testing.T) {
+			_, err := serveDashAddr(serveOpts{dashListenAddr: tc.addr})
+			se := asServeError(t, err, 2)
+			if want := `invalid --dash-listen-addr "` + tc.addr + `": ` + tc.inner; se.Message != want {
+				t.Errorf("Message = %q, want %q", se.Message, want)
+			}
+			if se.Remediation != dashRem {
+				t.Errorf("Remediation = %q, want %q", se.Remediation, dashRem)
+			}
+		})
+	}
 }
 
 func TestNewServeDataplane(t *testing.T) {
@@ -583,4 +629,44 @@ func TestResolveConfigPath_ReturnsServeError(t *testing.T) {
 	if got != want {
 		t.Errorf("path = %q, want %q", got, want)
 	}
+}
+
+func TestWarnKernelPickedPort(t *testing.T) {
+	const wantMsg = "ward serve: --listen-addr port 0; the kernel picks the DNS port"
+	records := func(t *testing.T, buf *safeBuffer) []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("bad log line %q: %v", line, err)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
+		t.Run(addr, func(t *testing.T) {
+			buf := captureSlog(t)
+			warnKernelPickedPort(addr)
+			recs := records(t, buf)
+			if len(recs) != 1 {
+				t.Fatalf("got %d records, want 1: %v", len(recs), recs)
+			}
+			m := recs[0]
+			if m["level"] != "WARN" || m["msg"] != wantMsg || m["listen_addr"] != addr || m["remediation"] != kernelPortRemediation {
+				t.Errorf("record = %v", m)
+			}
+		})
+	}
+	t.Run("fixed port logs nothing", func(t *testing.T) {
+		buf := captureSlog(t)
+		warnKernelPickedPort("127.0.0.1:5354")
+		if recs := records(t, buf); len(recs) != 0 {
+			t.Errorf("got records %v, want none", recs)
+		}
+	})
 }

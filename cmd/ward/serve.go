@@ -44,12 +44,12 @@ func dashListen(addr string) (net.Listener, error) {
 // (127.0.0.1, ::1, or "localhost"). The dashboard surfaces DNS-decision data
 // (qnames in /healthz and the HTML decisions table); invariant 4 forbids
 // flow data from leaving the device. The HTTP route exception is justified
-// only by the loopback constraint; see internal/web package doc.
+// only by the loopback constraint; see internal/web package doc. The caller
+// (serveDashAddr) has already run config.ValidateListen, so a split failure
+// cannot occur here; if it did, host would be "" and fall through to the
+// non-loopback refusal.
 func requireLoopbackDashAddr(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("invalid --dash-listen-addr %q: %w", addr, err)
-	}
+	host, _, _ := net.SplitHostPort(addr)
 	switch strings.ToLower(host) {
 	case "127.0.0.1", "::1", "localhost":
 		return nil
@@ -392,11 +392,9 @@ func loadServeConfig(opts serveOpts) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, mapConfigLoadError(cfgPath, err)
 	}
-	// The flag is validated here, not in internal/config, because it allows
-	// port 0 while ward.yaml's listen: must keep rejecting it. It runs before
-	// anything binds.
+	// The flag uses config.ValidateListen with port 0 allowed.
 	if opts.listenAddr != "" {
-		if err := validateListenFlag(opts.listenAddr); err != nil {
+		if _, err := config.ValidateListen(opts.listenAddr, true); err != nil {
 			msg := fmt.Sprintf("invalid --listen-addr %q: %v", opts.listenAddr, err)
 			rem := "pass --listen-addr as host:port with a port from 0 to 65535, for example 127.0.0.1:5354 (port 0 lets the kernel pick)"
 			printStartupError("config error", msg, rem)
@@ -544,11 +542,18 @@ func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
 // serveDashAddr resolves the dashboard bind address (default when unset) and
 // enforces the loopback-only rule of invariant 4. Callers must run it before
 // binding anything. A rejected address prints the startup error and returns a
-// *serveError (Code 1).
+// *serveError: Code 2 for a malformed address (config.ValidateListen), Code 1
+// for a non-loopback one.
 func serveDashAddr(opts serveOpts) (string, error) {
 	dashAddr := opts.dashListenAddr
 	if dashAddr == "" {
 		dashAddr = dashboardListenAddr
+	}
+	if _, err := config.ValidateListen(dashAddr, true); err != nil {
+		msg := fmt.Sprintf("invalid --dash-listen-addr %q: %v", dashAddr, err)
+		rem := "pass --dash-listen-addr as host:port on a loopback host (127.0.0.1, ::1, or localhost) with a port from 0 to 65535, for example 127.0.0.1:18987 (port 0 lets the kernel pick)"
+		printStartupError("config error", msg, rem)
+		return "", &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
 	if err := requireLoopbackDashAddr(dashAddr); err != nil {
 		msg := err.Error()
@@ -597,6 +602,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
 	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
+	if opts.listenAddr != "" {
+		warnKernelPickedPort(opts.listenAddr)
+	}
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
@@ -775,17 +783,16 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 	}
 }
 
-// validateListenFlag checks a --listen-addr value: host:port with a decimal
-// port in 0-65535 (ParseUint rejects signs and service names).
-func validateListenFlag(addr string) error {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return err
+// warnKernelPickedPort logs a Warn when listenAddr, a --listen-addr value
+// that loadServeConfig has already validated, asks for port 0.
+func warnKernelPickedPort(listenAddr string) {
+	port, err := config.ValidateListen(listenAddr, true)
+	if err != nil || port != 0 {
+		return
 	}
-	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return fmt.Errorf("port %q is not a number from 0 to 65535", port)
-	}
-	return nil
+	slog.Warn("ward serve: --listen-addr port 0; the kernel picks the DNS port",
+		"listen_addr", listenAddr,
+		"remediation", "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
 }
 
 // bindErrRemediation returns a remediation hint appropriate for the given
