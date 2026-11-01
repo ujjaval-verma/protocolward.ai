@@ -15,7 +15,7 @@
 - **Amended:** 2026-10-23 — pre-push budget raised to 30 s cold; all pre-push gates run concurrently in one make target (§2)
 - **Amended:** 2026-10-26 — nightly runs the fuzz targets for 60 s each via make fuzz (§1; issue #23)
 - **Amended:** 2026-10-26 — `nightly.yml` renamed `main-verify.yml`; "nightly" in this ADR now means that workflow (§1)
-- **Amended:** 2026-11-01 — Dependabot version-update PRs on (weekly, grouped); pre-commit revs frozen to commit SHAs (§1, §2; issue #27)
+- **Amended:** 2026-11-01 — Dependabot version-update PRs on (weekly, grouped); pre-commit revs frozen to commit SHAs (§1, §4; issue #27)
 
 ## Context
 
