@@ -4,8 +4,10 @@ package config_test
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -890,4 +892,144 @@ upstreams:
   - address: "1.1.1.1:853"
 `)
 	assertValidationField(t, err, "upstreams[1].server_name")
+}
+
+const listenPortRemediation = " — remediation: write the port as plain digits from 1 to 65535, e.g. \"127.0.0.1:5354\"; a kernel-picked port (0) is accepted only by ward serve --listen-addr"
+
+func listenPortMsg(port string) string {
+	return `config validation error: field "listen": port "` + port + `" is not a decimal number from 1 to 65535 (digits only, no sign or leading zeros)` + listenPortRemediation
+}
+
+func TestLoad_Listen_PortForms(t *testing.T) {
+	const upstreams = "\nupstreams:\n  - address: \"9.9.9.9:853\"\n    server_name: \"dns.quad9.net\"\n"
+	load := func(t *testing.T, addr string) error {
+		t.Helper()
+		_, err := config.Load(writeYAML(t, "listen: \""+addr+"\""+upstreams))
+		return err
+	}
+	for _, addr := range []string{"127.0.0.1:5354", "127.0.0.1:1", "127.0.0.1:65535", ":5354", "[::1]:5354", "localhost:5354"} {
+		t.Run("accept/"+addr, func(t *testing.T) {
+			if err := load(t, addr); err != nil {
+				t.Fatalf("Load(%q): unexpected error: %v", addr, err)
+			}
+		})
+	}
+	rejects := []struct{ addr, port string }{
+		{"127.0.0.1:+53", "+53"},
+		{"127.0.0.1:053", "053"},
+		{"127.0.0.1:0", "0"},
+		{"127.0.0.1:00", "00"},
+		{"127.0.0.1:-0", "-0"},
+		{"127.0.0.1:65536", "65536"},
+		{"127.0.0.1:99999", "99999"},
+		{"127.0.0.1:", ""},
+		{"127.0.0.1:dns", "dns"},
+		{"127.0.0.1:５３", "５３"},
+	}
+	for _, tc := range rejects {
+		t.Run("reject/"+tc.addr, func(t *testing.T) {
+			err := load(t, tc.addr)
+			var ve *config.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("Load(%q) err = %v, want *ValidationError", tc.addr, err)
+			}
+			if ve.Field != "listen" {
+				t.Errorf("Field = %q, want listen", ve.Field)
+			}
+			if got, want := err.Error(), listenPortMsg(tc.port); got != want {
+				t.Errorf("message:\n got %q\nwant %q", got, want)
+			}
+		})
+	}
+	for _, addr := range []string{"nonsense", "::1:53"} {
+		t.Run("split/"+addr, func(t *testing.T) {
+			err := load(t, addr)
+			var ve *config.ValidationError
+			if !errors.As(err, &ve) || ve.Field != "listen" {
+				t.Fatalf("Load(%q) err = %v, want listen *ValidationError", addr, err)
+			}
+			if !strings.Contains(ve.Message, "must be host:port, got "+`"`+addr+`"`) || !strings.HasSuffix(ve.Message, ` — example: "127.0.0.1:5354"`) {
+				t.Errorf("split message changed: %q", ve.Message)
+			}
+		})
+	}
+}
+
+func TestValidateListen(t *testing.T) {
+	portErr := func(port string, min int) string {
+		return `port "` + port + `" is not a decimal number from ` + strconv.Itoa(min) + ` to 65535 (digits only, no sign or leading zeros)`
+	}
+	accepts := []struct {
+		addr     string
+		zeroOK   bool // only accepted when allowPortZero
+		wantPort uint16
+	}{
+		{"127.0.0.1:5354", false, 5354},
+		{":5354", false, 5354},
+		{"[::1]:5354", false, 5354},
+		{"localhost:5354", false, 5354},
+		{"[fe80::1%lo0]:5354", false, 5354},
+		{"127.0.0.1:1", false, 1},
+		{"127.0.0.1:65535", false, 65535},
+		{"127.0.0.1:0", true, 0},
+		{"[::1]:0", true, 0},
+	}
+	for _, tc := range accepts {
+		for _, allow := range []bool{false, true} {
+			t.Run(tc.addr+"/allow="+strconv.FormatBool(allow), func(t *testing.T) {
+				p, err := config.ValidateListen(tc.addr, allow)
+				if tc.zeroOK && !allow {
+					if err == nil || err.Error() != portErr("0", 1) {
+						t.Fatalf("err = %v, want %q", err, portErr("0", 1))
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if p != tc.wantPort {
+					t.Errorf("port = %d, want %d", p, tc.wantPort)
+				}
+				_, split, _ := net.SplitHostPort(tc.addr)
+				if got := strconv.FormatUint(uint64(p), 10); got != split {
+					t.Errorf("canonical spelling %q != split port %q", got, split)
+				}
+			})
+		}
+	}
+	rejects := []string{"00", "053", "0080", "+53", "-1", "-0", "65536", "99999", "123456", "", "dns", " 53", "５３"}
+	for _, port := range rejects {
+		for _, allow := range []bool{false, true} {
+			min := 1
+			if allow {
+				min = 0
+			}
+			t.Run("reject/"+port+"/allow="+strconv.FormatBool(allow), func(t *testing.T) {
+				_, err := config.ValidateListen("127.0.0.1:"+port, allow)
+				if err == nil || err.Error() != portErr(port, min) {
+					t.Fatalf("err = %v, want %q", err, portErr(port, min))
+				}
+				if errors.As(err, new(*net.AddrError)) {
+					t.Errorf("port failure must not be a *net.AddrError")
+				}
+			})
+		}
+	}
+	for _, addr := range []string{"nonsense", "::1:53", ""} {
+		for _, allow := range []bool{false, true} {
+			t.Run("split/"+addr+"/allow="+strconv.FormatBool(allow), func(t *testing.T) {
+				_, err := config.ValidateListen(addr, allow)
+				if !errors.As(err, new(*net.AddrError)) {
+					t.Fatalf("err = %v, want *net.AddrError", err)
+				}
+			})
+		}
+	}
+	t.Run("long port echo is truncated", func(t *testing.T) {
+		long := strings.Repeat("9", 100)
+		_, err := config.ValidateListen("127.0.0.1:"+long, true)
+		if err == nil || err.Error() != portErr(long[:64]+"…", 0) {
+			t.Fatalf("err = %v, want %q", err, portErr(long[:64]+"…", 0))
+		}
+	})
 }
