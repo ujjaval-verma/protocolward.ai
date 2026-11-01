@@ -1,0 +1,53 @@
+# Dependabot version updates (issue #27). ADR-0002 §1 amendment of 2026-11-01.
+# There is no PR CI, so check a Dependabot branch locally before merging it:
+#   gomod:          make ci and make pre-push (tidy -diff, mod verify, govulncheck). If go.mod's go or
+#                   toolchain line changed, set mise.toml to the Go version go.mod now selects (its
+#                   toolchain line, or the go line if that is higher) on the branch first.
+#   pre-commit:     make ci and pre-commit run --all-files (main-verify never runs pre-commit).
+#   github-actions: make ci. Actions used only in release.yml run first at the next tag.
+# main-verify catches gomod and main-verify.yml action bumps after the merge.
+# Security-update PRs stay off (ADR-0002 §1, issue #41).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      gomod:
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      pre-commit:
+        patterns:
+          - "*"
