@@ -4,9 +4,11 @@
 
 default_stages: [pre-commit]
 
+# Hook revs are frozen to commit SHAs (the tag stays in the "frozen" comment). Dependabot
+# (.github/dependabot.yml) proposes updates.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: 2c9f875913ee60ca25ce70243dc24d5b6415598c  # frozen: v4.6.0
     hooks:
       # testdata/update/ holds byte-stable cryptographic fixtures
       # (cosign-signed TUF metadata + deliberately-malformed siblings).
@@ -27,12 +29,12 @@ repos:
         exclude: ^testdata/update/
 
   - repo: https://github.com/dnephin/pre-commit-golang
-    rev: v0.5.1
+    rev: fb24a639f7c938759fe56eeebbb7713b69d60494  # frozen: v0.5.1
     hooks:
       - id: go-fmt
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.3.0
+    rev: 193cd7d27cd571f79358af09a8fb8997e54f8fff  # frozen: v2.3.0
     hooks:
       - id: codespell
         # doubleclick is a real Google ad domain on our tracker blocklist;
