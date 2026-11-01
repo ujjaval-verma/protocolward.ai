@@ -513,13 +513,27 @@ func TestServeDashAddr(t *testing.T) {
 			t.Errorf("Remediation = %q", se.Remediation)
 		}
 	})
-	t.Run("malformed", func(t *testing.T) {
-		_, err := serveDashAddr(serveOpts{dashListenAddr: "nonsense"})
-		se := asServeError(t, err, 1)
-		if !strings.HasPrefix(se.Message, "invalid --dash-listen-addr") {
-			t.Errorf("Message = %q", se.Message)
-		}
-	})
+	const portText = " is not a decimal number from 0 to 65535 (digits only, no sign or leading zeros)"
+	const dashRem = "pass --dash-listen-addr as host:port on a loopback host (127.0.0.1, ::1, or localhost) with a port from 0 to 65535, for example 127.0.0.1:18987 (port 0 lets the kernel pick)"
+	for _, tc := range []struct{ addr, inner string }{
+		{"nonsense", "address nonsense: missing port in address"},
+		{"127.0.0.1:", `port ""` + portText},
+		{"127.0.0.1:+80", `port "+80"` + portText},
+		{"127.0.0.1:99999", `port "99999"` + portText},
+		{"localhost:http", `port "http"` + portText},
+		{"[::1]:018987", `port "018987"` + portText},
+	} {
+		t.Run("malformed/"+tc.addr, func(t *testing.T) {
+			_, err := serveDashAddr(serveOpts{dashListenAddr: tc.addr})
+			se := asServeError(t, err, 2)
+			if want := `invalid --dash-listen-addr "` + tc.addr + `": ` + tc.inner; se.Message != want {
+				t.Errorf("Message = %q, want %q", se.Message, want)
+			}
+			if se.Remediation != dashRem {
+				t.Errorf("Remediation = %q, want %q", se.Remediation, dashRem)
+			}
+		})
+	}
 }
 
 func TestNewServeDataplane(t *testing.T) {

@@ -1054,6 +1054,41 @@ func TestServe_ListenAddrOverride_Invalid_ExitsCode2(t *testing.T) {
 	}
 }
 
+func TestServe_DashListenAddrMalformed_ExitsCode2(t *testing.T) {
+	bin, err := buildWardBin()
+	if err != nil {
+		t.Fatalf("could not build ward binary: %v", err)
+	}
+	p := filepath.Join(t.TempDir(), "ward.yaml")
+	if err := os.WriteFile(p, []byte("listen: \""+placeholderListen+"\"\n"+deadUpstreamCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wardWaitBound)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "serve", "--config", p, "--listen-addr", "127.0.0.1:0", "--dash-listen-addr", "nonsense")
+	cmd.WaitDelay = 2 * time.Second
+	out, runErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("ward did not exit within %v:\n%s", wardWaitBound, out)
+	}
+	var ee *exec.ExitError
+	if !errors.As(runErr, &ee) || ee.ExitCode() != 2 {
+		t.Fatalf("exit = %v, want code 2\n%s", runErr, out)
+	}
+	for _, want := range []string{"config error", `invalid --dash-listen-addr "nonsense"`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	// Match the log msg field: the port-0 Warn's remediation text itself
+	// mentions "dns: listening".
+	for _, bad := range []string{`"msg":"dashboard: ready"`, `"msg":"dns: listening"`} {
+		if strings.Contains(string(out), bad) {
+			t.Errorf("output must not contain %q:\n%s", bad, out)
+		}
+	}
+}
+
 func TestBindErrRemediation_FromFlag_NamesFlag(t *testing.T) {
 	const (
 		addr     = "127.0.0.1:53"

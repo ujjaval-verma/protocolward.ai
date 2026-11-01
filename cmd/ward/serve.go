@@ -44,11 +44,13 @@ func dashListen(addr string) (net.Listener, error) {
 // (127.0.0.1, ::1, or "localhost"). The dashboard surfaces DNS-decision data
 // (qnames in /healthz and the HTML decisions table); invariant 4 forbids
 // flow data from leaving the device. The HTTP route exception is justified
-// only by the loopback constraint; see internal/web package doc.
+// only by the loopback constraint; see internal/web package doc. The caller
+// (serveDashAddr) has already run config.ValidateListen, so a split failure
+// here is treated as not loopback.
 func requireLoopbackDashAddr(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("invalid --dash-listen-addr %q: %w", addr, err)
+		return fmt.Errorf("--dash-listen-addr %q is non-loopback; invariant 4 requires loopback bind (127.0.0.1, ::1, or localhost)", addr)
 	}
 	switch strings.ToLower(host) {
 	case "127.0.0.1", "::1", "localhost":
@@ -542,11 +544,18 @@ func loadServePolicy(cfg config.Config) (*policy.Engine, *decoy.Set, error) {
 // serveDashAddr resolves the dashboard bind address (default when unset) and
 // enforces the loopback-only rule of invariant 4. Callers must run it before
 // binding anything. A rejected address prints the startup error and returns a
-// *serveError (Code 1).
+// *serveError: Code 2 for a malformed address (config.ValidateListen), Code 1
+// for a non-loopback one.
 func serveDashAddr(opts serveOpts) (string, error) {
 	dashAddr := opts.dashListenAddr
 	if dashAddr == "" {
 		dashAddr = dashboardListenAddr
+	}
+	if _, err := config.ValidateListen(dashAddr, true); err != nil {
+		msg := fmt.Sprintf("invalid --dash-listen-addr %q: %v", dashAddr, err)
+		rem := "pass --dash-listen-addr as host:port on a loopback host (127.0.0.1, ::1, or localhost) with a port from 0 to 65535, for example 127.0.0.1:18987 (port 0 lets the kernel pick)"
+		printStartupError("config error", msg, rem)
+		return "", &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
 	if err := requireLoopbackDashAddr(dashAddr); err != nil {
 		msg := err.Error()
