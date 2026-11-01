@@ -15,6 +15,7 @@
 - **Amended:** 2026-10-23 — pre-push budget raised to 30 s cold; all pre-push gates run concurrently in one make target (§2)
 - **Amended:** 2026-10-26 — nightly runs the fuzz targets for 60 s each via make fuzz (§1; issue #23)
 - **Amended:** 2026-10-26 — `nightly.yml` renamed `main-verify.yml`; "nightly" in this ADR now means that workflow (§1)
+- **Amended:** 2026-11-01 — Dependabot version-update PRs on (weekly, grouped); pre-commit revs frozen to commit SHAs (§1, §2; issue #27)
 
 ## Context
 
@@ -53,6 +54,15 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 
 **Amendment (2026-10-26, rename).** The `nightly.yml` workflow is renamed `main-verify.yml` (workflow name `main verify`, concurrency group `main-verify-<ref>`, failure label `ci:main-verify-failure`). It verifies `main` after merge: it is dispatched with `force_full=true` after automated merges, and otherwise runs on the daily cron, which is a backstop (a vulnerability scan when `main` is unchanged). It is detection only and gates nothing. Behaviour, permissions and the cron expression are unchanged. "Nightly" and `nightly.yml` elsewhere in this ADR, and in the commit history, now mean the main-verify workflow.
 
+**Amendment (2026-11-01, issue #27).** Nothing proposed dependency or tool updates, and the pre-commit hooks were pinned by mutable tag. Dependabot version updates are now on through `.github/dependabot.yml`, for three ecosystems: `gomod`, `github-actions` and `pre-commit`. Each runs weekly (Monday 06:00 UTC), is grouped into one PR per ecosystem, and has at most 2 PRs open. Titles use the `chore(deps)` prefix. The pre-commit revs in `.pre-commit-config.yaml` are frozen to commit SHAs, with the tag kept in a `# frozen:` comment, so the hook code cannot change under a re-tag. No version was bumped by this change.
+
+- There is no PR CI, so the maintainer checks each Dependabot branch locally before merging. For `gomod`: `make ci` and `make pre-push`. If the `go` or `toolchain` line in `go.mod` changed, first set `mise.toml` to the Go version `go.mod` now selects. Pushing a commit to that branch stops Dependabot rebasing the PR. For `pre-commit`: `make ci` and `pre-commit run --all-files`, because main-verify never runs pre-commit. For `github-actions`: `make ci`. An action used only in `release.yml` is first exercised at the next tag.
+- Dependabot's commits carry no DCO sign-off, so the maintainer adds it when squash-merging (`CONTRIBUTING.md`).
+- main-verify is the post-merge backstop for `gomod` bumps and for action bumps in `main-verify.yml` only.
+- Dependabot's update jobs show in the Actions tab, but they are run by GitHub and are not workflows in this repository. "Nothing runs on pushes or pull requests" still holds for the repository's workflows, and the Actions allowlist needs no change.
+- Security-update PRs stay off (issue #41 is unchanged).
+- Dependabot does not watch the Makefile `*_VERSION` pins, `mise.toml`, the pnpm `packageManager` pin or `.nvmrc`. Those stay manual.
+
 ### 2. Hook tiering with strict latency budgets
 
 | Stage | Budget | Contents |
@@ -85,7 +95,7 @@ The pre-push hook is the only enforcement point until public-repo CI exists. Byp
 
 ### 4. Vulnerability scanning
 
-**Go:** `govulncheck` (golang.org/x/vuln) — call-graph aware, fewer false positives than SBOM scanners. Pinned in `.tools/` via `GOVULNCHECK_VERSION` in the Makefile. `gosec` continues to run as a golangci-lint linter for static SAST. Dependabot alerts (§1 amendment of 2026-10-23) complement it: they flag any vulnerable dependency version in the Go modules listed in `go.mod`, whether or not the code reaches it. JS manifests are covered once `web/` or `site/` declare dependencies. Actions pinned by full commit SHA (§1, issue #12) get no Dependabot alerts, because GitHub only alerts for actions referenced by a semantic version. `govulncheck` stays the call-graph gate.
+**Go:** `govulncheck` (golang.org/x/vuln) — call-graph aware, fewer false positives than SBOM scanners. Pinned in `.tools/` via `GOVULNCHECK_VERSION` in the Makefile. `gosec` continues to run as a golangci-lint linter for static SAST. Dependabot alerts (§1 amendment of 2026-10-23) complement it: they flag any vulnerable dependency version in the Go modules listed in `go.mod`, whether or not the code reaches it. JS manifests are covered once `web/` or `site/` declare dependencies. Actions pinned by full commit SHA (§1, issue #12) get no Dependabot alerts, because GitHub only alerts for actions referenced by a semantic version. Version updates (§1 amendment of 2026-11-01) do bump SHA-pinned actions, though alerts still do not cover them. `govulncheck` stays the call-graph gate.
 
 **JS/TS (once `web/` and `site/` package.json files exist):** `pnpm audit --audit-level=moderate` + **`pnpm audit signatures`** (verifies npm provenance attestations — the supply-chain defense most repos skip). Both run on pre-push via the `make audit` recipe.
 
@@ -119,7 +129,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - A nightly workflow re-verifies `main` after merge. It costs a few runner-minutes on days `main` changed and a minute or two otherwise (free for a public repository). A failure surfaces as one open `ci:nightly-failure` issue, not as a red check on a pull request, so a break can sit on `main` for up to a day.
 - If the repository sees no activity for 60 days, GitHub disables the nightly schedule. It is re-enabled by hand (`gh workflow enable nightly.yml`); the release checklist catches it.
 - Adding a third-party action now needs a repository setting change as well as a workflow change, and an unpinned `uses:` fails at job setup rather than in review. Both are deliberate.
-- Dependabot alerts surface in the Security tab and open no PRs, so there is nothing to gate. Vulnerability reports arrive privately as draft security advisories rather than public issues.
+- Dependabot alerts surface in the Security tab and open no PRs. Version updates open up to three grouped PRs a week, which the maintainer checks and merges by hand. Vulnerability reports arrive privately as draft security advisories rather than public issues.
 - Re-introducing PR CI later means adding a `pull_request` trigger that runs `make ci` with the policies captured here as required checks; `nightly.yml` already runs the same targets on `main`.
 
 ## Revisit conditions
@@ -137,6 +147,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - `Makefile` — `make audit` ladder; `.tools/govulncheck` install target
 - `.github/workflows/main-verify.yml` — post-merge verification of `main` (§1 amendments of 2026-10-20 and 2026-10-26)
 - GitHub repository settings (Actions permissions, secret scanning; Dependabot alerts, private vulnerability reporting): recorded in the §1 amendments of 2026-10-21 and 2026-10-23 (issues #12, #41); not in version control
+- `.github/dependabot.yml` — version-update PRs (§1 amendment of 2026-11-01)
 - `.pre-commit-config.yaml` — hook tiering
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
