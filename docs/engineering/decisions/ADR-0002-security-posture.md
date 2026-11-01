@@ -149,6 +149,6 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 - `.github/workflows/main-verify.yml` — post-merge verification of `main` (§1 amendments of 2026-10-20 and 2026-10-26)
 - GitHub repository settings (Actions permissions, secret scanning; Dependabot alerts, private vulnerability reporting): recorded in the §1 amendments of 2026-10-21 and 2026-10-23 (issues #12, #41); not in version control
 - `.github/dependabot.yml` — version-update PRs (§1 amendment of 2026-11-01)
-- `.pre-commit-config.yaml` — hook tiering
+- `.pre-commit-config.yaml` — hook tiering; external revs frozen to commit SHAs (§1 amendment of 2026-11-01)
 - `package.json`, `.npmrc`, `.nvmrc`, `pnpm-workspace.yaml` — pnpm + Node enforcement
 - `docs/product/pitch.md` — supply-chain attack thesis this posture defends against
