@@ -46,12 +46,10 @@ func dashListen(addr string) (net.Listener, error) {
 // flow data from leaving the device. The HTTP route exception is justified
 // only by the loopback constraint; see internal/web package doc. The caller
 // (serveDashAddr) has already run config.ValidateListen, so a split failure
-// here is treated as not loopback.
+// cannot occur here; if it did, host would be "" and fall through to the
+// non-loopback refusal.
 func requireLoopbackDashAddr(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("--dash-listen-addr %q is non-loopback; invariant 4 requires loopback bind (127.0.0.1, ::1, or localhost)", addr)
-	}
+	host, _, _ := net.SplitHostPort(addr)
 	switch strings.ToLower(host) {
 	case "127.0.0.1", "::1", "localhost":
 		return nil
