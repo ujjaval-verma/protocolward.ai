@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -572,17 +571,6 @@ func TestBuildUpstreamTLSConfig_WithCABundle_PinsRootCAs(t *testing.T) {
 	if got.MinVersion != tls.VersionTLS12 {
 		t.Errorf("MinVersion: got %d want %d (TLS 1.2)", got.MinVersion, tls.VersionTLS12)
 	}
-}
-
-func freeTCPAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freeTCPAddr: %v", err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
 }
 
 // S2 end-to-end through the real binary: builtin config → in-process
@@ -1270,36 +1258,17 @@ func TestServe_DashboardReady_LogsBoundAddr(t *testing.T) {
 	}
 }
 
-// serveMinimalCfg writes a valid ward.yaml (dead-ish upstream, kernel-picked
-// DNS port, short shutdown) plus extra YAML and returns its path.
+// serveMinimalCfg writes a valid ward.yaml (dead-ish upstream, short
+// shutdown) plus extra YAML and returns its path. Its listen: is the
+// placeholder, which callers override with listenAddr; it is never bound.
 func serveMinimalCfg(t *testing.T, extra string) string {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
-	body := fmt.Sprintf("upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: %q\ntimeouts:\n  shutdown: \"50ms\"\n", freeUDPAddr(t)) + extra
+	body := "upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: \"" + placeholderListen + "\"\ntimeouts:\n  shutdown: \"50ms\"\n" + extra
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return cfgPath
-}
-
-// serveCfgListen reads the listen: address back out of a serveMinimalCfg file.
-func serveCfgListen(t *testing.T, cfgPath string) string {
-	t.Helper()
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(line, "listen: "); ok {
-			u, err := strconv.Unquote(v)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return u
-		}
-	}
-	t.Fatal("no listen: line in config")
-	return ""
 }
 
 // TestServe_DataplaneInitFails_DashboardNotListening: when dataplane
