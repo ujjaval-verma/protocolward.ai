@@ -651,20 +651,20 @@ func TestWarnKernelPickedPort(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
 		t.Run(addr, func(t *testing.T) {
 			buf := captureSlog(t)
-			warnKernelPickedPort(addr)
+			warnKernelPickedPort(addr, "127.0.0.1:53535")
 			recs := records(t, buf)
 			if len(recs) != 1 {
 				t.Fatalf("got %d records, want 1: %v", len(recs), recs)
 			}
 			m := recs[0]
-			if m["level"] != "WARN" || m["msg"] != wantMsg || m["listen_addr"] != addr || m["remediation"] != kernelPortRemediation {
+			if m["level"] != "WARN" || m["msg"] != wantMsg || m["listen_addr"] != addr || m["addr"] != "127.0.0.1:53535" || m["remediation"] != kernelPortRemediation {
 				t.Errorf("record = %v", m)
 			}
 		})
 	}
 	t.Run("fixed port logs nothing", func(t *testing.T) {
 		buf := captureSlog(t)
-		warnKernelPickedPort("127.0.0.1:5354")
+		warnKernelPickedPort("127.0.0.1:5354", "127.0.0.1:5354")
 		if recs := records(t, buf); len(recs) != 0 {
 			t.Errorf("got records %v, want none", recs)
 		}

@@ -376,26 +376,26 @@ upstreams:
 
 func TestServe_MissingBlocklistFile_StartupError(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 blocklists:
   - id: "missing"
     path: "/nonexistent/path/to/list.txt"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
+	w := launchWard(t, cfgBody, "127.0.0.1:0")
+	_, err := w.waitFor("dashboard: ready")
+	if err == nil || !strings.Contains(err.Error(), "ward exited before dashboard: ready") {
+		t.Fatalf("want ward to exit before dashboard: ready, got %v", err)
 	}
-	exitCode, stderr := runServeExpectingExit(t, cfg)
-	if exitCode == 0 {
-		t.Errorf("expected non-zero exit on missing blocklist, got 0; stderr:\n%s", stderr)
+	if w.exitCode != 1 {
+		t.Errorf("exit code = %d, want 1\n%v", w.exitCode, err)
 	}
-	if !strings.Contains(stderr, "blocklist") {
-		t.Errorf("expected stderr to mention blocklist, got:\n%s", stderr)
+	if !strings.Contains(err.Error(), "blocklist") {
+		t.Errorf("expected the log to mention blocklist:\n%v", err)
+	}
+	if m := w.scan("ward serve: --listen-addr port 0; the kernel picks the DNS port"); m != nil {
+		t.Errorf("port-0 Warn logged although startup failed before the bind: %v\n%v", m, err)
 	}
 }
 
@@ -946,8 +946,9 @@ timeouts:
   shutdown: "2s"
 `
 
-// kernelPortRemediation is the exact remediation of the port-0 Warn.
-const kernelPortRemediation = "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml"
+// kernelPortRemediation is the exact remediation of the port-0 Warn, which
+// carries the bound address in its own addr field.
+const kernelPortRemediation = "point clients at the addr field of this line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml"
 
 func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	w := startWard(t, deadUpstreamCfg)
@@ -958,16 +959,19 @@ func TestServe_ListenAddrOverride_KernelPort(t *testing.T) {
 	if w.dnsAddr == placeholderListen {
 		t.Fatalf("dns: listening addr %q is the ward.yaml placeholder; --listen-addr was ignored", w.dnsAddr)
 	}
-	// The Warn is logged before the bind, so startWard has already seen it.
-	warn := w.scan("ward serve: --listen-addr port 0; the kernel picks the DNS port")
-	if warn == nil {
-		t.Fatalf("no port-0 Warn in log:\n%s", w.out.String())
+	// The Warn is logged once both DNS listeners serve, after dns: listening.
+	warn, err := w.waitFor("ward serve: --listen-addr port 0; the kernel picks the DNS port")
+	if err != nil {
+		t.Fatalf("no port-0 Warn: %v", err)
 	}
 	out := w.out.String()
 	warnAt := strings.Index(out, `"msg":"ward serve: --listen-addr port 0`)
 	listeningAt := strings.Index(out, `"msg":"dns: listening"`)
-	if warnAt < 0 || listeningAt < 0 || warnAt >= listeningAt {
-		t.Errorf("port-0 Warn must precede dns: listening; warn at %d, listening at %d in:\n%s", warnAt, listeningAt, out)
+	if warnAt < 0 || listeningAt < 0 || warnAt <= listeningAt {
+		t.Errorf("port-0 Warn must follow dns: listening; warn at %d, listening at %d in:\n%s", warnAt, listeningAt, out)
+	}
+	if warn["addr"] != w.dnsAddr {
+		t.Errorf("addr = %v, want the bound address %s", warn["addr"], w.dnsAddr)
 	}
 	if warn["level"] != "WARN" {
 		t.Errorf("level = %v, want WARN", warn["level"])
@@ -1086,8 +1090,8 @@ func TestServe_DashListenAddrMalformed_ExitsCode2(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	// Match the log msg field: the port-0 Warn's remediation text itself
-	// mentions "dns: listening".
+	// Match the log msg field, not free text: a line's remediation may name
+	// another line.
 	for _, bad := range []string{`"msg":"dashboard: ready"`, `"msg":"dns: listening"`} {
 		if strings.Contains(string(out), bad) {
 			t.Errorf("output must not contain %q:\n%s", bad, out)

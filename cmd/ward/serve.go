@@ -602,9 +602,6 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
 	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
-	if opts.listenAddr != "" {
-		warnKernelPickedPort(opts.listenAddr)
-	}
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
@@ -677,7 +674,8 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 // listener exit it closes the dashboard and returns an untyped nil or a
 // *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
 // drain, runs shutdownServe and returns nil. fromFlag says the listen address
-// came from --listen-addr.
+// came from --listen-addr. Once both DNS listeners serve, it logs the port-0
+// Warn when the address came from --listen-addr with port 0.
 func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
@@ -691,23 +689,34 @@ func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServ
 	// tests inject cancellation directly. The second-signal hatch subscribes
 	// separately and only once ctx is done, so no first signal can bypass it.
 
-	select {
-	case <-ctx.Done():
-		// Context cancelled — arm the second-signal escape hatch NOW so that a
-		// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
-		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
-	case err := <-serveErr:
-		// The dataplane has already stopped both DNS listeners and drained
-		// in-flight queries. Close the dashboard too, so an early exit
-		// (e.g. the DNS port is taken) leaves no listener behind.
-		_ = dash.Close()
-		if err != nil {
-			msg := fmt.Sprintf("listener error: %v", err)
-			rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
-			printStartupError("startup error", msg, rem)
-			return &serveError{Code: 1, Message: msg, Remediation: rem}
+	// listening is set to nil once it fires: a nil channel never fires again.
+	listening := srv.Listening()
+wait:
+	for {
+		select {
+		case <-listening:
+			listening = nil
+			if fromFlag {
+				warnKernelPickedPort(cfg.Listen, srv.Addr())
+			}
+		case <-ctx.Done():
+			// Context cancelled — arm the second-signal escape hatch NOW so that a
+			// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
+			hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
+			break wait
+		case err := <-serveErr:
+			// The dataplane has already stopped both DNS listeners and drained
+			// in-flight queries. Close the dashboard too, so an early exit
+			// (e.g. the DNS port is taken) leaves no listener behind.
+			_ = dash.Close()
+			if err != nil {
+				msg := fmt.Sprintf("listener error: %v", err)
+				rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
+				printStartupError("startup error", msg, rem)
+				return &serveError{Code: 1, Message: msg, Remediation: rem}
+			}
+			return nil
 		}
-		return nil
 	}
 
 	slog.Info("ward serve: shutdown signal received; draining in-flight queries",
@@ -784,15 +793,17 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 }
 
 // warnKernelPickedPort logs a Warn when listenAddr, a --listen-addr value
-// that loadServeConfig has already validated, asks for port 0.
-func warnKernelPickedPort(listenAddr string) {
+// that loadServeConfig has already validated, asks for port 0. boundAddr is
+// the address the dataplane bound (Server.Addr once Listening is closed).
+func warnKernelPickedPort(listenAddr, boundAddr string) {
 	port, err := config.ValidateListen(listenAddr, true)
 	if err != nil || port != 0 {
 		return
 	}
 	slog.Warn("ward serve: --listen-addr port 0; the kernel picks the DNS port",
 		"listen_addr", listenAddr,
-		"remediation", "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
+		"addr", boundAddr,
+		"remediation", "point clients at the addr field of this line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
 }
 
 // bindErrRemediation returns a remediation hint appropriate for the given
