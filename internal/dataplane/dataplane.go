@@ -371,8 +371,10 @@ func (s *Server) Addr() string {
 
 // Listening returns a channel that is closed once both the UDP and the TCP
 // listener are serving: right after `dns: listening` is logged, at the same
-// moment Addr becomes non-empty. It is never closed if Serve fails to bind.
-// Every call returns the same channel.
+// moment Addr becomes non-empty. It is never closed if Serve fails to bind,
+// and it stays open forever if Serve fails or returns early for any other
+// reason, so callers must also watch Serve's return, for example in a select
+// with it. Every call returns the same channel.
 func (s *Server) Listening() <-chan struct{} {
 	return s.addrCh
 }
