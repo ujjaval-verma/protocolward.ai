@@ -301,46 +301,14 @@ func TestExitHatch(t *testing.T) {
 }
 
 // runServeWithHatch starts serveRun in-process with fake hatch seams, waits
-// until it answers DNS (SERVFAIL: the upstream is dead), cancels it and
-// returns its result.
+// until both DNS listeners serve, cancels it and returns its result.
 func runServeWithHatch(t *testing.T, sig *fakeSignals, rec *hatchRecorder) error {
 	t.Helper()
-	captureSlog(t)
-	cfgPath := serveMinimalCfg(t, "")
-	dnsAddr := serveCfgListen(t, cfgPath)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- serveRun(ctx, serveOpts{
-			configPath:     cfgPath,
-			dashListenAddr: freeTCPAddr(t),
-			notifySignals:  sig.notify,
-			exit:           rec.exit,
-		})
-	}()
-	c := &dns.Client{Timeout: 500 * time.Millisecond}
-	q := new(dns.Msg)
-	q.SetQuestion("example.test.", dns.TypeA)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, _, err := c.Exchange(q, dnsAddr); err == nil {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("serveRun returned %v before answering DNS", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no DNS answer from %s within 5s", dnsAddr)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	cancel()
+	w := startInProcWard(t, "", serveOpts{notifySignals: sig.notify, exit: rec.exit})
+	w.cancel()
 	select {
-	case err := <-done:
-		return err
+	case <-w.exited:
+		return w.runErr
 	case <-time.After(5 * time.Second):
 		t.Fatal("serveRun did not return within 5s of cancel")
 		return nil
@@ -668,29 +636,19 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 	// nothing to reap until a query has been sent.
 	started := filepath.Join(t.TempDir(), "started")
 	script := `read -r _; echo '{"verdict":"benign"}'; : > "$1"; cat >/dev/null; exec sleep 30`
-	cfgPath := serveMinimalCfg(t, fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - %q\n    - sh\n    - %q\n", script, started))
-	dnsAddr := serveCfgListen(t, cfgPath)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- serveRun(ctx, serveOpts{
-			configPath:     cfgPath,
-			dashListenAddr: freeTCPAddr(t),
-			notifySignals:  sig.notify,
-			exit:           rec.exit,
-		})
-	}()
+	// After captureStdout, so the logger serveRun installs writes into logs.
+	w := startInProcWard(t, fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - %q\n    - sh\n    - %q\n", script, started),
+		serveOpts{notifySignals: sig.notify, exit: rec.exit})
 	// Bounded on every path: the child is killed by the 2s close grace, and
 	// the deferred wait below blocks until serveRun (and so the reap) is over.
 	returned := false
 	defer func() {
-		cancel()
+		w.cancel()
 		if returned {
 			return
 		}
 		select {
-		case <-done:
+		case <-w.exited:
 		case <-time.After(10 * time.Second):
 			t.Error("serveRun did not return within 10s")
 		}
@@ -708,18 +666,18 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 	c := &dns.Client{Timeout: 500 * time.Millisecond}
 	q := new(dns.Msg)
 	q.SetQuestion("example.test.", dns.TypeA)
-	_, _, _ = c.Exchange(q, dnsAddr) // SERVFAIL (dead upstream); the classification still runs
+	_, _, _ = c.Exchange(q, w.dnsAddr) // SERVFAIL (dead upstream); the classification still runs
 	waitFor("the model child's reply", func() bool { _, err := os.Stat(started); return err == nil })
-	cancel()
+	w.cancel()
 	waitFor("ward serve: stopped", func() bool { return strings.Contains(logs.String(), "ward serve: stopped") })
 	if got := rec.got(); len(got) != 0 {
 		t.Fatalf("events before the second signal = %q, want none", got)
 	}
 	sig.trySend()
 	select {
-	case err := <-done:
+	case <-w.exited:
 		returned = true
-		if err != nil {
+		if err := w.runErr; err != nil {
 			t.Fatalf("serveRun = %v, want nil", err)
 		}
 	case <-time.After(10 * time.Second):

@@ -189,3 +189,51 @@ func TestServe_BindFailure_NoListeningLine(t *testing.T) {
 		t.Errorf("dns: listening lines = %d after a bind failure; want 0", n)
 	}
 }
+
+// Listening is closed once both listeners serve, and never on a bind failure.
+// Serial: the second subtest holds a loopback port for its whole run.
+func TestServer_Listening(t *testing.T) {
+	t.Run("closed once both serve", func(t *testing.T) {
+		srv := newBindTestServer(t, "127.0.0.1:0")
+		select {
+		case <-srv.Listening():
+			t.Fatal("Listening closed before Serve")
+		default:
+		}
+		go func() { _ = srv.Serve() }()
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+		})
+		select {
+		case <-srv.Listening():
+		case <-time.After(2 * time.Second):
+			t.Fatal("Listening not closed within 2s of Serve")
+		}
+		if srv.Addr() == "" {
+			t.Error("Addr empty after Listening closed")
+		}
+		first, second := srv.Listening(), srv.Listening()
+		if first != second {
+			t.Error("Listening returned different channels")
+		}
+	})
+	t.Run("never closed on a bind failure", func(t *testing.T) {
+		held, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("pre-bind udp: %v", err)
+		}
+		defer held.Close()
+		srv := newBindTestServer(t, held.LocalAddr().String())
+		err = serveWithin(t, srv, 2*time.Second)
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatalf("Serve = %v; want an error wrapping EADDRINUSE", err)
+		}
+		select {
+		case <-srv.Listening():
+			t.Fatal("Listening closed although Serve failed to bind")
+		default:
+		}
+	})
+}

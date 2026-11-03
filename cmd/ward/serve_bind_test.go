@@ -112,11 +112,11 @@ func TestServeRun_DNSPortTaken_ReturnsBindErrorAndClosesDashboard(t *testing.T) 
 	}
 	defer held.Close()
 	addr := held.LocalAddr().String()
-	dashAddr := freeTCPAddr(t)
+	rec := newDashRecorder()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serveRun(context.Background(), serveOpts{configPath: writeBindTestConfig(t, addr), dashListenAddr: dashAddr})
+		done <- serveRun(context.Background(), serveOpts{configPath: writeBindTestConfig(t, addr), dashListenAddr: "127.0.0.1:0", listenDash: rec.listen})
 	}()
 	select {
 	case err = <-done:
@@ -130,11 +130,16 @@ func TestServeRun_DNSPortTaken_ReturnsBindErrorAndClosesDashboard(t *testing.T) 
 	if want := "port already in use at " + addr + "; stop the process using that port or change listen in ward.yaml"; se.Remediation != want {
 		t.Errorf("Remediation = %q; want %q", se.Remediation, want)
 	}
-	ln, err := rebindTCP(dashAddr)
-	if err != nil {
-		t.Fatalf("dashboard %s still bound after serveRun returned: %v", dashAddr, err)
+	if n := rec.callCount(); n != 1 {
+		t.Fatalf("dashboard bound %d times, want 1", n)
 	}
-	_ = ln.Close()
+	// net/http closes the listener when its Serve goroutine starts if the
+	// server was closed first, so the release may come after serveRun returns.
+	select {
+	case <-rec.closed:
+	case <-time.After(wardWaitBound):
+		t.Fatalf("dashboard %s still open after serveRun returned", rec.addr())
+	}
 }
 
 func TestBindErrRemediation_ListenerStoppedAfterStart(t *testing.T) {
@@ -148,15 +153,4 @@ func TestBindErrRemediation_ListenerStoppedAfterStart(t *testing.T) {
 	if strings.Contains(got, "ward.yaml") {
 		t.Errorf("remediation %q must not carry the bind hint", got)
 	}
-}
-
-// rebindTCP re-binds addr to prove a port was released. Another test may grab
-// a just-freed ephemeral port, so it retries once after a short sleep.
-func rebindTCP(addr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		time.Sleep(50 * time.Millisecond)
-		ln, err = net.Listen("tcp", addr)
-	}
-	return ln, err
 }

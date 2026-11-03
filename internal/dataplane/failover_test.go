@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +34,69 @@ func hangingResolver(t *testing.T, addr string) *fakeResolver {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
 	return &fakeResolver{addr: addr, rcode: dns.RcodeSuccess, hangCh: hang}
+}
+
+// failingResolver returns err at once. It reads neither ctx nor the clock,
+// so a fast failure is never reported as a timeout.
+type failingResolver struct {
+	addr string
+	err  error
+}
+
+func (f *failingResolver) Query(context.Context, *dns.Msg) (*dns.Msg, error) { return nil, f.err }
+func (f *failingResolver) Address() string                                   { return f.addr }
+
+// instantResolver answers NOERROR at once. It reads neither ctx nor the
+// clock, so whether it answers never depends on scheduling.
+type instantResolver struct {
+	addr    string
+	queries atomic.Int64
+}
+
+func (r *instantResolver) Query(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+	r.queries.Add(1)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	return resp, nil
+}
+
+func (r *instantResolver) Address() string { return r.addr }
+
+// deadlineRecorder wraps a Resolver and records the deadline of the context
+// of its last Query call before delegating.
+type deadlineRecorder struct {
+	dataplane.Resolver
+	mu       sync.Mutex
+	deadline time.Time
+	ok       bool
+	called   bool
+}
+
+func recordDeadline(r dataplane.Resolver) *deadlineRecorder {
+	return &deadlineRecorder{Resolver: r}
+}
+
+func (d *deadlineRecorder) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	d.mu.Lock()
+	d.deadline, d.ok = ctx.Deadline()
+	d.called = true
+	d.mu.Unlock()
+	return d.Resolver.Query(ctx, req)
+}
+
+// deadlineOf returns the recorded deadline. It fails the test if Query was
+// never called or its ctx had no deadline.
+func (d *deadlineRecorder) deadlineOf(t *testing.T) time.Time {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.called {
+		t.Fatalf("resolver %s was never queried", d.Address())
+	}
+	if !d.ok {
+		t.Fatalf("resolver %s was queried with no deadline", d.Address())
+	}
+	return d.deadline
 }
 
 // exchangeTimed sends one A query to addr and returns the response and the
@@ -104,12 +169,13 @@ func TestServer_BothUpstreamsHang_ServfailWithinBudget(t *testing.T) {
 	}
 }
 
-// A primary that fails fast leaves the fallback the rest of the budget, not
-// a fixed half: a fallback that needs 70% of the budget still answers.
+// The fallback runs on the end-to-end deadline, so a fast primary failure
+// leaves it the whole remaining budget, not a fixed half (asserted on the
+// deadline it is handed).
 func TestServer_PrimaryFailsFast_FallbackGetsRemainingBudget(t *testing.T) {
 	t.Parallel()
 	primary := &fakeResolver{addr: "10.0.0.1:853", err: errors.New("connection refused")}
-	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess, delay: failoverBudget * 7 / 10}
+	fallback := recordDeadline(&instantResolver{addr: "10.0.0.2:853"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
 		Resolvers:       []dataplane.Resolver{primary, fallback},
@@ -117,17 +183,21 @@ func TestServer_PrimaryFailsFast_FallbackGetsRemainingBudget(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	})
 
+	sent := time.Now()
 	resp, _ := exchangeTimed(t, addr, "slowfallback.example.com.")
 	if resp.Rcode != dns.RcodeSuccess {
-		t.Fatalf("rcode = %s; want NOERROR (fallback had 70%% of the budget left)", dns.RcodeToString[resp.Rcode])
+		t.Fatalf("rcode = %s; want NOERROR from the fallback", dns.RcodeToString[resp.Rcode])
+	}
+	if got := fallback.deadlineOf(t).Sub(sent); got < failoverBudget {
+		t.Errorf("fallback deadline = sent + %s; want at least the whole budget %s (the end-to-end deadline)", got, failoverBudget)
 	}
 }
 
 // With one resolver there is nothing to fail over to, so its single attempt
-// keeps the whole budget.
+// keeps the whole budget (asserted on the deadline it is handed).
 func TestServer_SingleResolver_KeepsWholeBudget(t *testing.T) {
 	t.Parallel()
-	only := &fakeResolver{addr: "10.0.0.1:853", rcode: dns.RcodeSuccess, delay: failoverBudget * 7 / 10}
+	only := recordDeadline(&instantResolver{addr: "10.0.0.1:853"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
 		Resolvers:       []dataplane.Resolver{only},
@@ -135,34 +205,43 @@ func TestServer_SingleResolver_KeepsWholeBudget(t *testing.T) {
 		ShutdownTimeout: 2 * time.Second,
 	})
 
+	sent := time.Now()
 	resp, _ := exchangeTimed(t, addr, "single.example.com.")
 	if resp.Rcode != dns.RcodeSuccess {
-		t.Fatalf("rcode = %s; want NOERROR (single resolver keeps the whole budget)", dns.RcodeToString[resp.Rcode])
+		t.Fatalf("rcode = %s; want NOERROR", dns.RcodeToString[resp.Rcode])
+	}
+	if got := only.deadlineOf(t).Sub(sent); got < failoverBudget {
+		t.Errorf("single resolver deadline = sent + %s; want at least the whole budget %s", got, failoverBudget)
 	}
 }
 
 // Issue #15: the primary hangs, the fallback is healthy. The fallback must
-// answer, inside the configured budget.
+// answer, inside the configured budget, and run on the end-to-end deadline.
 func TestServer_PrimaryHangs_FallbackAnswersWithinBudget(t *testing.T) {
 	t.Parallel()
 	primary := hangingResolver(t, "10.0.0.1:853")
-	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
+	inst := &instantResolver{addr: "10.0.0.2:853"}
+	fb := recordDeadline(inst)
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
-		Resolvers:       []dataplane.Resolver{primary, fallback},
+		Resolvers:       []dataplane.Resolver{primary, fb},
 		CounterSeed:     0,
 		QueryTimeout:    failoverBudget,
 		ShutdownTimeout: 2 * time.Second,
 	})
 
+	sent := time.Now()
 	resp, elapsed := exchangeTimed(t, addr, "hang.example.com.")
 	if resp.Rcode != dns.RcodeSuccess {
 		t.Fatalf("rcode = %s after %s; want NOERROR from the fallback", dns.RcodeToString[resp.Rcode], elapsed)
 	}
+	if got := fb.deadlineOf(t).Sub(sent); got < failoverBudget {
+		t.Errorf("fallback deadline = sent + %s; want at least the whole budget %s (the end-to-end deadline)", got, failoverBudget)
+	}
 	if got := primary.queries.Load(); got != 1 {
 		t.Errorf("primary attempts = %d; want 1", got)
 	}
-	if got := fallback.queries.Load(); got != 1 {
+	if got := inst.queries.Load(); got != 1 {
 		t.Errorf("fallback attempts = %d; want 1", got)
 	}
 	if elapsed >= failoverBudget+failoverSlack {
@@ -170,13 +249,14 @@ func TestServer_PrimaryHangs_FallbackAnswersWithinBudget(t *testing.T) {
 	}
 }
 
-// The primary hangs and the fallback needs 30% of the budget. The primary
-// is capped at half, so the fallback still has 50% left and answers. A
-// primary cap above 70% would starve it (guards the query/2 split).
+// The primary hangs. Its deadline leaves at least 30% of the budget to the
+// fallback (asserted on the deadlines), so a primary cap above 70% fails
+// (guards the query/2 split). The fallback runs on the end-to-end deadline,
+// so the gap is at most half the budget: a fallback with a fresh budget fails.
 func TestServer_PrimaryHangs_FallbackNeedingThirtyPercentAnswers(t *testing.T) {
 	t.Parallel()
-	primary := hangingResolver(t, "10.0.0.1:853")
-	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess, delay: failoverBudget * 3 / 10}
+	primary := recordDeadline(hangingResolver(t, "10.0.0.1:853"))
+	fallback := recordDeadline(&instantResolver{addr: "10.0.0.2:853"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
 		Resolvers:       []dataplane.Resolver{primary, fallback},
@@ -187,7 +267,11 @@ func TestServer_PrimaryHangs_FallbackNeedingThirtyPercentAnswers(t *testing.T) {
 
 	resp, elapsed := exchangeTimed(t, addr, "slowfallback2.example.com.")
 	if resp.Rcode != dns.RcodeSuccess {
-		t.Fatalf("rcode = %s after %s; want NOERROR (fallback had half the budget left)", dns.RcodeToString[resp.Rcode], elapsed)
+		t.Fatalf("rcode = %s after %s; want NOERROR from the fallback", dns.RcodeToString[resp.Rcode], elapsed)
+	}
+	gap := fallback.deadlineOf(t).Sub(primary.deadlineOf(t))
+	if gap < failoverBudget*3/10 || gap > failoverBudget/2 {
+		t.Errorf("fallback deadline - primary deadline = %s; want between %s (30%% of the budget) and %s (half)", gap, failoverBudget*3/10, failoverBudget/2)
 	}
 }
 
@@ -238,7 +322,7 @@ func findRecord(records []map[string]any, level, msgPart string) map[string]any 
 // Serial: runLoggedQuery swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_PrimaryHangs_FallbackAnswers_WarnsAboutPrimary(t *testing.T) {
 	primary := hangingResolver(t, "10.0.0.1:853")
-	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
+	fallback := &instantResolver{addr: "10.0.0.2:853"}
 	resp, records := runLoggedQuery(t, []dataplane.Resolver{primary, fallback}, "warn.example.com.")
 	if resp.Rcode != dns.RcodeSuccess {
 		t.Fatalf("rcode = %s; want NOERROR", dns.RcodeToString[resp.Rcode])
@@ -258,10 +342,11 @@ func TestServer_PrimaryHangs_FallbackAnswers_WarnsAboutPrimary(t *testing.T) {
 	}
 }
 
-// A fast primary failure is not a timeout.
+// A fast primary failure is not a timeout. The primary reads no ctx, so a
+// stall before it runs cannot turn its failure into a deadline error.
 // Serial: runLoggedQuery swaps slog.Default through obs.Capture to assert on log records.
 func TestServer_PrimaryFailsFast_WarnNotTimedOut(t *testing.T) {
-	primary := &fakeResolver{addr: "10.0.0.1:853", err: errors.New("connection refused")}
+	primary := &failingResolver{addr: "10.0.0.1:853", err: errors.New("connection refused")}
 	fallback := &fakeResolver{addr: "10.0.0.2:853", rcode: dns.RcodeSuccess}
 	_, records := runLoggedQuery(t, []dataplane.Resolver{primary, fallback}, "fastfail.example.com.")
 	rec := findRecord(records, "WARN", "upstream attempt failed")

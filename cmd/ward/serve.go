@@ -93,6 +93,10 @@ type serveOpts struct {
 	// newDataplane overrides the dataplane constructor. Nil means
 	// dataplane.NewServer. Only tests set it (to inject an init failure).
 	newDataplane func(dataplane.Config) (*dataplane.Server, error)
+	// listenDash overrides how the dashboard listener is bound. Nil means
+	// dashListen (net.Listen). Only tests set it, to learn the address ward
+	// bound and to see that ward closed it.
+	listenDash func(addr string) (net.Listener, error)
 	// notifySignals overrides how the second-signal exit hatch subscribes to
 	// SIGINT/SIGTERM. Nil means notifyShutdownSignals. Only tests set it.
 	notifySignals signalNotifier
@@ -337,10 +341,10 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 	return c, closeFn, startFailed
 }
 
-// startDashboard builds the dashboard handler, binds addr, serves in a
-// goroutine and logs dashboard: ready with the bound address. On a bind
+// startDashboard builds the dashboard handler, binds addr with listen, serves
+// in a goroutine and logs dashboard: ready with the bound address. On a bind
 // failure it prints the startup error and returns a *serveError (Code 1).
-func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
+func startDashboard(addr string, listen func(string) (net.Listener, error), store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
 	dashSrv := &http.Server{
 		Addr: addr,
 		Handler: web.HandlerWithOptions(store, web.Options{
@@ -357,7 +361,7 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	dashListener, err := dashListen(addr)
+	dashListener, err := listen(addr)
 	if err != nil {
 		msg := fmt.Sprintf("dashboard listen failed: %v", err)
 		rem := "verify nothing else is using " + addr + ", or pass --dash-listen-addr with another loopback address"
@@ -602,8 +606,14 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
 	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
-	if opts.listenAddr != "" {
-		warnKernelPickedPort(opts.listenAddr)
+
+	// ── Step 3b: Dashboard flag (format and loopback) ────────────────────────
+	// Loopback-only bind is load-bearing per invariant 4 corollary
+	// (internal/web package doc); the check runs before any bind, and before
+	// upstream and list loading so a bad flag is reported first.
+	dashAddr, err := serveDashAddr(opts)
+	if err != nil {
+		return err
 	}
 
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
@@ -618,14 +628,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		return err
 	}
 
-	// ── Step 4d: Dashboard store, flag log and loopback check ───────────────
+	// ── Step 4d: Dashboard store and flag log ───────────────────────────────
 	// The store is constructed before the dataplane so we can pass it as the
-	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
-	// corollary (internal/web package doc); the check runs before any bind.
-	dashAddr, err := serveDashAddr(opts)
-	if err != nil {
-		return err
-	}
+	// DecisionRecorder.
 	dashStore := web.NewStore()
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).
@@ -663,7 +668,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// Only now, so /healthz can read the server and the model state from its
 	// first answer. NewServer binds nothing, so a listen failure here needs no
 	// dataplane cleanup.
-	dashSrv, err := startDashboard(dashAddr, dashStore, flagLog, srv, modelStartFailed)
+	listenDash := opts.listenDash
+	if listenDash == nil {
+		listenDash = dashListen
+	}
+	dashSrv, err := startDashboard(dashAddr, listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
 		return err
 	}
@@ -677,7 +686,8 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 // listener exit it closes the dashboard and returns an untyped nil or a
 // *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
 // drain, runs shutdownServe and returns nil. fromFlag says the listen address
-// came from --listen-addr.
+// came from --listen-addr. Once both DNS listeners serve, it logs the port-0
+// Warn when the address came from --listen-addr with port 0.
 func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
@@ -691,23 +701,34 @@ func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServ
 	// tests inject cancellation directly. The second-signal hatch subscribes
 	// separately and only once ctx is done, so no first signal can bypass it.
 
-	select {
-	case <-ctx.Done():
-		// Context cancelled — arm the second-signal escape hatch NOW so that a
-		// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
-		hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
-	case err := <-serveErr:
-		// The dataplane has already stopped both DNS listeners and drained
-		// in-flight queries. Close the dashboard too, so an early exit
-		// (e.g. the DNS port is taken) leaves no listener behind.
-		_ = dash.Close()
-		if err != nil {
-			msg := fmt.Sprintf("listener error: %v", err)
-			rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
-			printStartupError("startup error", msg, rem)
-			return &serveError{Code: 1, Message: msg, Remediation: rem}
+	// listening is set to nil once it fires: a nil channel never fires again.
+	listening := srv.Listening()
+wait:
+	for {
+		select {
+		case <-listening:
+			listening = nil
+			if fromFlag {
+				warnKernelPickedPort(cfg.Listen, srv.Addr())
+			}
+		case <-ctx.Done():
+			// Context cancelled — arm the second-signal escape hatch NOW so that a
+			// second SIGINT/SIGTERM during the drain budget forces an immediate exit.
+			hatch.arm(cfg.Timeouts.Shutdown+2*time.Second, dash)
+			break wait
+		case err := <-serveErr:
+			// The dataplane has already stopped both DNS listeners and drained
+			// in-flight queries. Close the dashboard too, so an early exit
+			// (e.g. the DNS port is taken) leaves no listener behind.
+			_ = dash.Close()
+			if err != nil {
+				msg := fmt.Sprintf("listener error: %v", err)
+				rem := bindErrRemediationFor(err, cfg.Listen, fromFlag)
+				printStartupError("startup error", msg, rem)
+				return &serveError{Code: 1, Message: msg, Remediation: rem}
+			}
+			return nil
 		}
-		return nil
 	}
 
 	slog.Info("ward serve: shutdown signal received; draining in-flight queries",
@@ -784,15 +805,17 @@ func buildUpstreamTLSConfig(u config.Upstream) *tls.Config {
 }
 
 // warnKernelPickedPort logs a Warn when listenAddr, a --listen-addr value
-// that loadServeConfig has already validated, asks for port 0.
-func warnKernelPickedPort(listenAddr string) {
+// that loadServeConfig has already validated, asks for port 0. boundAddr is
+// the address the dataplane bound (Server.Addr once Listening is closed).
+func warnKernelPickedPort(listenAddr, boundAddr string) {
 	port, err := config.ValidateListen(listenAddr, true)
 	if err != nil || port != 0 {
 		return
 	}
 	slog.Warn("ward serve: --listen-addr port 0; the kernel picks the DNS port",
 		"listen_addr", listenAddr,
-		"remediation", "point clients at the addr field of the dns: listening line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
+		"addr", boundAddr,
+		"remediation", "point clients at the addr field of this line, which changes on every start; for production pass --listen-addr with a fixed port, or drop the flag to use listen in ward.yaml")
 }
 
 // bindErrRemediation returns a remediation hint appropriate for the given
