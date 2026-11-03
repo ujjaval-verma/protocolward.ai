@@ -214,7 +214,8 @@ func TestServer_Listening(t *testing.T) {
 		if srv.Addr() == "" {
 			t.Error("Addr empty after Listening closed")
 		}
-		if srv.Listening() != srv.Listening() {
+		first, second := srv.Listening(), srv.Listening()
+		if first != second {
 			t.Error("Listening returned different channels")
 		}
 	})
