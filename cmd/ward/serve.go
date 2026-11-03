@@ -93,6 +93,10 @@ type serveOpts struct {
 	// newDataplane overrides the dataplane constructor. Nil means
 	// dataplane.NewServer. Only tests set it (to inject an init failure).
 	newDataplane func(dataplane.Config) (*dataplane.Server, error)
+	// listenDash overrides how the dashboard listener is bound. Nil means
+	// dashListen (net.Listen). Only tests set it, to learn the address ward
+	// bound and to see that ward closed it.
+	listenDash func(addr string) (net.Listener, error)
 	// notifySignals overrides how the second-signal exit hatch subscribes to
 	// SIGINT/SIGTERM. Nil means notifyShutdownSignals. Only tests set it.
 	notifySignals signalNotifier
@@ -337,10 +341,10 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 	return c, closeFn, startFailed
 }
 
-// startDashboard builds the dashboard handler, binds addr, serves in a
-// goroutine and logs dashboard: ready with the bound address. On a bind
+// startDashboard builds the dashboard handler, binds addr with listen, serves
+// in a goroutine and logs dashboard: ready with the bound address. On a bind
 // failure it prints the startup error and returns a *serveError (Code 1).
-func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
+func startDashboard(addr string, listen func(string) (net.Listener, error), store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
 	dashSrv := &http.Server{
 		Addr: addr,
 		Handler: web.HandlerWithOptions(store, web.Options{
@@ -357,7 +361,7 @@ func startDashboard(addr string, store *web.Store, flags *web.FlagLog, srv *data
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	dashListener, err := dashListen(addr)
+	dashListener, err := listen(addr)
 	if err != nil {
 		msg := fmt.Sprintf("dashboard listen failed: %v", err)
 		rem := "verify nothing else is using " + addr + ", or pass --dash-listen-addr with another loopback address"
@@ -664,7 +668,11 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// Only now, so /healthz can read the server and the model state from its
 	// first answer. NewServer binds nothing, so a listen failure here needs no
 	// dataplane cleanup.
-	dashSrv, err := startDashboard(dashAddr, dashStore, flagLog, srv, modelStartFailed)
+	listenDash := opts.listenDash
+	if listenDash == nil {
+		listenDash = dashListen
+	}
+	dashSrv, err := startDashboard(dashAddr, listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
 		return err
 	}

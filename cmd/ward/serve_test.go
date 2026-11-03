@@ -61,46 +61,18 @@ func TestServeCmd_MissingConfig_ExitsWithCode2(t *testing.T) {
 }
 
 // TestServeCmd_ValidConfig_BootsAndShutsDownOnSIGTERM boots the serve loop
-// with a minimal valid config and cancels the context (simulating SIGTERM),
-// asserting the function returns with exit code 0 within 200ms.
+// with a minimal valid config, waits until both DNS listeners serve, then
+// cancels the context (simulating SIGTERM), asserting the function returns
+// with exit code 0 within 200ms.
 func TestServeCmd_ValidConfig_BootsAndShutsDownOnSIGTERM(t *testing.T) {
-	// Pick a random available port for the test listener.
-	l, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("could not find a free UDP port: %v", err)
-	}
-	addr := l.LocalAddr().String()
-	l.Close()
-
-	cfgContent := fmt.Sprintf(`
-upstreams:
-  - address: "127.0.0.1:9999"
-    server_name: "unused.test"
-listen: "%s"
-timeouts:
-  shutdown: "50ms"
-`, addr)
-	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: "127.0.0.1:0"})
-	}()
-
-	// Give the server a moment to start listening.
-	time.Sleep(20 * time.Millisecond)
+	w := startInProcWard(t, "", serveOpts{})
 
 	// Cancel context — this simulates SIGTERM.
-	cancel()
+	w.cancel()
 
 	select {
-	case err := <-done:
-		if err != nil {
+	case <-w.exited:
+		if err := w.runErr; err != nil {
 			se, ok := err.(*serveError)
 			if !ok {
 				t.Fatalf("unexpected error: %v", err)
@@ -112,9 +84,6 @@ timeouts:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("serve did not shut down within 200ms after context cancel")
 	}
-
-	// Reference syscall.SIGTERM to confirm the import is exercised.
-	_ = syscall.SIGTERM
 }
 
 // wardBin is the ward binary built once per test process by buildWardBin.
@@ -738,30 +707,15 @@ func TestServe_Healthz_ModelStartFailed_ClassifierUnavailable(t *testing.T) {
 }
 
 // serveHealthz runs serveRun in-process with a minimal config plus extra
-// YAML, waits for the dashboard, and returns the decoded /healthz body:
+// YAML (startInProcWard), polls the dashboard, and returns the decoded /healthz body:
 // the first one, or with until non-nil the first for which until is true
 // (else the last seen at the 5 s deadline). Shutdown is bounded so a
 // wedged serve fails the test instead of hanging.
 func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) map[string]any {
 	t.Helper()
-	dnsAddr := freeUDPAddr(t)
-	dashAddr := freeTCPAddr(t)
-	cfgPath := filepath.Join(t.TempDir(), "ward.yaml")
-	body := fmt.Sprintf("upstreams:\n  - address: \"127.0.0.1:9999\"\n    server_name: \"unused.test\"\nlisten: %q\ntimeouts:\n  shutdown: \"50ms\"\n", dnsAddr) + extra
-	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: dashAddr}) }()
-	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("serveRun did not return within 5s of cancel")
-		}
-	}()
+	w := startInProcWard(t, extra, serveOpts{})
+	defer w.stop(t)
+	dashAddr := w.dashAddr
 
 	var got map[string]any
 	deadline := time.Now().Add(5 * time.Second)
@@ -799,6 +753,157 @@ func (b *wakeBuffer) Write(p []byte) (int, error) {
 	default:
 	}
 	return n, err
+}
+
+// dashRecorder is a serveOpts.listenDash: it binds through net.Listen and
+// keeps the listener, so a test learns the bound address without picking a
+// port and can see when ward closes it.
+type dashRecorder struct {
+	mu     sync.Mutex
+	calls  int
+	ln     net.Listener
+	bound  chan struct{} // closed on the first successful bind
+	closed chan struct{} // closed when ward first closes the bound listener
+}
+
+func newDashRecorder() *dashRecorder {
+	return &dashRecorder{bound: make(chan struct{}), closed: make(chan struct{})}
+}
+
+// listen binds addr with net.Listen. On success it keeps the listener, closes
+// r.bound once and returns a wrapper whose Close closes r.closed once.
+func (r *dashRecorder) listen(addr string) (net.Listener, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if r.ln != nil {
+		return ln, nil
+	}
+	r.ln = ln
+	close(r.bound)
+	return &recordedListener{Listener: ln, closed: r.closed}, nil
+}
+
+// addr is the bound address, "" if listen never bound.
+func (r *dashRecorder) addr() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ln == nil {
+		return ""
+	}
+	return r.ln.Addr().String()
+}
+
+// callCount is how many times ward asked to bind the dashboard.
+func (r *dashRecorder) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// recordedListener closes closed (once) when ward closes it.
+type recordedListener struct {
+	net.Listener
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (l *recordedListener) Close() error {
+	err := l.Listener.Close()
+	l.once.Do(func() { close(l.closed) })
+	return err
+}
+
+// inProcWard is serveRun running in this test process on ports it bound itself.
+type inProcWard struct {
+	dnsAddr  string            // srv.Addr() once srv.Listening() was closed
+	dashAddr string            // the dashboard listener's address
+	srv      *dataplane.Server // the server serveRun built
+	dash     *dashRecorder
+	cancel   context.CancelFunc
+	exited   chan struct{} // closed when serveRun returned
+	runErr   error         // serveRun's result; valid once exited is closed
+}
+
+// startInProcWard calls captureSlog, writes serveMinimalCfg(t, extra), fills in
+// opts.configPath, opts.listenAddr and opts.dashListenAddr ("127.0.0.1:0" when
+// empty), wraps opts.newDataplane (dataplane.NewServer when nil) so that it
+// sends the server it built on a 1-buffered channel, and sets opts.listenDash
+// to a dashRecorder. It starts serveRun and waits, under one wardWaitBound
+// timer, for the built server and then for its Listening channel. It fails
+// the test at once if serveRun returns first. stop is registered with
+// t.Cleanup.
+func startInProcWard(t *testing.T, extra string, opts serveOpts) *inProcWard {
+	t.Helper()
+	captureSlog(t)
+	opts.configPath = serveMinimalCfg(t, extra)
+	if opts.listenAddr == "" {
+		opts.listenAddr = "127.0.0.1:0"
+	}
+	if opts.dashListenAddr == "" {
+		opts.dashListenAddr = "127.0.0.1:0"
+	}
+	newDP := opts.newDataplane
+	if newDP == nil {
+		newDP = dataplane.NewServer
+	}
+	built := make(chan *dataplane.Server, 1)
+	opts.newDataplane = func(cfg dataplane.Config) (*dataplane.Server, error) {
+		srv, err := newDP(cfg)
+		if err == nil && srv != nil {
+			select {
+			case built <- srv:
+			default:
+			}
+		}
+		return srv, err
+	}
+	rec := newDashRecorder()
+	opts.listenDash = rec.listen
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &inProcWard{dash: rec, cancel: cancel, exited: make(chan struct{})}
+	go func() {
+		w.runErr = serveRun(ctx, opts)
+		close(w.exited)
+	}()
+	t.Cleanup(func() { w.stop(t) })
+
+	timer := time.NewTimer(wardWaitBound)
+	defer timer.Stop()
+	select {
+	case w.srv = <-built:
+	case <-w.exited:
+		t.Fatalf("serveRun returned before building the dataplane: %v", w.runErr)
+	case <-timer.C:
+		t.Fatalf("serveRun built no dataplane within %s", wardWaitBound)
+	}
+	select {
+	case <-w.srv.Listening():
+	case <-w.exited:
+		t.Fatalf("serveRun returned before the DNS listeners served: %v", w.runErr)
+	case <-timer.C:
+		t.Fatalf("DNS listeners not serving within %s", wardWaitBound)
+	}
+	w.dnsAddr = w.srv.Addr()
+	w.dashAddr = rec.addr()
+	return w
+}
+
+// stop cancels serveRun and waits up to wardWaitBound for it to return
+// (t.Error on a timeout). Safe to call more than once.
+func (w *inProcWard) stop(t *testing.T) {
+	t.Helper()
+	w.cancel()
+	select {
+	case <-w.exited:
+	case <-time.After(wardWaitBound):
+		t.Errorf("serveRun did not return within %s of cancel", wardWaitBound)
+	}
 }
 
 // wardWaitBound only turns a hang into a failure; nothing passes on a timeout.
@@ -1199,8 +1304,8 @@ func serveCfgListen(t *testing.T, cfgPath string) string {
 
 // TestServe_DataplaneInitFails_DashboardNotListening: when dataplane
 // construction fails (or the constructor misbehaves and returns a nil server
-// with a nil error), serveRun returns the init-failed error and leaves no
-// dashboard listening.
+// with a nil error), serveRun returns the init-failed error and never binds
+// the dashboard.
 func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1212,12 +1317,14 @@ func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dashAddr := freeTCPAddr(t)
+			rec := newDashRecorder()
 			cfgPath := serveMinimalCfg(t, "")
 			called := false
 			err := serveRun(context.Background(), serveOpts{
 				configPath:     cfgPath,
-				dashListenAddr: dashAddr,
+				listenAddr:     "127.0.0.1:0",
+				dashListenAddr: "127.0.0.1:0",
+				listenDash:     rec.listen,
 				newDataplane: func(cfg dataplane.Config) (*dataplane.Server, error) {
 					called = true
 					return c.fake(cfg)
@@ -1236,9 +1343,8 @@ func TestServe_DataplaneInitFails_DashboardNotListening(t *testing.T) {
 			if !strings.Contains(se.Remediation, c.wantRem) {
 				t.Errorf("remediation = %q; want it to contain %q", se.Remediation, c.wantRem)
 			}
-			if conn, derr := net.DialTimeout("tcp", dashAddr, 200*time.Millisecond); derr == nil {
-				conn.Close()
-				t.Fatalf("dashboard still listening on %s after dataplane init failed (leak)", dashAddr)
+			if n := rec.callCount(); n != 0 {
+				t.Fatalf("dashboard bound %d times although the dataplane failed", n)
 			}
 		})
 	}
@@ -1271,11 +1377,17 @@ func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	// The test also holds the DNS port, so a NewServer that bound would fail
+	// first with dataplane init failed instead of dashboard listen failed.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
 	marker := filepath.Join(t.TempDir(), "reaped")
 	extra := fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - 'cat >/dev/null; : > \"$1\"'\n    - sh\n    - %q\n", marker)
 	cfgPath := serveMinimalCfg(t, extra)
-	dnsAddr := serveCfgListen(t, cfgPath)
-	serr := serveRun(context.Background(), serveOpts{configPath: cfgPath, dashListenAddr: l.Addr().String()})
+	serr := serveRun(context.Background(), serveOpts{configPath: cfgPath, listenAddr: pc.LocalAddr().String(), dashListenAddr: l.Addr().String()})
 	var se *serveError
 	if !errors.As(serr, &se) || se.Code != 1 || !strings.Contains(se.Message, "dashboard listen failed") {
 		t.Fatalf("serveRun err = %v; want *serveError code 1 containing %q", serr, "dashboard listen failed")
@@ -1286,23 +1398,20 @@ func TestServe_DashboardPortBusy_ReapsModel(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("model child was not reaped before serveRun returned: %v", err)
 	}
-	// NewServer binds nothing: the DNS address must still be free.
-	pc, err := net.ListenPacket("udp", dnsAddr)
-	if err != nil {
-		t.Errorf("DNS listen address %s is bound after the dashboard failed: %v", dnsAddr, err)
-	} else {
-		pc.Close()
-	}
 }
 
 // TestServe_Healthz_BuiltinModel_NeverNone pins that with a model configured
 // /healthz never reports classifier "none", from the first answer on.
 func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
-	dashAddr := freeTCPAddr(t)
+	// Not through startInProcWard: waiting for Listening would skip the window
+	// between the dashboard bind and the DNS bind that this test checks.
 	cfgPath := serveMinimalCfg(t, "model:\n  builtin: lexical\n")
+	rec := newDashRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serveRun(ctx, serveOpts{configPath: cfgPath, dashListenAddr: dashAddr}) }()
+	go func() {
+		done <- serveRun(ctx, serveOpts{configPath: cfgPath, listenAddr: "127.0.0.1:0", dashListenAddr: "127.0.0.1:0", listenDash: rec.listen})
+	}()
 	defer func() {
 		cancel()
 		select {
@@ -1311,6 +1420,15 @@ func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
 			t.Error("serveRun did not return within 5s of cancel")
 		}
 	}()
+	select {
+	case <-rec.bound:
+	case err := <-done:
+		done <- err // let the deferred wait see that serveRun returned
+		t.Fatalf("serveRun returned before the dashboard bound: %v", err)
+	case <-time.After(wardWaitBound):
+		t.Fatalf("dashboard not bound within %s", wardWaitBound)
+	}
+	dashAddr := rec.addr()
 	poll := func() (string, bool) {
 		resp, err := http.Get("http://" + dashAddr + "/healthz")
 		if err != nil {
