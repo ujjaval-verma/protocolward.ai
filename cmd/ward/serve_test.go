@@ -153,18 +153,6 @@ func findModuleRoot(t *testing.T) string {
 	return dir
 }
 
-// freeUDPAddr returns a free loopback UDP address (host:port) for use in test configs.
-func freeUDPAddr(t *testing.T) string {
-	t.Helper()
-	l, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freeUDPAddr: %v", err)
-	}
-	addr := l.LocalAddr().String()
-	l.Close()
-	return addr
-}
-
 // safeBuffer is a goroutine-safe bytes.Buffer for concurrent subprocess output
 // capture + reader-side polling. Without the mutex the race detector flags
 // concurrent Write (by os/exec's pipe-draining goroutine) and String (by the
@@ -184,76 +172,6 @@ func (b *safeBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
-}
-
-// runServeForBriefRun builds the ward binary (once), launches
-// `ward serve --config cfgPath`, polls combined output for a startup-complete
-// sentinel (then waits dur for any post-ready output to flush), sends SIGTERM,
-// waits up to 5s for graceful exit, and returns combined stdout+stderr.
-//
-// The sentinel-poll replaces the slice-B fixed Sleep that raced subprocess
-// startup under `make ci` load (TestServe_LoadsBlocklists ~2/3 flake rate).
-// `dur` is now the post-ready capture window, not the total wait.
-func runServeForBriefRun(t *testing.T, cfgPath string, dur time.Duration) string {
-	t.Helper()
-	bin, err := buildWardBin()
-	if err != nil {
-		t.Fatalf("could not build ward binary for subprocess test: %v", err)
-	}
-	// Override the dashboard bind to an ephemeral port so back-to-back
-	// subprocess tests don't collide on the hardcoded 127.0.0.1:18987
-	// production address (Ralph B1).
-	cmd := exec.Command(bin, "serve", "--config", cfgPath, "--dash-listen-addr", "127.0.0.1:0")
-	combined := &safeBuffer{}
-	cmd.Stdout = combined
-	cmd.Stderr = combined
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("runServeForBriefRun: start: %v", err)
-	}
-
-	// Poll for any "startup complete" sentinel. The serve binary emits one of
-	// these once the dataplane has bound + the lists are loaded. Whichever
-	// fires first means startup is past the racy window.
-	readySentinels := []string{
-		`"msg":"policy: engine ready"`,
-		`"msg":"policy: not configured`,
-		`"msg":"blocklist: ready"`,                     // back-compat for slice-B-style configs (now never emitted, but harmless)
-		`"msg":"blocklist: not configured`,             // same
-		`"msg":"ward serve: starting with N upstreams`, // earliest fallback — emitted before list load but proves the process is alive
-	}
-	startupDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(startupDeadline) {
-		out := combined.String()
-		hit := false
-		for _, s := range readySentinels {
-			if strings.Contains(out, s) {
-				hit = true
-				break
-			}
-		}
-		if hit {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// Post-ready capture window: allow remaining log lines (e.g. "blocklist:
-	// loaded source" emits per-source AFTER "ward serve: starting") to flush.
-	time.Sleep(dur)
-
-	if cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-	}
-	// Wait up to 5s for graceful exit after SIGTERM.
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Log("runServeForBriefRun: process did not exit within 5s after SIGTERM; killed")
-	}
-	return combined.String()
 }
 
 // runServeExpectingExit builds the ward binary (once), launches
@@ -301,20 +219,15 @@ func TestServe_LoadsBlocklists(t *testing.T) {
 	if err := os.WriteFile(bl, []byte("0.0.0.0 blocked.test.invalid\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 blocklists:
   - id: "test-list"
     path: "` + bl + `"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stdout := runServeForBriefRun(t, cfg, 600*time.Millisecond)
+	w := startWard(t, cfgBody)
+	stdout := w.out.String()
 	if !strings.Contains(stdout, `"msg":"hostlist: loaded source"`) {
 		t.Errorf("expected hostlist load summary in stdout, got:\n%s", stdout)
 	}
@@ -325,18 +238,12 @@ blocklists:
 
 func TestServe_PureForwarderBanner(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stdout := runServeForBriefRun(t, cfg, 600*time.Millisecond)
+	w := startWard(t, cfgBody)
+	stdout := w.out.String()
 	if !strings.Contains(stdout, "running as pure DNS forwarder") {
 		t.Errorf("expected pure-forwarder banner, got:\n%s", stdout)
 	}
@@ -374,20 +281,15 @@ func TestServe_PolicyReady_Banner_AllowOnly(t *testing.T) {
 	if err := os.WriteFile(al, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 allowlists:
   - id: "test-allow"
     path: "` + al + `"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 200*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	if !strings.Contains(out, `"msg":"policy: engine ready"`) {
 		t.Errorf("missing policy: engine ready banner; got:\n%s", out)
 	}
@@ -403,20 +305,15 @@ func TestServe_PolicyReady_Banner_BlockOnly(t *testing.T) {
 	if err := os.WriteFile(bl, []byte("0.0.0.0 example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 blocklists:
   - id: "test-block"
     path: "` + bl + `"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 200*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	if !strings.Contains(out, `"msg":"policy: engine ready"`) {
 		t.Errorf("missing policy: engine ready banner; got:\n%s", out)
 	}
@@ -435,10 +332,7 @@ func TestServe_PolicyReady_Banner_Both(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 blocklists:
@@ -448,10 +342,8 @@ allowlists:
   - id: "test-allow"
     path: "` + al + `"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 200*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	if !strings.Contains(out, `"msg":"policy: engine ready"`) {
 		t.Errorf("missing policy: engine ready banner; got:\n%s", out)
 	}
@@ -464,18 +356,12 @@ func TestServe_PassthroughBanner_Policy(t *testing.T) {
 	t.Parallel()
 	// Neither blocklist nor allowlist configured → pure-forwarder banner
 	// (renamed from slice-B's "blocklist:" to "policy:" in the policy-engine rename).
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 200*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	if !strings.Contains(out, "policy: not configured") {
 		t.Errorf("missing pure-forwarder policy: not configured banner; got:\n%s", out)
 	}
@@ -491,20 +377,14 @@ upstreams:
 
 func TestServe_Model_MissingBinary_StartsAnyway(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 model:
   command: ["/nonexistent/path/to/llama-classifier", "--model", "x.gguf"]
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 200*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	// Adapter init failure must NOT crash ward — the slow path is optional;
 	// fast-path-only fallback is the documented behavior per spec.
 	if !strings.Contains(out, "policy: model unavailable") {
@@ -527,20 +407,14 @@ func TestServe_Model_HappyPath_LoadsAdapter(t *testing.T) {
 	if _, err := os.Stat("/bin/cat"); err != nil {
 		t.Skip("/bin/cat not present on this platform")
 	}
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "ward.yaml")
-	cfgBody := `
-listen: "` + freeUDPAddr(t) + `"
-upstreams:
+	cfgBody := `upstreams:
   - address: "9.9.9.9:853"
     server_name: "dns.quad9.net"
 model:
   command: ["/bin/cat"]
 `
-	if err := os.WriteFile(cfg, []byte(cfgBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := runServeForBriefRun(t, cfg, 300*time.Millisecond)
+	w := startWard(t, cfgBody)
+	out := w.out.String()
 	if !strings.Contains(out, "policy: model loaded") {
 		t.Errorf("expected `policy: model loaded` log on happy adapter path; got:\n%s", out)
 	}
