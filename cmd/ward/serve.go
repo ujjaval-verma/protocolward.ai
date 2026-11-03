@@ -603,6 +603,15 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// ── Step 3: Bootstrap structured logging ─────────────────────────────────
 	slog.SetDefault(obs.NewLogger(cfg.LogLevel))
 
+	// ── Step 3b: Dashboard flag (format and loopback) ────────────────────────
+	// Loopback-only bind is load-bearing per invariant 4 corollary
+	// (internal/web package doc); the check runs before any bind, and before
+	// upstream and list loading so a bad flag is reported first.
+	dashAddr, err := serveDashAddr(opts)
+	if err != nil {
+		return err
+	}
+
 	// ── Step 4: Construct upstream clients ───────────────────────────────────
 	clients, err := newUpstreamClients(cfg)
 	if err != nil {
@@ -615,14 +624,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 		return err
 	}
 
-	// ── Step 4d: Dashboard store, flag log and loopback check ───────────────
+	// ── Step 4d: Dashboard store and flag log ───────────────────────────────
 	// The store is constructed before the dataplane so we can pass it as the
-	// DecisionRecorder. Loopback-only bind is load-bearing per invariant 4
-	// corollary (internal/web package doc); the check runs before any bind.
-	dashAddr, err := serveDashAddr(opts)
-	if err != nil {
-		return err
-	}
+	// DecisionRecorder.
 	dashStore := web.NewStore()
 	// flagLog is the dataplane's FlagRecorder and the dashboard's Flags
 	// panel source (flag-only — never enforced).

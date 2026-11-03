@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -667,6 +668,43 @@ func TestWarnKernelPickedPort(t *testing.T) {
 		warnKernelPickedPort("127.0.0.1:5354", "127.0.0.1:5354")
 		if recs := records(t, buf); len(recs) != 0 {
 			t.Errorf("got records %v, want none", recs)
+		}
+	})
+}
+
+// A bad --dash-listen-addr is reported before upstream and list loading, so a
+// run with a bad flag and a bad list names the cheaper fix, the flag, first.
+// Serial: captureSlog swaps slog.Default.
+func TestServeRun_DashFlagCheckedBeforeLists(t *testing.T) {
+	captureSlog(t)
+	p := writeStartupCfg(t, t.TempDir(), startupMinimalCfg+`blocklists:
+  - id: "missing"
+    path: "/nonexistent/ward-test/list.txt"
+`)
+	run := func(dash string) error {
+		return serveRun(context.Background(), serveOpts{configPath: p, listenAddr: "127.0.0.1:0", dashListenAddr: dash})
+	}
+	// Precondition: with a valid flag the list error is reached, after
+	// config.Load accepted the missing path.
+	if se := asServeError(t, run("127.0.0.1:0"), 1); !strings.Contains(se.Message, "blocklist load failed") {
+		t.Fatalf("valid flag: Message = %q, want blocklist load failed", se.Message)
+	}
+	t.Run("malformed", func(t *testing.T) {
+		se := asServeError(t, run("nonsense"), 2)
+		if !strings.HasPrefix(se.Message, `invalid --dash-listen-addr "nonsense"`) {
+			t.Errorf("Message = %q, want the malformed-flag error", se.Message)
+		}
+		if strings.Contains(se.Message, "blocklist load failed") {
+			t.Errorf("Message = %q; the flag must be checked before the lists", se.Message)
+		}
+	})
+	t.Run("non-loopback", func(t *testing.T) {
+		se := asServeError(t, run("0.0.0.0:18987"), 1)
+		if !strings.Contains(se.Message, "is non-loopback") {
+			t.Errorf("Message = %q, want the non-loopback refusal", se.Message)
+		}
+		if strings.Contains(se.Message, "blocklist load failed") {
+			t.Errorf("Message = %q; the flag must be checked before the lists", se.Message)
 		}
 	})
 }
