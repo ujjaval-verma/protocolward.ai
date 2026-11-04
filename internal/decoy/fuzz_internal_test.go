@@ -152,6 +152,10 @@ func FuzzDecoyNew(f *testing.F) {
 	path := filepath.Join(f.TempDir(), "source.txt")
 	var seq atomic.Uint64
 
+	if warnCapPerSource != 16 {
+		f.Fatalf("warnCapPerSource = %d, want 16 (issue #68: at most 16 WARNs per source)", warnCapPerSource)
+	}
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 32<<10 {
 			t.Skip("input over 32 KiB")
