@@ -41,8 +41,9 @@ var sinkWritten *dns.Msg
 // `clientHost`, the `classifySlots` select, and either a goroutine fork or a
 // counted drop (`drops/op`, the fraction of timed queries that took the drop
 // branch instead of forking). Each round builds its own server and drains it
-// with Shutdown in `b.Cleanup`. ns/op is the handler's own time (Assess runs
-// on other Ps); B/op and allocs/op are process-wide and include forks that
+// with Shutdown in `b.Cleanup`. ns/op is the loop's wall time (Assess mostly
+// runs on other Ps, but goroutine creation, slot contention and the GC caused
+// by the forks are included); B/op and allocs/op are process-wide and include forks that
 // finished in the timed window; with one P most queries drop.
 //
 // The server is wired as in `ward serve`: policy engine, decoys and the
@@ -233,6 +234,10 @@ func BenchmarkHandleQuery(b *testing.B) {
 		}
 		if msg := wantStubForward(w.written); msg != "" {
 			b.Fatalf("nothere.unlisted.org.: %s", msg)
+		}
+		asrv.inFlight.Wait()
+		if got := flags.Snapshot(); len(got) != 1 {
+			b.Fatalf("the timed qname must stay benign under pkg/detect or the case would measure the flag path; pick another benign name: flags = %+v", got)
 		}
 
 		b.ReportAllocs()
