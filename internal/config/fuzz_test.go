@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -127,6 +128,7 @@ func FuzzLoad(f *testing.F) {
 	}
 	for _, s := range []string{
 		"listen: \"127.0.0.1:5353\"\nupstreams:\n  - address: \"1.1.1.1:853\"\n    server_name: one.one.one.one\n",
+		"listen: \"127.0.0.1:5353\"\nlog_level: loud\nupstreams:\n  - address: \"1.1.1.1:853\"\n    server_name: one.one.one.one\n",
 		"listen: \"127.0.0.1:5353\"\nbogus_key: 1\n",
 		"listen: \"127.0.0.1:5353\"\n---\nlisten: \"127.0.0.1:5354\"\n",
 		"listen: \"127.0.0.1:5353\"\ntimeouts:\n  dial: soon\n",
@@ -161,6 +163,15 @@ func FuzzLoad(f *testing.F) {
 			)
 			if !errors.As(err, &mf) && !errors.As(err, &pe) && !errors.As(err, &uk) && !errors.As(err, &ve) {
 				t.Fatalf("Load returned an undocumented error type %T: %v", err, err)
+			}
+			// Invariant 8: every validation error names a remediation, with
+			// text after the last marker.
+			if errors.As(err, &ve) {
+				const marker = " — remediation: "
+				i := strings.LastIndex(ve.Message, marker)
+				if i < 0 || strings.TrimSpace(ve.Message[i+len(marker):]) == "" {
+					t.Fatalf("ValidationError for %q names no remediation: %q", ve.Field, ve.Message)
+				}
 			}
 			if err.Error() == "" {
 				t.Fatalf("Load returned an error with empty text (%T)", err)
