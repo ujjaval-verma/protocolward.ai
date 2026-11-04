@@ -164,9 +164,13 @@ jobs:
         if: failure() && env.MODE == 'full'
         run: |
           shopt -s nullglob
-          for f in internal/*/testdata/fuzz/*/*; do
+          files=(internal/*/testdata/fuzz/*/*)
+          for f in "${files[@]}"; do
             echo "::group::${f}"; cat "$f"; echo "::endgroup::"
           done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No fuzz corpus file was written: the failure was in an earlier step, in building a fuzz test binary, or in a seed corpus entry (Go writes no corpus file for a failing seed)."
+          fi
 
   report:
     name: failure issue

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -113,22 +113,11 @@ func containsKey(n *yaml.Node, key string, seen map[*yaml.Node]bool) bool {
 	return false
 }
 
-var (
-	workDirOnce sync.Once
-	workDir     string
-	workDirErr  error
-)
-
-// fuzzDir returns one scratch directory per test process (a fuzz worker is a
-// process), created on first use and removed by f.Cleanup where the process
-// gets to run it. in.yaml and export.yaml inside it are overwritten per input.
-func fuzzDir() (string, error) {
-	workDirOnce.Do(func() { workDir, workDirErr = os.MkdirTemp("", "ward-fuzzload-") })
-	return workDir, workDirErr
-}
-
 // FuzzLoad asserts config.Load never panics, returns only its documented
-// error types, and that a loaded config exports to a fixed point.
+// error types, and that a loaded config exports to a fixed point. Its scratch
+// directory comes from f.TempDir, so each run of the target (and each fuzz
+// worker process) gets a fresh one that the testing package removes; in.yaml
+// and export.yaml inside it are overwritten per input.
 func FuzzLoad(f *testing.F) {
 	for _, p := range []string{"../../testdata/dod/ward.yaml", "../../ward.example.yaml"} {
 		b, err := os.ReadFile(p)
@@ -139,6 +128,7 @@ func FuzzLoad(f *testing.F) {
 	}
 	for _, s := range []string{
 		"listen: \"127.0.0.1:5353\"\nupstreams:\n  - address: \"1.1.1.1:853\"\n    server_name: one.one.one.one\n",
+		"listen: \"127.0.0.1:5353\"\nlog_level: loud\nupstreams:\n  - address: \"1.1.1.1:853\"\n    server_name: one.one.one.one\n",
 		"listen: \"127.0.0.1:5353\"\nbogus_key: 1\n",
 		"listen: \"127.0.0.1:5353\"\n---\nlisten: \"127.0.0.1:5354\"\n",
 		"listen: \"127.0.0.1:5353\"\ntimeouts:\n  dial: soon\n",
@@ -154,18 +144,10 @@ func FuzzLoad(f *testing.F) {
 	} {
 		f.Add([]byte(s))
 	}
-	f.Cleanup(func() {
-		if workDir != "" {
-			_ = os.RemoveAll(workDir)
-		}
-	})
+	dir := f.TempDir()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if hasCABundle(data) {
 			t.Skip("ca_bundle would make Load read a fuzzer-chosen path")
-		}
-		dir, err := fuzzDir()
-		if err != nil {
-			t.Fatal(err)
 		}
 		p1 := filepath.Join(dir, "in.yaml")
 		if err := os.WriteFile(p1, data, 0o600); err != nil {
@@ -181,6 +163,15 @@ func FuzzLoad(f *testing.F) {
 			)
 			if !errors.As(err, &mf) && !errors.As(err, &pe) && !errors.As(err, &uk) && !errors.As(err, &ve) {
 				t.Fatalf("Load returned an undocumented error type %T: %v", err, err)
+			}
+			// Invariant 8: every validation error names a remediation, with
+			// text after the last marker.
+			if errors.As(err, &ve) {
+				const marker = " — remediation: "
+				i := strings.LastIndex(ve.Message, marker)
+				if i < 0 || strings.TrimSpace(ve.Message[i+len(marker):]) == "" {
+					t.Fatalf("ValidationError for %q names no remediation: %q", ve.Field, ve.Message)
+				}
 			}
 			if err.Error() == "" {
 				t.Fatalf("Load returned an error with empty text (%T)", err)

@@ -950,7 +950,7 @@ func TestLoad_Listen_PortForms(t *testing.T) {
 				t.Fatalf("Load(%q) err = %v, want listen *ValidationError", addr, err)
 			}
 			_, _, splitErr := net.SplitHostPort(addr)
-			want := fmt.Sprintf("must be host:port, got %q: %v — example: \"127.0.0.1:5354\"", addr, splitErr)
+			want := fmt.Sprintf("must be host:port, got %q: %v — remediation: write it as host:port, e.g. \"127.0.0.1:5354\"", addr, splitErr)
 			if ve.Message != want {
 				t.Errorf("split message:\n got %q\nwant %q", ve.Message, want)
 			}
