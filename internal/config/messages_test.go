@@ -113,9 +113,11 @@ func TestLoad_ValidationMessages_Locked(t *testing.T) {
 	}
 }
 
-// TestLoad_ValidationErrors_NameRemediation loads one YAML per ValidationError
-// message that carries its own hint and requires the exact reworded text, which
-// must name a remediation (invariant 8) with non-blank text after the marker.
+// TestLoad_ValidationErrors_NameRemediation loads one YAML per reworded
+// ValidationError message, plus the model.* and nxdomain-conflict messages. It
+// pins the exact text and requires each to name a remediation (invariant 8)
+// with non-blank text after the marker. The list-source, ca_bundle and listen
+// port messages are pinned by other tests.
 func TestLoad_ValidationErrors_NameRemediation(t *testing.T) {
 	const marker = " — remediation: "
 
