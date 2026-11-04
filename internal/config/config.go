@@ -310,21 +310,21 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, &ValidationError{
 			Field:   "timeouts.dial",
-			Message: fmt.Sprintf("invalid duration %q: %v — use Go duration syntax, e.g. \"3s\"", raw.Timeouts.Dial, err),
+			Message: fmt.Sprintf("invalid duration %q: %v — remediation: use Go duration syntax, e.g. \"3s\"", raw.Timeouts.Dial, err),
 		}
 	}
 	queryDur, err := time.ParseDuration(raw.Timeouts.Query)
 	if err != nil {
 		return Config{}, &ValidationError{
 			Field:   "timeouts.query",
-			Message: fmt.Sprintf("invalid duration %q: %v — use Go duration syntax, e.g. \"2s\"", raw.Timeouts.Query, err),
+			Message: fmt.Sprintf("invalid duration %q: %v — remediation: use Go duration syntax, e.g. \"2s\"", raw.Timeouts.Query, err),
 		}
 	}
 	shutdownDur, err := time.ParseDuration(raw.Timeouts.Shutdown)
 	if err != nil {
 		return Config{}, &ValidationError{
 			Field:   "timeouts.shutdown",
-			Message: fmt.Sprintf("invalid duration %q: %v — use Go duration syntax, e.g. \"5s\"", raw.Timeouts.Shutdown, err),
+			Message: fmt.Sprintf("invalid duration %q: %v — remediation: use Go duration syntax, e.g. \"5s\"", raw.Timeouts.Shutdown, err),
 		}
 	}
 
@@ -462,14 +462,14 @@ func (c Config) validate() error {
 	if c.Listen == "" {
 		return &ValidationError{
 			Field:   "listen",
-			Message: "is required — set to host:port, e.g. \"127.0.0.1:5354\" (see ward.example.yaml)",
+			Message: "is required — remediation: set to host:port, e.g. \"127.0.0.1:5354\" (see ward.example.yaml)",
 		}
 	}
 	if _, err := ValidateListen(c.Listen, false); err != nil {
 		if errors.As(err, new(*net.AddrError)) {
 			return &ValidationError{
 				Field:   "listen",
-				Message: fmt.Sprintf("must be host:port, got %q: %v — example: \"127.0.0.1:5354\"", c.Listen, err),
+				Message: fmt.Sprintf("must be host:port, got %q: %v — remediation: write it as host:port, e.g. \"127.0.0.1:5354\"", c.Listen, err),
 			}
 		}
 		return &ValidationError{
@@ -484,7 +484,7 @@ func (c Config) validate() error {
 	default:
 		return &ValidationError{
 			Field:   "log_level",
-			Message: fmt.Sprintf("must be one of debug|info|warn|error, got %q", c.LogLevel),
+			Message: fmt.Sprintf("must be one of debug|info|warn|error, got %q — remediation: set log_level to debug, info, warn or error, or omit it to use info", c.LogLevel),
 		}
 	}
 
@@ -492,20 +492,20 @@ func (c Config) validate() error {
 	if len(c.Upstreams) == 0 {
 		return &ValidationError{
 			Field:   "upstreams",
-			Message: "at least one upstream is required — add an entry with address and server_name",
+			Message: "at least one upstream is required — remediation: add an entry with address and server_name",
 		}
 	}
 	for i, u := range c.Upstreams {
 		if _, _, err := net.SplitHostPort(u.Address); err != nil {
 			return &ValidationError{
 				Field:   fmt.Sprintf("upstreams[%d].address", i),
-				Message: fmt.Sprintf("must be host:port, got %q: %v — example: \"9.9.9.9:853\"", u.Address, err),
+				Message: fmt.Sprintf("must be host:port, got %q: %v — remediation: write it as host:port, e.g. \"9.9.9.9:853\"", u.Address, err),
 			}
 		}
 		if u.ServerName == "" {
 			return &ValidationError{
 				Field:   fmt.Sprintf("upstreams[%d].server_name", i),
-				Message: "must not be empty — set to the TLS SNI name of the upstream, e.g. \"dns.quad9.net\"",
+				Message: "must not be empty — remediation: set it to the TLS SNI name of the upstream, e.g. \"dns.quad9.net\"",
 			}
 		}
 	}
@@ -544,19 +544,19 @@ func (c Config) validate() error {
 	if c.Timeouts.Dial <= 0 {
 		return &ValidationError{
 			Field:   "timeouts.dial",
-			Message: "must be > 0 — use a positive duration, e.g. \"3s\"",
+			Message: "must be > 0 — remediation: use a positive duration, e.g. \"3s\"",
 		}
 	}
 	if c.Timeouts.Query <= 0 {
 		return &ValidationError{
 			Field:   "timeouts.query",
-			Message: "must be > 0 — use a positive duration, e.g. \"2s\"",
+			Message: "must be > 0 — remediation: use a positive duration, e.g. \"2s\"",
 		}
 	}
 	if c.Timeouts.Shutdown <= 0 {
 		return &ValidationError{
 			Field:   "timeouts.shutdown",
-			Message: "must be > 0 — use a positive duration, e.g. \"5s\"",
+			Message: "must be > 0 — remediation: use a positive duration, e.g. \"5s\"",
 		}
 	}
 
@@ -630,7 +630,7 @@ func parseBlockResponse(raw *rawBlockResponse) (BlockResponseConfig, error) {
 			if err != nil || !a.Is4() {
 				return BlockResponseConfig{}, &ValidationError{
 					Field:   "block_response.a",
-					Message: fmt.Sprintf("must be a valid IPv4 address, got %q — e.g. \"0.0.0.0\"", raw.A),
+					Message: fmt.Sprintf("must be a valid IPv4 address, got %q — remediation: use an IPv4 address such as \"0.0.0.0\", or omit the field", raw.A),
 				}
 			}
 			br.A = a
@@ -642,7 +642,7 @@ func parseBlockResponse(raw *rawBlockResponse) (BlockResponseConfig, error) {
 			if err != nil || !a.Is6() || a.Is4In6() {
 				return BlockResponseConfig{}, &ValidationError{
 					Field:   "block_response.aaaa",
-					Message: fmt.Sprintf("must be a valid IPv6 address, got %q — e.g. \"::\"", raw.AAAA),
+					Message: fmt.Sprintf("must be a valid IPv6 address, got %q — remediation: use an IPv6 address such as \"::\", or omit the field", raw.AAAA),
 				}
 			}
 			br.AAAA = a
@@ -664,7 +664,7 @@ func parseBlockResponse(raw *rawBlockResponse) (BlockResponseConfig, error) {
 	default:
 		return BlockResponseConfig{}, &ValidationError{
 			Field:   "block_response.mode",
-			Message: fmt.Sprintf("must be \"address\" or \"nxdomain\", got %q", raw.Mode),
+			Message: fmt.Sprintf("must be \"address\" or \"nxdomain\", got %q — remediation: set block_response.mode to \"address\" or \"nxdomain\", or omit it to use \"address\"", raw.Mode),
 		}
 	}
 	return br, nil
