@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -113,22 +112,11 @@ func containsKey(n *yaml.Node, key string, seen map[*yaml.Node]bool) bool {
 	return false
 }
 
-var (
-	workDirOnce sync.Once
-	workDir     string
-	workDirErr  error
-)
-
-// fuzzDir returns one scratch directory per test process (a fuzz worker is a
-// process), created on first use and removed by f.Cleanup where the process
-// gets to run it. in.yaml and export.yaml inside it are overwritten per input.
-func fuzzDir() (string, error) {
-	workDirOnce.Do(func() { workDir, workDirErr = os.MkdirTemp("", "ward-fuzzload-") })
-	return workDir, workDirErr
-}
-
 // FuzzLoad asserts config.Load never panics, returns only its documented
-// error types, and that a loaded config exports to a fixed point.
+// error types, and that a loaded config exports to a fixed point. Its scratch
+// directory comes from f.TempDir, so each run of the target (and each fuzz
+// worker process) gets a fresh one that the testing package removes; in.yaml
+// and export.yaml inside it are overwritten per input.
 func FuzzLoad(f *testing.F) {
 	for _, p := range []string{"../../testdata/dod/ward.yaml", "../../ward.example.yaml"} {
 		b, err := os.ReadFile(p)
@@ -154,18 +142,10 @@ func FuzzLoad(f *testing.F) {
 	} {
 		f.Add([]byte(s))
 	}
-	f.Cleanup(func() {
-		if workDir != "" {
-			_ = os.RemoveAll(workDir)
-		}
-	})
+	dir := f.TempDir()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if hasCABundle(data) {
 			t.Skip("ca_bundle would make Load read a fuzzer-chosen path")
-		}
-		dir, err := fuzzDir()
-		if err != nil {
-			t.Fatal(err)
 		}
 		p1 := filepath.Join(dir, "in.yaml")
 		if err := os.WriteFile(p1, data, 0o600); err != nil {
