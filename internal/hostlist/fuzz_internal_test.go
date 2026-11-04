@@ -214,8 +214,10 @@ func FuzzHostlistLoad(f *testing.F) {
 			if !errors.As(err, &ee) {
 				t.Fatalf("no loadable line: Load error = %T %v, want *EmptySourceError", err, err)
 			}
-			if !strings.Contains(err.Error(), " — remediation: ") {
-				t.Fatalf("EmptySourceError names no remediation: %q", err.Error())
+			const marker = " — remediation: "
+			msg := err.Error()
+			if i := strings.LastIndex(msg, marker); i < 0 || strings.TrimSpace(msg[i+len(marker):]) == "" {
+				t.Fatalf("EmptySourceError names no remediation after %q: %q", marker, msg)
 			}
 			return
 		}

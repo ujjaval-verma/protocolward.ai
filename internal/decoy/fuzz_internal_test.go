@@ -141,6 +141,7 @@ func FuzzDecoyNew(f *testing.F) {
 	for _, s := range []string{
 		"",
 		"vault.lan\nvault.lan\n# c\n a b c \n",
+		"vault.lan\r\nbad!name.test\r\n",
 		bad,
 		bad + "vault.lan\n",
 	} {
@@ -196,8 +197,10 @@ func FuzzDecoyNew(f *testing.F) {
 			if !errors.As(err, &ee) {
 				t.Fatalf("no loadable line: New error = %T %v, want *EmptySourceError", err, err)
 			}
-			if !strings.Contains(err.Error(), " — remediation: ") {
-				t.Fatalf("EmptySourceError names no remediation: %q", err.Error())
+			const marker = " — remediation: "
+			msg := err.Error()
+			if i := strings.LastIndex(msg, marker); i < 0 || strings.TrimSpace(msg[i+len(marker):]) == "" {
+				t.Fatalf("EmptySourceError names no remediation after %q: %q", marker, msg)
 			}
 			return
 		}
