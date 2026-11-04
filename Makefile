@@ -144,6 +144,8 @@ fuzz: ## Run each fuzz target for FUZZTIME (default 60s); FUZZ_PARALLEL=n limits
 	$(GO) test -run='^$$' -fuzz='^FuzzParseLine$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/hostlist || rc=1; \
 	$(GO) test -run='^$$' -fuzz='^FuzzDecoyParseLine$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/decoy || rc=1; \
 	$(GO) test -run='^$$' -fuzz='^FuzzLoad$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/config || rc=1; \
+	$(GO) test -run='^$$' -fuzz='^FuzzHostlistLoad$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/hostlist || rc=1; \
+	$(GO) test -run='^$$' -fuzz='^FuzzDecoyNew$$' -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZ_MINIMIZE_TIME) $(FUZZ_PARALLEL_FLAG) ./internal/decoy || rc=1; \
 	exit $$rc
 
 .PHONY: test-cover
