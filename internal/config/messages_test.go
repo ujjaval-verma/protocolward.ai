@@ -196,6 +196,30 @@ func TestLoad_ValidationErrors_NameRemediation(t *testing.T) {
 			`must be a valid IPv6 address, got "nope" — remediation: use an IPv6 address such as "::", or omit the field`,
 		},
 		{
+			"model/builtin_and_command", baseYAML() + "model:\n  builtin: \"lexical\"\n  command: [\"/bin/x\"]\n", "model",
+			`builtin and command are both set — remediation: keep builtin: "lexical" for the in-process detector, or keep command: [...] for a sibling adapter, not both`,
+		},
+		{
+			"model.builtin/unknown", baseYAML() + "model:\n  builtin: \"gpt\"\n", "model.builtin",
+			`unknown built-in detector "gpt" — remediation: set model.builtin to "lexical" (the only built-in detector, lowercase), or remove it and set model.command for a sibling adapter`,
+		},
+		{
+			"model.env/with_builtin", baseYAML() + "model:\n  builtin: \"lexical\"\n  env: [\"A=b\"]\n", "model.env",
+			`applies only to model.command — remediation: remove model.env when using model.builtin (the built-in detector runs in-process and spawns nothing)`,
+		},
+		{
+			"model.command/empty", baseYAML() + "model:\n  env: [\"A=b\"]\n", "model.command",
+			`must not be empty when model: is present and model.builtin is unset — remediation: set model.builtin to "lexical" for the built-in detector, or model.command to the argv for the sibling adapter (e.g. ["/usr/local/bin/llama-classifier", "--model", "/path/to/gemma.gguf"]), or remove the model: stanza to run fast-path-only`,
+		},
+		{
+			"block_response.a/nxdomain", baseYAML() + "block_response:\n  mode: \"nxdomain\"\n  a: \"0.0.0.0\"\n", "block_response.a",
+			`must be empty when block_response.mode = "nxdomain" — remediation: remove the field or switch mode to "address"`,
+		},
+		{
+			"block_response.aaaa/nxdomain", baseYAML() + "block_response:\n  mode: \"nxdomain\"\n  aaaa: \"::\"\n", "block_response.aaaa",
+			`must be empty when block_response.mode = "nxdomain" — remediation: remove the field or switch mode to "address"`,
+		},
+		{
 			"block_response.mode", baseYAML() + "block_response:\n  mode: \"drop\"\n", "block_response.mode",
 			`must be "address" or "nxdomain", got "drop" — remediation: set block_response.mode to "address" or "nxdomain", or omit it to use "address"`,
 		},
