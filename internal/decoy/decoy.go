@@ -49,6 +49,7 @@ package decoy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -191,6 +192,7 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 
 	stat := Stats{ID: src.ID, Path: src.Path}
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSizeBytes)
 	lineNo := 0
 	warns := 0
 	for scanner.Scan() {
@@ -221,6 +223,11 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 		stat.Entries++
 	}
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			// The line that overflowed is the one after the last line scanned.
+			n := lineNo + 1
+			return Stats{}, fmt.Errorf("decoy: %q line %d reaches the 1 MiB line limit (the limit counts the line ending): %w — remediation: split or remove line %d; each line holds one hostname (at most 253 bytes)", src.Path, n, err, n)
+		}
 		return Stats{}, fmt.Errorf("decoy: scan %q: %w — remediation: check filesystem health and re-run", src.Path, err)
 	}
 	if stat.Entries == 0 {
@@ -266,3 +273,6 @@ func parseLine(raw string) (host string, ok bool, reason string) {
 	}
 	return norm, true, ""
 }
+
+// maxLineSizeBytes matches hostlist: the longest line a source may hold.
+const maxLineSizeBytes = 1 << 20
