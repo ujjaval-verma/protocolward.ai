@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -303,4 +304,85 @@ func TestServe_StoppingChecks(t *testing.T) {
 			t.Fatalf("Serve = %v; want an error wrapping EACCES", err)
 		}
 	})
+}
+
+// A TCP listener that activates between miekg's "not started" answer and the
+// owner's close must still be stopped: a live connection opened in that
+// window would otherwise hold Serve for miekg's 8 s idle timeout.
+func TestShutdown_TCPActivatesInNotStartedWindow_ServeReturnsWithin1s(t *testing.T) {
+	t.Parallel()
+	srv := newServeTestServer(t, "127.0.0.1:0")
+
+	type held struct {
+		conn *dns.Conn
+		err  error
+	}
+	heldCh := make(chan held, 1)
+	shutCh := make(chan error, 1)
+	reached := make(chan struct{})
+	var tcpAddr string
+	srv.beforeActivate = func() {
+		// Runs on the Serve goroutine, so it cannot fail the test; the test
+		// goroutine reports a hook that never ran.
+		tcpAddr = srv.tcpSrv.Listener.Addr().String()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			shutCh <- srv.Shutdown(ctx)
+		}()
+		select {
+		case <-reached:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	srv.afterNotStarted = func(transport string) {
+		if transport != "tcp" {
+			return
+		}
+		close(reached) // Serve now activates both transports
+		c := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
+		conn, err := c.Dial(tcpAddr)
+		if err == nil {
+			m := new(dns.Msg)
+			m.SetQuestion("window.example.", dns.TypeA)
+			_, _, err = c.ExchangeWithConn(m, conn)
+		}
+		heldCh <- held{conn, err}
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve() }()
+
+	var h held
+	select {
+	case h = <-heldCh:
+	case <-time.After(4 * time.Second):
+		t.Fatal("afterNotStarted(tcp) never ran")
+	}
+	if h.conn != nil {
+		t.Cleanup(func() { _ = h.conn.Close() })
+	}
+	var shutErr error
+	select {
+	case shutErr = <-shutCh:
+	case <-time.After(4 * time.Second):
+		t.Fatal("Shutdown did not return within 4s")
+	}
+	if h.err != nil {
+		t.Fatalf("query over the TCP connection opened in the window: %v; want a reply (TCP activated on the open listener)", h.err)
+	}
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return within 1s of Shutdown")
+	}
+	if !errors.Is(shutErr, ErrNotStarted) {
+		t.Errorf("Shutdown = %v; want an error wrapping ErrNotStarted (UDP never activated)", shutErr)
+	}
+	if shutErr != nil && strings.Contains(shutErr.Error(), "dataplane shutdown (tcp)") {
+		t.Errorf("Shutdown = %v; want no tcp error (the second ShutdownContext stopped TCP)", shutErr)
+	}
 }

@@ -264,8 +264,11 @@ type Server struct {
 	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
 	// published and before either transport activates. afterTake runs in
 	// Shutdown after it has taken the sockets and before it calls miekg.
-	beforeActivate func()
-	afterTake      func()
+	// afterNotStarted runs in Shutdown when miekg answered "not started" for a
+	// transport, before its socket is closed.
+	beforeActivate  func()
+	afterTake       func()
+	afterNotStarted func(transport string)
 
 	// inFlight tracks queries currently being processed for graceful drain.
 	// Slow-path classifyAsync goroutines also Add/Done here so Shutdown
@@ -610,7 +613,15 @@ func (s *Server) stopTransport(ctx context.Context, transport string, srv *dns.S
 	if !notStarted(err) {
 		return err
 	}
+	if s.afterNotStarted != nil {
+		s.afterNotStarted(transport)
+	}
 	_ = sock.Close()
+	// ActivateAndServe may have started the transport between miekg's answer
+	// and the close. Ask once more: if it did, this runs miekg's own stop.
+	if err := srv.ShutdownContext(ctx); !notStarted(err) {
+		return err
+	}
 	return ErrNotStarted
 }
 
