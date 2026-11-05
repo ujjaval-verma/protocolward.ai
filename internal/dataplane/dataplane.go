@@ -517,13 +517,13 @@ func (s *Server) Serve() error {
 		s.beforeActivate()
 	}
 
-	type stopped struct {
+	type listenerResult struct {
 		transport string
 		err       error
 	}
-	done := make(chan stopped, 2)
-	go func() { done <- stopped{"udp", s.udpSrv.ActivateAndServe()} }()
-	go func() { done <- stopped{"tcp", s.tcpSrv.ActivateAndServe()} }()
+	done := make(chan listenerResult, 2)
+	go func() { done <- listenerResult{"udp", s.udpSrv.ActivateAndServe()} }()
+	go func() { done <- listenerResult{"tcp", s.tcpSrv.ActivateAndServe()} }()
 
 	var first error
 	for range 2 {
