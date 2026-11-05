@@ -314,6 +314,30 @@ func TestDoctorRun_BindProbeFails_ReportsFail(t *testing.T) {
 	}
 }
 
+// A nil bindProbe selects the real probeBind. Holding a UDP socket makes the
+// real probe fail, so this fails if the nil default is ever replaced by a
+// no-op.
+func TestDoctorRun_DefaultBindProbe_HeldUDP_ReportsFail(t *testing.T) {
+	held, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold udp: %v", err)
+	}
+	defer held.Close()
+	addr := held.LocalAddr().String()
+	cfgPath := writeWardYAMLForDoctor(t, addr, holdUpstream(t))
+
+	var buf bytes.Buffer
+	if err := doctorRun(&buf, doctorOpts{configPath: cfgPath}); err == nil {
+		t.Fatalf("expected non-nil error with %s held; output:\n%s", addr, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{"[FAIL]", " bind " + addr} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestDoctorRun_UnknownKey_ExitsCode2(t *testing.T) {
 	p := writeExampleWithBogusKey(t)
 	var buf bytes.Buffer
