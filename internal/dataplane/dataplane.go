@@ -256,14 +256,20 @@ type Server struct {
 	// locked, and no miekg method, socket Close or test hook is called, while
 	// it is held.
 	lifeMu   sync.Mutex
-	stopping bool           // set by every Shutdown; never cleared
-	pc       net.PacketConn // bound by Serve; taken (and cleared) by one Shutdown
+	stopping bool           // set by the first Shutdown (the owner); never cleared
+	pc       net.PacketConn // bound by Serve; taken (and cleared) by the owner
 	ln       net.Listener   // likewise
+
+	// stopped is closed by the owner once both transports are stopped (or
+	// at once if it took no sockets). Every other Shutdown waits on it,
+	// bounded by its own ctx, before it drains in-flight queries.
+	stopped chan struct{}
 
 	// Test seams, nil in production. Internal tests set them before calling
 	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
 	// published and before either transport activates. afterTake runs in
-	// Shutdown after it has taken the sockets and before it calls miekg.
+	// every Shutdown after the take and before any miekg call or wait on
+	// stopped.
 	// afterNotStarted runs in Shutdown when miekg answered "not started" for a
 	// transport, before its socket is closed.
 	beforeActivate  func()
@@ -357,6 +363,7 @@ func NewServer(cfg Config) (*Server, error) {
 		stopCancel:    stopCancel,
 		cfg:           cfg,
 		addrCh:        make(chan struct{}),
+		stopped:       make(chan struct{}),
 		listenUDP:     net.ListenPacket,
 		listenTCP:     net.Listen,
 		classifySlots: make(chan struct{}, maxClassifyInFlight),
@@ -557,9 +564,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// below waits only for calls already running. Safe to call repeatedly.
 	s.stopCancel()
 
-	// Take the bound sockets. Only the call that takes them (the owner)
+	// Take the bound sockets. Only the first call (the owner) takes them and
 	// calls miekg; every other call reports both transports as not started.
 	s.lifeMu.Lock()
+	owner := !s.stopping
 	s.stopping = true
 	pc, ln := s.pc, s.ln
 	s.pc, s.ln = nil, nil
@@ -576,6 +584,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	tcpErr := ErrNotStarted
 	if ln != nil {
 		tcpErr = s.stopTransport(ctx, "tcp", s.tcpSrv, ln)
+	}
+	if owner {
+		close(s.stopped)
+	} else {
+		// Drain only once the owner has stopped the listeners: before that,
+		// a query can still start and enter inFlight from zero.
+		select {
+		case <-s.stopped:
+		case <-ctx.Done():
+			return errors.Join(
+				fmt.Errorf("%w: the Shutdown call that owns the listeners had not stopped them: %w", ErrDrainTimeout, ctx.Err()),
+				fmt.Errorf("dataplane shutdown (udp): %w", udpErr),
+				fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr),
+			)
+		}
 	}
 
 	// Drain in-flight queries within the context deadline.

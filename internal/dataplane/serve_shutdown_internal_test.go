@@ -219,7 +219,7 @@ func TestShutdown_OwnerPausedWhileOtherDrains_KeepsReplySocket(t *testing.T) {
 			return
 		}
 		b = shutAsync(srv)
-		time.Sleep(100 * time.Millisecond) // B takes nothing and starts its drain
+		time.Sleep(100 * time.Millisecond) // B takes nothing and waits for A to stop the listeners
 		close(hookDone)
 	}
 
@@ -385,4 +385,106 @@ func TestShutdown_TCPActivatesInNotStartedWindow_ServeReturnsWithin1s(t *testing
 	if shutErr != nil && strings.Contains(shutErr.Error(), "dataplane shutdown (tcp)") {
 		t.Errorf("Shutdown = %v; want no tcp error (the second ShutdownContext stopped TCP)", shutErr)
 	}
+}
+
+// A Shutdown that does not own the listeners must not drain while the owner
+// has taken them but not stopped them yet: queries are still being served,
+// so its drain could start before they are counted.
+func TestShutdown_SecondCallWaitsForOwnerToStopListeners(t *testing.T) {
+	t.Parallel()
+
+	// pauseOwner starts Shutdown A on a serving srv and returns once A has
+	// taken the sockets and paused before any miekg call. Both listeners
+	// still serve then.
+	pauseOwner := func(t *testing.T) (srv *Server, addr string, serveErr, a <-chan error, resume func()) {
+		t.Helper()
+		srv = newServeTestServer(t, "127.0.0.1:0")
+		addr, serveErr = startServe(t, srv)
+		paused := make(chan struct{})
+		resumeCh := make(chan struct{})
+		var once sync.Once
+		resume = func() { once.Do(func() { close(resumeCh) }) }
+		t.Cleanup(resume)
+		// CompareAndSwap, not sync.Once: only the first caller (the owner)
+		// pauses, and later callers must not block inside the hook.
+		var first atomic.Bool
+		srv.afterTake = func() {
+			if !first.CompareAndSwap(false, true) {
+				return
+			}
+			close(paused)
+			select {
+			case <-resumeCh:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		a = shutAsync(srv)
+		select {
+		case <-paused:
+		case <-time.After(2 * time.Second):
+			t.Fatal("afterTake never paused the owner")
+		}
+		return srv, addr, serveErr, a, resume
+	}
+
+	t.Run("query during the pause gets its reply", func(t *testing.T) {
+		t.Parallel()
+		srv, addr, serveErr, a, resume := pauseOwner(t)
+		b := shutAsync(srv)
+
+		c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+		m := new(dns.Msg)
+		m.SetQuestion("paused.example.", dns.TypeA)
+		if _, _, err := c.Exchange(m, addr); err != nil {
+			t.Fatalf("query during the owner's pause: %v; want a reply (the listeners still serve)", err)
+		}
+		select {
+		case err := <-b:
+			t.Fatalf("second Shutdown returned while the owner was paused before stopping the listeners: %v", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		resume()
+		if err := waitShutdown(t, "A", a); err != nil {
+			t.Errorf("owner Shutdown A = %v; want nil", err)
+		}
+		if err := waitShutdown(t, "B", b); !errors.Is(err, ErrNotStarted) || errors.Is(err, ErrDrainTimeout) {
+			t.Errorf("second Shutdown B = %v; want an error wrapping ErrNotStarted and not ErrDrainTimeout", err)
+		}
+		if err := waitServeErr(t, serveErr); err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+	})
+
+	t.Run("ctx ends first: drain timeout", func(t *testing.T) {
+		t.Parallel()
+		srv, _, serveErr, a, resume := pauseOwner(t)
+		b := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			b <- srv.Shutdown(ctx)
+		}()
+
+		var err error
+		select {
+		case err = <-b:
+		case <-time.After(2 * time.Second):
+			t.Fatal("second Shutdown did not return within 2s of its 100ms ctx while the owner was paused")
+		}
+		if !errors.Is(err, ErrDrainTimeout) {
+			t.Errorf("second Shutdown = %v; want an error wrapping ErrDrainTimeout", err)
+		}
+		if !errors.Is(err, ErrNotStarted) {
+			t.Errorf("second Shutdown = %v; want it to also wrap ErrNotStarted (it stopped no listener)", err)
+		}
+
+		resume()
+		if err := waitShutdown(t, "A", a); err != nil {
+			t.Errorf("owner Shutdown A = %v; want nil", err)
+		}
+		if err := waitServeErr(t, serveErr); err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+	})
 }
