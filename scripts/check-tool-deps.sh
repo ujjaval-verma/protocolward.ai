@@ -47,12 +47,12 @@ dry() {
 }
 
 # Install lines only.
-installs() { printf '%s\n' "$1" | grep ' go install ' || true; }
+installs() { printf '%s\n' "$1" | grep -E '(^|[[:space:]])go install[[:space:]]' || true; }
 
 # Tool names from install lines: module path before @, minus /vN, last element.
 tools_of() {
   local names
-  names=$(printf '%s\n' "$1" | sed -n 's/.* go install \([^@ ]*\)@.*/\1/p' |
+  names=$(printf '%s\n' "$1" | sed -En 's/(^|.*[[:space:]])go install[[:space:]]+([^@ ]*)@.*/\2/p' |
     sed 's#/v[0-9][0-9]*$##; s#.*/##' | sort -u | tr '\n' ' ')
   names=${names% }
   if [ -z "$names" ]; then echo "-"; else echo "$names"; fi
