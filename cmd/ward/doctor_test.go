@@ -92,7 +92,7 @@ func TestProbeBind_HappyPath(t *testing.T) {
 	events, addrs := log.snapshot()
 	wantEvents := []string{"udp-listen:udp", "udp-close", "tcp-listen:tcp", "tcp-close"}
 	if !slices.Equal(events, wantEvents) {
-		t.Errorf("events = %v; want %v", events, wantEvents)
+		t.Fatalf("events = %v; want %v", events, wantEvents)
 	}
 	if addrs[0] != placeholderListen || addrs[2] != placeholderListen {
 		t.Errorf("listen addresses = %q, %q; want %q for both", addrs[0], addrs[2], placeholderListen)
