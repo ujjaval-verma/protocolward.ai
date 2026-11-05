@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"runtime/debug"
@@ -251,6 +252,21 @@ type Server struct {
 	// Any subsequent call returns ErrAlreadyServing immediately without blocking.
 	serveStarted atomic.Bool
 
+	// lifeMu guards stopping, pc and ln. It is a leaf lock: nothing else is
+	// locked, and no miekg method, socket Close or test hook is called, while
+	// it is held.
+	lifeMu   sync.Mutex
+	stopping bool           // set by every Shutdown; never cleared
+	pc       net.PacketConn // bound by Serve; taken (and cleared) by one Shutdown
+	ln       net.Listener   // likewise
+
+	// Test seams, nil in production. Internal tests set them before calling
+	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
+	// published and before either transport activates. afterTake runs in
+	// Shutdown after it has taken the sockets and before it calls miekg.
+	beforeActivate func()
+	afterTake      func()
+
 	// inFlight tracks queries currently being processed for graceful drain.
 	// Slow-path classifyAsync goroutines also Add/Done here so Shutdown
 	// drains them before returning.
@@ -449,6 +465,9 @@ func (s *Server) Serve() error {
 	if !s.serveStarted.CompareAndSwap(false, true) {
 		return ErrAlreadyServing
 	}
+	if s.isStopping() {
+		return nil // Shutdown already ran (and cancelled stopCtx): bind nothing
+	}
 
 	pc, ln, err := s.bind()
 	if err != nil {
@@ -456,8 +475,23 @@ func (s *Server) Serve() error {
 		return err
 	}
 	local := pc.LocalAddr().String()
+	s.lifeMu.Lock()
+	if s.stopping {
+		// A Shutdown landed during bind. The sockets were never published,
+		// so nothing else holds them.
+		s.lifeMu.Unlock()
+		_ = pc.Close()
+		_ = ln.Close()
+		return nil
+	}
+	s.pc, s.ln = pc, ln
 	s.udpSrv.PacketConn = pc
 	s.tcpSrv.Listener = ln
+	s.lifeMu.Unlock()
+
+	if s.beforeActivate != nil {
+		s.beforeActivate()
+	}
 
 	type stopped struct {
 		transport string
@@ -472,6 +506,16 @@ func (s *Server) Serve() error {
 		r := <-done
 		if r.err == nil || first != nil {
 			continue // clean stop, or the peer we are already aborting
+		}
+		if s.isStopping() {
+			// Almost always the close Shutdown just made: part of the stop.
+			slog.Debug("dataplane: listener stopped during shutdown",
+				"transport", r.transport,
+				"addr", local,
+				"error", r.err.Error(),
+				"remediation", "none needed: ward was stopping and this is usually the close it made; if ward did not exit, restart it",
+			)
+			continue
 		}
 		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
 		s.abort(pc, ln)
@@ -510,14 +554,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// below waits only for calls already running. Safe to call repeatedly.
 	s.stopCancel()
 
-	// Stop accepting new queries.
-	udpErr := s.udpSrv.ShutdownContext(ctx)
-	if notStarted(udpErr) {
-		udpErr = ErrNotStarted
+	// Take the bound sockets. Only the call that takes them (the owner)
+	// calls miekg; every other call reports both transports as not started.
+	s.lifeMu.Lock()
+	s.stopping = true
+	pc, ln := s.pc, s.ln
+	s.pc, s.ln = nil, nil
+	s.lifeMu.Unlock()
+	if s.afterTake != nil {
+		s.afterTake()
 	}
-	tcpErr := s.tcpSrv.ShutdownContext(ctx)
-	if notStarted(tcpErr) {
-		tcpErr = ErrNotStarted
+
+	// Stop accepting new queries.
+	udpErr := ErrNotStarted
+	if pc != nil {
+		udpErr = s.stopTransport(ctx, "udp", s.udpSrv, pc)
+	}
+	tcpErr := ErrNotStarted
+	if ln != nil {
+		tcpErr = s.stopTransport(ctx, "tcp", s.tcpSrv, ln)
 	}
 
 	// Drain in-flight queries within the context deadline.
@@ -545,6 +600,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr))
 	}
 	return errors.Join(errs...)
+}
+
+// stopTransport stops one transport for the Shutdown that owns its socket.
+// If miekg answers "not started", the transport had not activated: the
+// socket is closed so it cannot serve, and the result is ErrNotStarted.
+func (s *Server) stopTransport(ctx context.Context, transport string, srv *dns.Server, sock io.Closer) error {
+	err := srv.ShutdownContext(ctx)
+	if !notStarted(err) {
+		return err
+	}
+	_ = sock.Close()
+	return ErrNotStarted
+}
+
+// isStopping reports whether a Shutdown call has begun.
+func (s *Server) isStopping() bool {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	return s.stopping
 }
 
 // notStarted reports miekg's "server not started". In miekg v1.1.72,

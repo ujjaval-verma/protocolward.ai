@@ -4,11 +4,18 @@ package dataplane
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+
+	"protocolward.ai/ward/internal/obs"
 )
 
 // gateResolver holds its first query until release is closed: entered is
@@ -134,4 +141,166 @@ func TestShutdown_SecondCallDuringDrain_KeepsReplySocket(t *testing.T) {
 	if err := waitServeErr(t, serveErr); err != nil {
 		t.Fatalf("Serve = %v; want nil", err)
 	}
+}
+
+// serveBounded runs srv.Serve and returns its error. It fails the test if
+// Serve has not returned within 1 s. It is the internal-package twin of
+// serveWithin in serve_bind_test.go.
+func serveBounded(t *testing.T, srv *Server) error {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve() }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(time.Second):
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		t.Fatal("Serve did not return within 1s")
+		return nil
+	}
+}
+
+// Serial: obs.Capture swaps the global slog default.
+func TestServe_ShutdownBetweenBindAndActivate_ReturnsNil(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newServeTestServer(t, "127.0.0.1:0")
+	var shutErr error
+	srv.beforeActivate = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		shutErr = srv.Shutdown(ctx)
+	}
+
+	if err := serveBounded(t, srv); err != nil {
+		t.Fatalf("Serve = %v; want nil", err)
+	}
+	if !errors.Is(shutErr, ErrNotStarted) {
+		t.Errorf("Shutdown between bind and activation = %v; want an error wrapping ErrNotStarted", shutErr)
+	}
+
+	records := map[string]map[string]any{}
+	for _, r := range obs.Captured(t) {
+		if r["level"] == "DEBUG" && r["msg"] == "dataplane: listener stopped during shutdown" {
+			transport, _ := r["transport"].(string)
+			records[transport] = r
+		}
+	}
+	if len(records) != 2 || records["udp"] == nil || records["tcp"] == nil {
+		t.Fatalf("listener stopped during shutdown records = %v; want udp and tcp", records)
+	}
+	for transport, r := range records {
+		for _, key := range []string{"addr", "error", "remediation"} {
+			if v, _ := r[key].(string); v == "" {
+				t.Errorf("%s record: %s is empty; want it set (record %v)", transport, key, r)
+			}
+		}
+	}
+}
+
+// The owner (the Shutdown that takes the sockets) pauses after the take
+// while a second Shutdown runs and drains; the in-flight reply must still be
+// written, so the paused owner must not close a socket under that drain.
+func TestShutdown_OwnerPausedWhileOtherDrains_KeepsReplySocket(t *testing.T) {
+	t.Parallel()
+	srv, gate := newGateServer(t)
+	serveErr, reply := heldQuery(t, srv, gate)
+
+	// CompareAndSwap, not sync.Once: Once.Do would block B inside the hook
+	// until A's hook returned, which hides the bug.
+	var paused atomic.Bool
+	var b <-chan error
+	hookDone := make(chan struct{})
+	srv.afterTake = func() {
+		if !paused.CompareAndSwap(false, true) {
+			return
+		}
+		b = shutAsync(srv)
+		time.Sleep(100 * time.Millisecond) // B takes nothing and starts its drain
+		close(hookDone)
+	}
+
+	a := shutAsync(srv)
+	select {
+	case <-hookDone:
+	case <-time.After(4 * time.Second):
+		t.Fatal("afterTake never ran")
+	}
+	time.Sleep(50 * time.Millisecond) // A resumes and reaches miekg's drain
+	close(gate.release)
+
+	if r := waitReply(t, reply); r.err != nil {
+		t.Fatalf("in-flight query got no reply: %v", r.err)
+	}
+	if err := waitShutdown(t, "A", a); err != nil {
+		t.Errorf("owner Shutdown A = %v; want nil", err)
+	}
+	if err := waitShutdown(t, "B", b); !errors.Is(err, ErrNotStarted) {
+		t.Errorf("second Shutdown B = %v; want an error wrapping ErrNotStarted", err)
+	}
+	if err := waitServeErr(t, serveErr); err != nil {
+		t.Fatalf("Serve = %v; want nil", err)
+	}
+}
+
+func TestServe_StoppingChecks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shutdown before serve binds nothing", func(t *testing.T) {
+		srv := newServeTestServer(t, "127.0.0.1:0")
+		var binds atomic.Int32
+		srv.listenUDP = func(network, address string) (net.PacketConn, error) {
+			binds.Add(1)
+			return net.ListenPacket(network, address)
+		}
+		_ = srv.Shutdown(context.Background())
+		if err := serveBounded(t, srv); err != nil {
+			t.Fatalf("Serve after Shutdown = %v; want nil", err)
+		}
+		if n := binds.Load(); n != 0 {
+			t.Errorf("UDP binds = %d; want 0", n)
+		}
+	})
+
+	t.Run("shutdown during bind closes the bound sockets", func(t *testing.T) {
+		srv := newServeTestServer(t, "127.0.0.1:0")
+		var pc net.PacketConn
+		var ln *net.TCPListener
+		srv.listenUDP = func(network, address string) (net.PacketConn, error) {
+			p, err := net.ListenPacket(network, address)
+			pc = p
+			return p, err
+		}
+		srv.listenTCP = func(network, address string) (net.Listener, error) {
+			_ = srv.Shutdown(context.Background())
+			l, err := net.Listen(network, address)
+			if err != nil {
+				return nil, err
+			}
+			ln = l.(*net.TCPListener)
+			return l, nil
+		}
+		if err := serveBounded(t, srv); err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+		if err := pc.SetReadDeadline(time.Time{}); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("UDP socket after Serve: SetReadDeadline = %v; want net.ErrClosed (socket closed)", err)
+		}
+		if err := ln.SetDeadline(time.Time{}); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("TCP listener after Serve: SetDeadline = %v; want net.ErrClosed (listener closed)", err)
+		}
+	})
+
+	t.Run("shutdown during bind, bind fails: bind error returned", func(t *testing.T) {
+		srv := newServeTestServer(t, "127.0.0.1:0")
+		srv.listenTCP = func(string, string) (net.Listener, error) {
+			_ = srv.Shutdown(context.Background())
+			return nil, fmt.Errorf("listen tcp: %w", syscall.EACCES)
+		}
+		if err := serveBounded(t, srv); !errors.Is(err, syscall.EACCES) {
+			t.Fatalf("Serve = %v; want an error wrapping EACCES", err)
+		}
+	})
 }
