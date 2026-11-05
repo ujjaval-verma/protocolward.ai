@@ -154,11 +154,11 @@ test-cover: ## Run tests with coverage report
 	$(Q)$(GO) tool cover -func=$(COVER_OUT) | tail -1
 
 .PHONY: lint
-lint: tools ## Run golangci-lint
+lint: $(TOOLS_DIR)/golangci-lint ## Run golangci-lint
 	$(Q)$(TOOLS_DIR)/golangci-lint run $(PKG)
 
 .PHONY: fmt
-fmt: tools ## Format Go code (gofumpt)
+fmt: $(TOOLS_DIR)/gofumpt ## Format Go code (gofumpt)
 	$(Q)$(TOOLS_DIR)/gofumpt -w .
 
 .PHONY: vet
@@ -201,11 +201,15 @@ check-actions-pinned: ## Fail on a GitHub Actions uses: not pinned to a full com
 	$(Q)scripts/check-actions-pinned.sh
 
 .PHONY: check-workflows
-check-workflows: tools ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
+check-workflows: $(TOOLS_DIR)/actionlint ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
 	$(Q)$(TOOLS_DIR)/actionlint -shellcheck= -pyflakes=
 
+.PHONY: check-tool-deps
+check-tool-deps: ## Verify lint/fmt/vuln/check-workflows/check/ci/pre-push/audit/test/tools/bootstrap build only the pinned tools they run (dry run, fresh-clone layout)
+	$(Q)scripts/check-tool-deps.sh
+
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint gate — the "is everything OK" gate
+check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
@@ -220,11 +224,11 @@ pre-push: lint vet test wasm tidy-check mod-verify vuln check-public check-spdx 
 ## === Audit ===
 
 .PHONY: vuln
-vuln: tools ## Run govulncheck against the module
+vuln: $(TOOLS_DIR)/govulncheck ## Run govulncheck against the module
 	$(Q)$(TOOLS_DIR)/govulncheck $(PKG)
 
 .PHONY: audit
-audit: tools mod-verify vuln ## Pre-release audit: module verify + vuln scan + goreleaser config lint + pnpm audit + signatures when a pnpm lockfile exists
+audit: $(TOOLS_DIR)/goreleaser mod-verify vuln ## Pre-release audit: module verify + vuln scan + goreleaser config lint + pnpm audit + signatures when a pnpm lockfile exists
 	$(Q)$(TOOLS_DIR)/goreleaser check
 	$(Q)test ! -f pnpm-lock.yaml || { command -v pnpm >/dev/null && pnpm audit --audit-level=moderate && pnpm audit signatures; }
 	@printf "$(C_OK)audit clean$(C_OFF)\n"
