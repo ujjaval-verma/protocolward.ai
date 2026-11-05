@@ -64,7 +64,7 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 - Security-update PRs stay off (issue #41 is unchanged).
 - Dependabot does not watch the Makefile `*_VERSION` pins, `mise.toml`, the pnpm `packageManager` pin or `.nvmrc`. Those stay manual.
 
-**Amendment (2026-11-05, issues #68 and #83).** `make fuzz`, main-verify's last step, now also fuzzes `hostlist.Load` (`FuzzHostlistLoad`) and `decoy.New` (`FuzzDecoyNew`), 60 s each like the others. They assert line accounting against an independent oracle, the per-source WARN cap, and that an empty source's error names a remediation. When the full run fails and no fuzz corpus file was written, the corpus step now says so and names the likely causes instead of printing nothing. This is detection only: permissions, actions and the cron schedule are unchanged.
+**Amendment (2026-11-05, issues #68 and #83).** `make fuzz`, main-verify's last step, now also fuzzes `hostlist.Load` (`FuzzHostlistLoad`) and `decoy.New` (`FuzzDecoyNew`), 60 s each like the others. They assert line accounting against a line-by-line oracle that splits the input itself, the per-source WARN cap, and that an empty source's error names a remediation. When the full run fails and no fuzz corpus file was written, the corpus step now says so and names the likely causes instead of printing nothing. This is detection only: permissions, actions and the cron schedule are unchanged.
 
 ### 2. Hook tiering with strict latency budgets
 
