@@ -393,6 +393,11 @@ func loadOne(src Source, idx uint16, set *Set) (Stats, error) {
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
+		if errors.Is(scanErr, bufio.ErrTooLong) {
+			// The line that overflowed is the one after the last line scanned.
+			n := lineNo + 1
+			return Stats{}, fmt.Errorf("hostlist: %q line %d reaches the 1 MiB line limit (the limit counts the line ending): %w — remediation: split or remove line %d; each line holds one rule (a hostname is at most 253 bytes)", src.Path, n, scanErr, n)
+		}
 		return Stats{}, fmt.Errorf("hostlist: read %q: %w — remediation: check the file is not truncated", src.Path, scanErr)
 	}
 
