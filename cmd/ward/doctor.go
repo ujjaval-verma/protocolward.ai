@@ -18,6 +18,9 @@ import (
 
 type doctorOpts struct {
 	configPath string
+	// bindProbe checks that listenAddr can be bound. nil means probeBind; tests
+	// inject a fake so they never have to bind a real port.
+	bindProbe func(listenAddr string) error
 }
 
 // upstreamProbeResult is one row in the doctor report.
@@ -34,19 +37,31 @@ var (
 	doctorMutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))            // muted grey
 )
 
-// probeBind attempts to briefly bind UDP+TCP on listenAddr. Returns nil if
-// both succeed and release cleanly. Failure → the underlying *net.OpError.
+// probeBind attempts to briefly bind UDP+TCP on listenAddr. It returns nil if
+// both binds succeed (Close errors are ignored). On failure it returns an
+// error that names the failing step (resolve, udp bind or tcp bind) and wraps
+// the underlying error.
 func probeBind(listenAddr string) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
-	if err != nil {
+	return probeBindWith(listenAddr, net.ListenPacket, net.Listen)
+}
+
+// probeBindWith is probeBind with the listen functions injected, so tests can
+// exercise each outcome without binding a real port. Both are called with
+// listenAddr verbatim; the UDP socket is released before the TCP bind.
+func probeBindWith(
+	listenAddr string,
+	listenUDP func(network, address string) (net.PacketConn, error),
+	listenTCP func(network, address string) (net.Listener, error),
+) error {
+	if _, err := net.ResolveUDPAddr("udp", listenAddr); err != nil {
 		return fmt.Errorf("resolve %q: %w", listenAddr, err)
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := listenUDP("udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("udp bind %q: %w", listenAddr, err)
 	}
 	udpConn.Close()
-	tcpListener, err := net.Listen("tcp", listenAddr)
+	tcpListener, err := listenTCP("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("tcp bind %q: %w", listenAddr, err)
 	}
@@ -89,7 +104,11 @@ func doctorRun(out io.Writer, opts doctorOpts) error {
 	anyFail := false
 
 	// Bind probe.
-	if bindErr := probeBind(cfg.Listen); bindErr != nil {
+	bindProbe := opts.bindProbe
+	if bindProbe == nil {
+		bindProbe = probeBind
+	}
+	if bindErr := bindProbe(cfg.Listen); bindErr != nil {
 		anyFail = true
 		fmt.Fprintln(out, doctorFailStyle.Render("[FAIL]")+" bind "+cfg.Listen)
 		fmt.Fprintln(out, doctorMutedStyle.Render("       "+bindErr.Error()))

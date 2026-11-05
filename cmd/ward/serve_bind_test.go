@@ -37,8 +37,19 @@ timeouts:
 }
 
 // takeTCPPortWithFreeUDP holds a TCP listener on an ephemeral loopback port
-// whose UDP twin is free right now. Same helper as in internal/dataplane's
-// tests (separate package, so duplicated).
+// whose UDP twin is free right now. The real binary is exec'd, so no listen
+// function can be injected here; instead the test holds whatever socket
+// another process might take:
+//   - The TCP listener is held for the whole test (t.Cleanup), so only the UDP
+//     twin can be lost, and only between this probe-close and ward's UDP bind.
+//   - If another process takes the UDP twin in that window, ward's UDP bind
+//     fails with EADDRINUSE instead of its TCP bind. bindErrRemediation maps
+//     both to the same "port already in use at <addr>" text and ward exits
+//     non-zero, so every assertion of assertBindFailureExit still holds.
+//     TestServe_UDPPortTaken_ExitsNonZeroWithRemediation proves, through the
+//     same helper, that the UDP outcome passes them all.
+//   - The TCP-specific path (UDP bound, TCP refused, UDP released) is proved
+//     without real ports in internal/dataplane's injected-listen tests.
 func takeTCPPortWithFreeUDP(t *testing.T) string {
 	t.Helper()
 	for range 20 {
