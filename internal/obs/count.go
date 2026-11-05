@@ -13,8 +13,8 @@ import (
 // RecordCounter is a slog.Handler that counts records with one message, keyed
 // by the string value of their source_id attribute. Records with another
 // message, or without a source_id attribute, are ignored. Construct it only
-// through CountRecords; the zero value is safe to use but counts nothing
-// until it has a message to match.
+// through CountRecords; the zero value does not panic but matches only records
+// whose message is empty.
 type RecordCounter struct {
 	msg    string
 	mu     sync.Mutex
