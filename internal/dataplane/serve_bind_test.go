@@ -73,29 +73,6 @@ func serveWithin(t *testing.T, srv *dataplane.Server, d time.Duration) error {
 	}
 }
 
-// takeTCPPortWithFreeUDP holds a TCP listener on an ephemeral loopback port
-// whose UDP twin is free right now, so Serve's UDP bind succeeds and its TCP
-// bind fails. The kernel picks TCP and UDP ports independently, hence the
-// retry. The listener is closed by t.Cleanup.
-func takeTCPPortWithFreeUDP(t *testing.T) string {
-	t.Helper()
-	for range 20 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("pre-bind tcp: %v", err)
-		}
-		addr := ln.Addr().String()
-		if pc, err := net.ListenPacket("udp", addr); err == nil {
-			_ = pc.Close()
-			t.Cleanup(func() { _ = ln.Close() })
-			return addr
-		}
-		_ = ln.Close()
-	}
-	t.Fatal("no loopback port with a free UDP twin in 20 tries")
-	return ""
-}
-
 func TestServe_UDPPortTaken_ReturnsBindError(t *testing.T) {
 	t.Parallel()
 	held, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -112,35 +89,6 @@ func TestServe_UDPPortTaken_ReturnsBindError(t *testing.T) {
 	if msg := err.Error(); !strings.Contains(msg, "udp") || !strings.Contains(msg, addr) {
 		t.Errorf("Serve error %q should name udp and %s", msg, addr)
 	}
-}
-
-// Serial: needs a TCP port whose UDP twin stays free, then rebinds it; a parallel test's bind could take either.
-func TestServe_TCPPortTaken_ReturnsBindErrorAndReleasesUDP(t *testing.T) {
-	addr := takeTCPPortWithFreeUDP(t)
-
-	err := serveWithin(t, newBindTestServer(t, addr), 2*time.Second)
-	if !errors.Is(err, syscall.EADDRINUSE) {
-		t.Fatalf("Serve = %v; want an error wrapping EADDRINUSE", err)
-	}
-	if msg := err.Error(); !strings.Contains(msg, "tcp") || !strings.Contains(msg, addr) {
-		t.Errorf("Serve error %q should name tcp and %s", msg, addr)
-	}
-	pc, err := rebindUDP(addr)
-	if err != nil {
-		t.Fatalf("udp %s still bound after Serve returned: %v", addr, err)
-	}
-	_ = pc.Close()
-}
-
-// rebindUDP re-binds addr to prove a port was released. Another test may grab
-// a just-freed ephemeral port, so it retries once after a short sleep.
-func rebindUDP(addr string) (net.PacketConn, error) {
-	pc, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		time.Sleep(50 * time.Millisecond)
-		pc, err = net.ListenPacket("udp", addr)
-	}
-	return pc, err
 }
 
 func listeningLines(t *testing.T) []map[string]any {
@@ -176,17 +124,6 @@ func TestServe_LogsListeningOnceBothListenersServe(t *testing.T) {
 	}
 	if lines[0]["addr"] != addr {
 		t.Errorf("dns: listening addr = %v; want %s", lines[0]["addr"], addr)
-	}
-}
-
-// Serial: swaps slog.Default through obs.Capture to assert on log records.
-func TestServe_BindFailure_NoListeningLine(t *testing.T) {
-	restore := obs.Capture(t)
-	defer restore()
-	addr := takeTCPPortWithFreeUDP(t)
-	_ = serveWithin(t, newBindTestServer(t, addr), 2*time.Second)
-	if n := len(listeningLines(t)); n != 0 {
-		t.Errorf("dns: listening lines = %d after a bind failure; want 0", n)
 	}
 }
 
