@@ -34,9 +34,9 @@
 //
 // # Invariants
 //
-//   - No silent drops (invariant #7): every skipped line that carries content is counted in
-//     Stats and the first 16 per source emit a WARN; comment and blank lines
-//     are not skipped content and are not reported.
+//   - No silent drops (invariant #7): every skipped line that carries content
+//     is counted in Stats and the first 16 per source emit a WARN; comment and
+//     blank lines are not skipped content and are not reported.
 //   - Every error names remediation (invariant #8): exported error types
 //     include a remediation hint in their Error() string.
 //   - decoy.Set deliberately does NOT implement policy.Matcher. The Match
@@ -115,10 +115,13 @@ func truncateEntry(s string) string {
 // Stats describes per-source parse outcome. Same shape as hostlist.Stats so
 // the caller can log both kinds uniformly.
 type Stats struct {
-	ID           string
-	Path         string
-	Entries      int
-	SkippedLines int // lines with content that could not be loaded, each rejected with a reason; the first 16 per source are logged at WARN; comment and blank lines are not counted
+	ID      string
+	Path    string
+	Entries int
+	// SkippedLines counts lines with content that could not be loaded, each
+	// rejected with a reason; the first 16 per source are logged at WARN;
+	// comment and blank lines are not counted.
+	SkippedLines int
 	LoadDuration time.Duration
 }
 
@@ -238,7 +241,8 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 }
 
 // warnCapPerSource bounds the skipped-line WARN logs per source (invalid names
-// and unsupported shapes), matching hostlist; further skips are still counted in Stats.SkippedLines.
+// and unsupported shapes), matching hostlist; further skips are still counted
+// in Stats.SkippedLines.
 const warnCapPerSource = 16
 
 // parseLine extracts the decoy hostname from one file line: a single field,

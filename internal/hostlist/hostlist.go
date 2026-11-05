@@ -53,10 +53,13 @@ type Source struct {
 
 // Stats describes per-source parse outcome.
 type Stats struct {
-	ID           string
-	Path         string
-	Entries      int // unique hostnames parsed from this source; duplicates within the same source count once, but a hostname also present in another source still counts here
-	SkippedLines int // lines with content that could not be loaded, each rejected with a reason; the first 16 per source are logged at WARN; comment and blank lines are not counted
+	ID      string
+	Path    string
+	Entries int // unique hostnames parsed from this source; duplicates within the same source count once, but a hostname also present in another source still counts here
+	// SkippedLines counts lines with content that could not be loaded, each
+	// rejected with a reason; the first 16 per source are logged at WARN;
+	// comment and blank lines are not counted.
+	SkippedLines int
 	LoadDuration time.Duration
 }
 
