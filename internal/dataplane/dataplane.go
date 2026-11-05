@@ -256,7 +256,7 @@ type Server struct {
 	// locked, and no miekg method, socket Close or test hook is called, while
 	// it is held.
 	lifeMu   sync.Mutex
-	stopping bool           // set by the first Shutdown (the owner); never cleared
+	stopping bool           // set by every Shutdown (the first is the owner); never cleared
 	pc       net.PacketConn // bound by Serve; taken (and cleared) by the owner
 	ln       net.Listener   // likewise
 
@@ -269,8 +269,7 @@ type Server struct {
 	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
 	// published and before either transport activates. afterTake runs in
 	// every Shutdown after the take and before any miekg call or wait on
-	// stopped.
-	// afterNotStarted runs in Shutdown when miekg answered "not started" for a
+	// stopped. afterNotStarted runs in Shutdown when miekg answered "not started" for a
 	// transport, before its socket is closed.
 	beforeActivate  func()
 	afterTake       func()
@@ -390,7 +389,10 @@ func NewServer(cfg Config) (*Server, error) {
 }
 
 // Addr returns the shared UDP/TCP listen address once both listeners are
-// serving, or "" before that. It is not cleared when Serve returns.
+// serving, or "" before that. It is not cleared when Serve returns. If
+// Shutdown runs while Serve is starting (between bind and activation), Addr
+// may still become non-empty after Shutdown began; the listeners are already
+// stopped then.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -405,7 +407,9 @@ func (s *Server) Addr() string {
 // moment Addr becomes non-empty. It is never closed if Serve fails to bind,
 // and it stays open forever if Serve fails or returns early for any other
 // reason, so callers must also watch Serve's return, for example in a select
-// with it. Every call returns the same channel.
+// with it. Every call returns the same channel. If Shutdown runs while Serve
+// is starting (between bind and activation), the channel may still close
+// after Shutdown began; the listeners are already stopped then.
 func (s *Server) Listening() <-chan struct{} {
 	return s.addrCh
 }
@@ -467,6 +471,14 @@ func (s *Server) bind() (net.PacketConn, net.Listener, error) {
 // when they stopped because of Shutdown. If either listener stops with an
 // error, Serve stops the other, drains in-flight queries (bounded by
 // Config.ShutdownTimeout) and returns that first error.
+//
+// Serve returns nil when the listeners stopped because of Shutdown, whenever
+// Shutdown ran. If Shutdown ran before Serve, Serve binds nothing and returns
+// nil, the same answer as a clean stop. If Shutdown lands while Serve is
+// binding, a successful bind is closed again and Serve returns nil, but a
+// failed bind still returns the bind error. Once Shutdown has begun, a
+// listener error is treated as part of the stop: Serve does not return it and
+// logs it at Debug.
 //
 // A second concurrent or sequential call to Serve on the same *Server
 // returns ErrAlreadyServing immediately without blocking.
@@ -533,11 +545,11 @@ func (s *Server) Serve() error {
 	return first
 }
 
-// abort stops both listeners after one of them failed. Closing the sockets
-// first unblocks a peer that has not reached its serve loop yet (miekg's
-// ShutdownContext returns "server not started" and would leave it running).
-// Shutdown then drains in-flight queries, including classifyAsync goroutines,
-// before Serve returns.
+// abort stops both listeners after one of them failed. It closes both
+// sockets first, so a peer that has not reached its serve loop cannot start
+// serving even when an earlier Shutdown call, not this one, owns the
+// listeners. Shutdown then drains in-flight queries, including classifyAsync
+// goroutines, before Serve returns.
 func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 	_ = pc.Close()
 	_ = ln.Close()
@@ -559,6 +571,16 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 // returning; calls still waiting for an external classifier are skipped.
 // If ctx ends first, the error wraps ErrDrainTimeout and names the
 // classifications still running; Shutdown does not log it.
+//
+// Shutdown may be called before, during or after Serve, and more than once.
+// Only the call that finds the bound listeners stops them. If Serve had bound
+// a listener but not activated it, that call closes its socket and then asks
+// miekg to stop it once more, so a listener that activated in between is
+// stopped too and Serve returns. Any listener this call did not stop is
+// reported by an error wrapping ErrNotStarted. A call that does not own the
+// listeners first waits, within its own ctx, until the owning call has
+// stopped them; if ctx ends first it returns an error wrapping
+// ErrDrainTimeout. Then each call drains in-flight queries within its own ctx.
 func (s *Server) Shutdown(ctx context.Context) error {
 	// Cancel queued and future external-classifier calls first so the drain
 	// below waits only for calls already running. Safe to call repeatedly.
@@ -629,8 +651,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // stopTransport stops one transport for the Shutdown that owns its socket.
-// If miekg answers "not started", the transport had not activated: the
-// socket is closed so it cannot serve, and the result is ErrNotStarted.
+// Only the owner calls miekg, so a "not started" answer means the transport
+// had not activated, never that another call is draining it. The socket is
+// then closed so the transport cannot serve on it, and miekg is asked once
+// more: if ActivateAndServe started the transport between the first answer
+// and the close, that second call runs miekg's own stop and its result is
+// returned. Otherwise the result is ErrNotStarted.
 func (s *Server) stopTransport(ctx context.Context, transport string, srv *dns.Server, sock io.Closer) error {
 	err := srv.ShutdownContext(ctx)
 	if !notStarted(err) {
@@ -657,7 +683,10 @@ func (s *Server) isStopping() bool {
 
 // notStarted reports miekg's "server not started". In miekg v1.1.72,
 // ShutdownContext returns a *dns.Error only for that case (server.go:415);
-// its other return is ctx.Err() or nil.
+// its other return is ctx.Err() or nil. TestServe_ShutdownBetweenBindAndActivate_ReturnsNil
+// reaches this through real miekg and fails if an upgrade stops returning a
+// *dns.Error for "not started". It cannot catch a new, different *dns.Error
+// return, so review ShutdownContext on every miekg bump.
 func notStarted(err error) bool {
 	var de *dns.Error
 	return errors.As(err, &de)
