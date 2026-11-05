@@ -58,6 +58,11 @@ var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
 // need a fresh listener (invariant #8: every error names a remediation).
 var ErrAlreadyServing = errors.New("dataplane: Serve already called on this Server — remediation: create a new Server via NewServer for each listener lifecycle")
 
+// ErrNotStarted is wrapped by the error Shutdown returns for a transport
+// it did not stop: Serve had not activated it yet, or another Shutdown
+// call owns the listeners and stops them. Test with errors.Is.
+var ErrNotStarted = errors.New("dataplane: a listener was not serving when Shutdown ran (not started yet, or another Shutdown call stopped it) — remediation: none needed; a Serve call that is still starting returns without serving")
+
 // DEFERRED(slice-B): The Resolver interface exposes *dns.Msg as the request/response
 // unit. This is a documented design choice, not a leak — DNS message framing is the
 // natural unit of work at this boundary. Callers wiring a Resolver into the dataplane
@@ -507,7 +512,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// Stop accepting new queries.
 	udpErr := s.udpSrv.ShutdownContext(ctx)
+	if notStarted(udpErr) {
+		udpErr = ErrNotStarted
+	}
 	tcpErr := s.tcpSrv.ShutdownContext(ctx)
+	if notStarted(tcpErr) {
+		tcpErr = ErrNotStarted
+	}
 
 	// Drain in-flight queries within the context deadline.
 	drained := make(chan struct{})
@@ -534,6 +545,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr))
 	}
 	return errors.Join(errs...)
+}
+
+// notStarted reports miekg's "server not started". In miekg v1.1.72,
+// ShutdownContext returns a *dns.Error only for that case (server.go:415);
+// its other return is ctx.Err() or nil.
+func notStarted(err error) bool {
+	var de *dns.Error
+	return errors.As(err, &de)
 }
 
 func (s *Server) enterFlight() {
