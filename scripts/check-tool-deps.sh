@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# Check, by dry run, that each make target installs only the pinned tools it
-# runs on a fresh clone (no .tools/), and that every install line is the one
-# `make tools` prints (same module, same pinned version). Guards against a
-# target depending on the catch-all `tools` again (issue #26).
+# Check, by dry run, that the gate and tool targets (lint, fmt, vuln,
+# check-workflows, check, ci, pre-push, audit, test, tools, bootstrap) install
+# only the pinned tools they run on a fresh clone (no .tools/), and that every
+# install line is the one `make tools` prints (same module, same pinned
+# version). Guards against one of them depending on the catch-all `tools`
+# again (issue #26).
 #
 # Usage: scripts/check-tool-deps.sh [makefile]
 #   makefile  Makefile to check (default: the repo's Makefile). It is copied to
