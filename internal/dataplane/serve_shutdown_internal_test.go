@@ -478,6 +478,13 @@ func TestShutdown_SecondCallWaitsForOwnerToStopListeners(t *testing.T) {
 		if !errors.Is(err, ErrNotStarted) {
 			t.Errorf("second Shutdown = %v; want it to also wrap ErrNotStarted (it stopped no listener)", err)
 		}
+		if err != nil {
+			drainLine := strings.SplitN(err.Error(), "\n", 2)[0] // errors.Join puts the drain error first
+			if !strings.Contains(drainLine, "while waiting for another Shutdown call to stop the listeners") ||
+				!strings.Contains(drainLine, "remediation:") || strings.Contains(drainLine, "classification(s)") {
+				t.Errorf("drain error %q; want it to say it was waiting for another Shutdown call to stop the listeners, name a remediation and give no classification count", drainLine)
+			}
+		}
 
 		resume()
 		if err := waitShutdown(t, "A", a); err != nil {

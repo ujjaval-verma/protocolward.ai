@@ -50,8 +50,10 @@ import (
 var ErrListenerStopped = errors.New("stopped")
 
 // ErrDrainTimeout is returned (wrapped) by Shutdown when its context ends
-// before in-flight queries and classifications have drained. The message
-// names how many classifications were still running.
+// before in-flight queries and classifications have drained. When the drain
+// itself timed out, the message names how many classifications were still
+// running. When the call was still waiting for another Shutdown call to stop
+// the listeners, the drain did not start and the message has no count.
 var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
 
 // ErrAlreadyServing is returned by a second call to Serve() on the same
@@ -561,7 +563,7 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 		// a classification, so the remediation does not blame the classifier.
 		slog.Warn("dataplane: shutdown drain incomplete",
 			"error", err.Error(),
-			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
+			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; if the error counts the classifications (the drain itself timed out), 0 means a query, not the classifier, was stuck; raise timeouts.shutdown in ward.yaml if this recurs",
 		)
 	}
 }
@@ -569,8 +571,9 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 // Shutdown gracefully stops the server within the context deadline.
 // In-flight queries and in-process classifications are drained before
 // returning; calls still waiting for an external classifier are skipped.
-// If ctx ends first, the error wraps ErrDrainTimeout and names the
-// classifications still running; Shutdown does not log it.
+// If ctx ends first, the error wraps ErrDrainTimeout and, when the drain
+// itself timed out, names the classifications still running; Shutdown does
+// not log it.
 //
 // Shutdown may be called before, during or after Serve, and more than once.
 // Only the call that finds the bound listeners stops them. If Serve had bound
@@ -616,7 +619,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		case <-s.stopped:
 		case <-ctx.Done():
 			return errors.Join(
-				fmt.Errorf("%w: the Shutdown call that owns the listeners had not stopped them: %w", ErrDrainTimeout, ctx.Err()),
+				fmt.Errorf("%w while waiting for another Shutdown call to stop the listeners; the drain did not start — remediation: raise timeouts.shutdown in ward.yaml if this recurs: %w", ErrDrainTimeout, ctx.Err()),
 				fmt.Errorf("dataplane shutdown (udp): %w", udpErr),
 				fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr),
 			)
