@@ -37,8 +37,10 @@ var (
 	doctorMutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))            // muted grey
 )
 
-// probeBind attempts to briefly bind UDP+TCP on listenAddr. Returns nil if
-// both succeed and release cleanly. Failure → the underlying *net.OpError.
+// probeBind attempts to briefly bind UDP+TCP on listenAddr. It returns nil if
+// both binds succeed (Close errors are ignored). On failure it returns an
+// error that names the failing step (resolve, udp bind or tcp bind) and wraps
+// the underlying error.
 func probeBind(listenAddr string) error {
 	return probeBindWith(listenAddr, net.ListenPacket, net.Listen)
 }
