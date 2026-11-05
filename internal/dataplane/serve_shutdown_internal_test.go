@@ -487,4 +487,66 @@ func TestShutdown_SecondCallWaitsForOwnerToStopListeners(t *testing.T) {
 			t.Fatalf("Serve = %v; want nil", err)
 		}
 	})
+
+	t.Run("owner held after it began stopping", func(t *testing.T) {
+		t.Parallel()
+		// The owner A is held inside afterNotStarted("tcp"): it has run
+		// miekg for UDP and for TCP's first answer, but has not finished
+		// stopping. TCP can activate on the still-open listener meanwhile.
+		srv := newServeTestServer(t, "127.0.0.1:0")
+		held := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		releaseA := func() { once.Do(func() { close(release) }) }
+		t.Cleanup(releaseA)
+		a := make(chan error, 1)
+		var b <-chan error
+		srv.beforeActivate = func() {
+			// Runs on the Serve goroutine, so it cannot fail the test.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				a <- srv.Shutdown(ctx)
+			}()
+			select {
+			case <-held:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		srv.afterNotStarted = func(transport string) {
+			if transport != "tcp" {
+				return
+			}
+			b = shutAsync(srv)
+			close(held)
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+			}
+		}
+
+		serveErr := make(chan error, 1)
+		go func() { serveErr <- srv.Serve() }()
+		select {
+		case <-held:
+		case <-time.After(4 * time.Second):
+			t.Fatal("afterNotStarted(tcp) never held the owner")
+		}
+		select {
+		case err := <-b:
+			t.Fatalf("second Shutdown returned while the owner was held after it began stopping: %v", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		releaseA()
+		if err := waitShutdown(t, "A", a); !errors.Is(err, ErrNotStarted) {
+			t.Errorf("owner Shutdown A = %v; want an error wrapping ErrNotStarted (UDP never activated)", err)
+		}
+		if err := waitShutdown(t, "B", b); !errors.Is(err, ErrNotStarted) || errors.Is(err, ErrDrainTimeout) {
+			t.Errorf("second Shutdown B = %v; want an error wrapping ErrNotStarted and not ErrDrainTimeout", err)
+		}
+		if err := waitServeErr(t, serveErr); err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+	})
 }
