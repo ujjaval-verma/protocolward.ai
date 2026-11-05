@@ -53,7 +53,7 @@ func waitServeErr(t *testing.T, errCh <-chan error) error {
 	case err := <-errCh:
 		return err
 	case <-time.After(2 * time.Second):
-		t.Fatal("Serve did not return within 2s of the listener failing")
+		t.Fatal("Serve did not return within 2s")
 		return nil
 	}
 }
