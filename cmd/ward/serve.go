@@ -341,8 +341,8 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 	return c, closeFn, startFailed
 }
 
-// startDashboard builds the dashboard handler, binds addr with listen, serves
-// in a goroutine and logs dashboard: ready with the bound address. On a bind
+// startDashboard builds the dashboard handler, binds addr with listen (nil
+// means dashListen), serves in a goroutine and logs dashboard: ready with the bound address. On a bind
 // failure it prints the startup error and returns a *serveError (Code 1).
 func startDashboard(addr string, listen func(string) (net.Listener, error), store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
 	dashSrv := &http.Server{
@@ -360,6 +360,9 @@ func startDashboard(addr string, listen func(string) (net.Listener, error), stor
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if listen == nil {
+		listen = dashListen
 	}
 	dashListener, err := listen(addr)
 	if err != nil {
@@ -668,11 +671,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// Only now, so /healthz can read the server and the model state from its
 	// first answer. NewServer binds nothing, so a listen failure here needs no
 	// dataplane cleanup.
-	listenDash := opts.listenDash
-	if listenDash == nil {
-		listenDash = dashListen
-	}
-	dashSrv, err := startDashboard(dashAddr, listenDash, dashStore, flagLog, srv, modelStartFailed)
+	dashSrv, err := startDashboard(dashAddr, opts.listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
 		return err
 	}
