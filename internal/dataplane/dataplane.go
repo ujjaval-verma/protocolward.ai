@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"runtime/debug"
@@ -49,14 +50,21 @@ import (
 var ErrListenerStopped = errors.New("stopped")
 
 // ErrDrainTimeout is returned (wrapped) by Shutdown when its context ends
-// before in-flight queries and classifications have drained. The message
-// names how many classifications were still running.
+// before in-flight queries and classifications have drained. When the drain
+// itself timed out, the message names how many classifications were still
+// running. When the call was still waiting for another Shutdown call to stop
+// the listeners, the drain did not start and the message has no count.
 var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
 
 // ErrAlreadyServing is returned by a second call to Serve() on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
 // need a fresh listener (invariant #8: every error names a remediation).
 var ErrAlreadyServing = errors.New("dataplane: Serve already called on this Server — remediation: create a new Server via NewServer for each listener lifecycle")
+
+// ErrNotStarted is wrapped by the error Shutdown returns for a transport
+// it did not stop: Serve had not activated it yet, or another Shutdown
+// call owns the listeners and stops them. Test with errors.Is.
+var ErrNotStarted = errors.New("dataplane: a listener was not serving when Shutdown ran (not started yet, or another Shutdown call stopped it) — remediation: none needed; a Serve call that is still starting returns without serving")
 
 // DEFERRED(slice-B): The Resolver interface exposes *dns.Msg as the request/response
 // unit. This is a documented design choice, not a leak — DNS message framing is the
@@ -246,6 +254,29 @@ type Server struct {
 	// Any subsequent call returns ErrAlreadyServing immediately without blocking.
 	serveStarted atomic.Bool
 
+	// lifeMu guards stopping, pc and ln. It is a leaf lock: nothing else is
+	// locked, and no miekg method, socket Close or test hook is called, while
+	// it is held.
+	lifeMu   sync.Mutex
+	stopping bool           // set by every Shutdown (the first is the owner); never cleared
+	pc       net.PacketConn // bound by Serve; taken (and cleared) by the owner
+	ln       net.Listener   // likewise
+
+	// stopped is closed by the owner once both transports are stopped (or
+	// at once if it took no sockets). Every other Shutdown waits on it,
+	// bounded by its own ctx, before it drains in-flight queries.
+	stopped chan struct{}
+
+	// Test seams, nil in production. Internal tests set them before calling
+	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
+	// published and before either transport activates. afterTake runs in
+	// every Shutdown after the take and before any miekg call or wait on
+	// stopped. afterNotStarted runs in Shutdown when miekg answered "not started" for a
+	// transport, before its socket is closed.
+	beforeActivate  func()
+	afterTake       func()
+	afterNotStarted func(transport string)
+
 	// inFlight tracks queries currently being processed for graceful drain.
 	// Slow-path classifyAsync goroutines also Add/Done here so Shutdown
 	// drains them before returning.
@@ -333,6 +364,7 @@ func NewServer(cfg Config) (*Server, error) {
 		stopCancel:    stopCancel,
 		cfg:           cfg,
 		addrCh:        make(chan struct{}),
+		stopped:       make(chan struct{}),
 		listenUDP:     net.ListenPacket,
 		listenTCP:     net.Listen,
 		classifySlots: make(chan struct{}, maxClassifyInFlight),
@@ -359,7 +391,10 @@ func NewServer(cfg Config) (*Server, error) {
 }
 
 // Addr returns the shared UDP/TCP listen address once both listeners are
-// serving, or "" before that. It is not cleared when Serve returns.
+// serving, or "" before that. It is not cleared when Serve returns. If
+// Shutdown runs while Serve is starting (between bind and activation), Addr
+// may still become non-empty after Shutdown began; the listeners are already
+// stopped then.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -374,7 +409,9 @@ func (s *Server) Addr() string {
 // moment Addr becomes non-empty. It is never closed if Serve fails to bind,
 // and it stays open forever if Serve fails or returns early for any other
 // reason, so callers must also watch Serve's return, for example in a select
-// with it. Every call returns the same channel.
+// with it. Every call returns the same channel. If Shutdown runs while Serve
+// is starting (between bind and activation), the channel may still close
+// after Shutdown began; the listeners are already stopped then.
 func (s *Server) Listening() <-chan struct{} {
 	return s.addrCh
 }
@@ -437,12 +474,23 @@ func (s *Server) bind() (net.PacketConn, net.Listener, error) {
 // error, Serve stops the other, drains in-flight queries (bounded by
 // Config.ShutdownTimeout) and returns that first error.
 //
+// Serve returns nil when the listeners stopped because of Shutdown, whenever
+// Shutdown ran. If Shutdown ran before Serve, Serve binds nothing and returns
+// nil, the same answer as a clean stop. If Shutdown lands while Serve is
+// binding, a successful bind is closed again and Serve returns nil, but a
+// failed bind still returns the bind error. Once Shutdown has begun, a
+// listener error is treated as part of the stop: Serve does not return it and
+// logs it at Debug.
+//
 // A second concurrent or sequential call to Serve on the same *Server
 // returns ErrAlreadyServing immediately without blocking.
 func (s *Server) Serve() error {
 	// CompareAndSwap false→true: only the first caller proceeds.
 	if !s.serveStarted.CompareAndSwap(false, true) {
 		return ErrAlreadyServing
+	}
+	if s.isStopping() {
+		return nil // Shutdown already ran (and cancelled stopCtx): bind nothing
 	}
 
 	pc, ln, err := s.bind()
@@ -451,16 +499,31 @@ func (s *Server) Serve() error {
 		return err
 	}
 	local := pc.LocalAddr().String()
+	s.lifeMu.Lock()
+	if s.stopping {
+		// A Shutdown landed during bind. The sockets were never published,
+		// so nothing else holds them.
+		s.lifeMu.Unlock()
+		_ = pc.Close()
+		_ = ln.Close()
+		return nil
+	}
+	s.pc, s.ln = pc, ln
 	s.udpSrv.PacketConn = pc
 	s.tcpSrv.Listener = ln
+	s.lifeMu.Unlock()
 
-	type stopped struct {
+	if s.beforeActivate != nil {
+		s.beforeActivate()
+	}
+
+	type listenerResult struct {
 		transport string
 		err       error
 	}
-	done := make(chan stopped, 2)
-	go func() { done <- stopped{"udp", s.udpSrv.ActivateAndServe()} }()
-	go func() { done <- stopped{"tcp", s.tcpSrv.ActivateAndServe()} }()
+	done := make(chan listenerResult, 2)
+	go func() { done <- listenerResult{"udp", s.udpSrv.ActivateAndServe()} }()
+	go func() { done <- listenerResult{"tcp", s.tcpSrv.ActivateAndServe()} }()
 
 	var first error
 	for range 2 {
@@ -468,17 +531,27 @@ func (s *Server) Serve() error {
 		if r.err == nil || first != nil {
 			continue // clean stop, or the peer we are already aborting
 		}
+		if s.isStopping() {
+			// Almost always the close Shutdown just made: part of the stop.
+			slog.Debug("dataplane: listener stopped during shutdown",
+				"transport", r.transport,
+				"addr", local,
+				"error", r.err.Error(),
+				"remediation", "none needed: ward was stopping and this is usually the close it made; if ward did not exit, restart it",
+			)
+			continue
+		}
 		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
 		s.abort(pc, ln)
 	}
 	return first
 }
 
-// abort stops both listeners after one of them failed. Closing the sockets
-// first unblocks a peer that has not reached its serve loop yet (miekg's
-// ShutdownContext returns "server not started" and would leave it running).
-// Shutdown then drains in-flight queries, including classifyAsync goroutines,
-// before Serve returns.
+// abort stops both listeners after one of them failed. It closes both
+// sockets first, so a peer that has not reached its serve loop cannot start
+// serving even when an earlier Shutdown call, not this one, owns the
+// listeners. Shutdown then drains in-flight queries, including classifyAsync
+// goroutines, before Serve returns.
 func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 	_ = pc.Close()
 	_ = ln.Close()
@@ -490,7 +563,7 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 		// a classification, so the remediation does not blame the classifier.
 		slog.Warn("dataplane: shutdown drain incomplete",
 			"error", err.Error(),
-			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
+			"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out while stopping after a listener error; if the error counts the classifications (the drain itself timed out), 0 means a query, not the classifier, was stuck; raise timeouts.shutdown in ward.yaml if this recurs",
 		)
 	}
 }
@@ -498,16 +571,60 @@ func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
 // Shutdown gracefully stops the server within the context deadline.
 // In-flight queries and in-process classifications are drained before
 // returning; calls still waiting for an external classifier are skipped.
-// If ctx ends first, the error wraps ErrDrainTimeout and names the
-// classifications still running; Shutdown does not log it.
+// If ctx ends first, the error wraps ErrDrainTimeout and, when the drain
+// itself timed out, names the classifications still running; Shutdown does
+// not log it.
+//
+// Shutdown may be called before, during or after Serve, and more than once.
+// Only the call that finds the bound listeners stops them. If Serve had bound
+// a listener but not activated it, that call closes its socket and then asks
+// miekg to stop it once more, so a listener that activated in between is
+// stopped too and Serve returns. Any listener this call did not stop is
+// reported by an error wrapping ErrNotStarted. A call that does not own the
+// listeners first waits, within its own ctx, until the owning call has
+// stopped them; if ctx ends first it returns an error wrapping
+// ErrDrainTimeout. Then each call drains in-flight queries within its own ctx.
 func (s *Server) Shutdown(ctx context.Context) error {
 	// Cancel queued and future external-classifier calls first so the drain
 	// below waits only for calls already running. Safe to call repeatedly.
 	s.stopCancel()
 
+	// Take the bound sockets. Only the first call (the owner) takes them and
+	// calls miekg; every other call reports both transports as not started.
+	s.lifeMu.Lock()
+	owner := !s.stopping
+	s.stopping = true
+	pc, ln := s.pc, s.ln
+	s.pc, s.ln = nil, nil
+	s.lifeMu.Unlock()
+	if s.afterTake != nil {
+		s.afterTake()
+	}
+
 	// Stop accepting new queries.
-	udpErr := s.udpSrv.ShutdownContext(ctx)
-	tcpErr := s.tcpSrv.ShutdownContext(ctx)
+	udpErr := ErrNotStarted
+	if pc != nil {
+		udpErr = s.stopTransport(ctx, "udp", s.udpSrv, pc)
+	}
+	tcpErr := ErrNotStarted
+	if ln != nil {
+		tcpErr = s.stopTransport(ctx, "tcp", s.tcpSrv, ln)
+	}
+	if owner {
+		close(s.stopped)
+	} else {
+		// Drain only once the owner has stopped the listeners: before that,
+		// a query can still start and enter inFlight from zero.
+		select {
+		case <-s.stopped:
+		case <-ctx.Done():
+			return errors.Join(
+				fmt.Errorf("%w while waiting for another Shutdown call to stop the listeners; the drain did not start — remediation: raise timeouts.shutdown in ward.yaml if this recurs: %w", ErrDrainTimeout, ctx.Err()),
+				fmt.Errorf("dataplane shutdown (udp): %w", udpErr),
+				fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr),
+			)
+		}
+	}
 
 	// Drain in-flight queries within the context deadline.
 	drained := make(chan struct{})
@@ -534,6 +651,48 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("dataplane shutdown (tcp): %w", tcpErr))
 	}
 	return errors.Join(errs...)
+}
+
+// stopTransport stops one transport for the Shutdown that owns its socket.
+// Only the owner calls miekg, so a "not started" answer means the transport
+// had not activated, never that another call is draining it. The socket is
+// then closed so the transport cannot serve on it, and miekg is asked once
+// more: if ActivateAndServe started the transport between the first answer
+// and the close, that second call runs miekg's own stop and its result is
+// returned. Otherwise the result is ErrNotStarted.
+func (s *Server) stopTransport(ctx context.Context, transport string, srv *dns.Server, sock io.Closer) error {
+	err := srv.ShutdownContext(ctx)
+	if !notStarted(err) {
+		return err
+	}
+	if s.afterNotStarted != nil {
+		s.afterNotStarted(transport)
+	}
+	_ = sock.Close()
+	// ActivateAndServe may have started the transport between miekg's answer
+	// and the close. Ask once more: if it did, this runs miekg's own stop.
+	if err := srv.ShutdownContext(ctx); !notStarted(err) {
+		return err
+	}
+	return ErrNotStarted
+}
+
+// isStopping reports whether a Shutdown call has begun.
+func (s *Server) isStopping() bool {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	return s.stopping
+}
+
+// notStarted reports miekg's "server not started". In miekg v1.1.72,
+// ShutdownContext returns a *dns.Error only for that case (server.go:415);
+// its other return is ctx.Err() or nil. TestServe_ShutdownBetweenBindAndActivate_ReturnsNil
+// reaches this through real miekg and fails if an upgrade stops returning a
+// *dns.Error for "not started". It cannot catch a new, different *dns.Error
+// return, so review ShutdownContext on every miekg bump.
+func notStarted(err error) bool {
+	var de *dns.Error
+	return errors.As(err, &de)
 }
 
 func (s *Server) enterFlight() {

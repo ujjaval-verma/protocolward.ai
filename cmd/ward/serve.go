@@ -341,9 +341,10 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 	return c, closeFn, startFailed
 }
 
-// startDashboard builds the dashboard handler, binds addr with listen, serves
-// in a goroutine and logs dashboard: ready with the bound address. On a bind
-// failure it prints the startup error and returns a *serveError (Code 1).
+// startDashboard builds the dashboard handler, binds addr with listen (nil
+// means dashListen), serves in a goroutine and logs dashboard: ready with the
+// bound address. On a bind failure it prints the startup error and returns a
+// *serveError (Code 1).
 func startDashboard(addr string, listen func(string) (net.Listener, error), store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
 	dashSrv := &http.Server{
 		Addr: addr,
@@ -360,6 +361,9 @@ func startDashboard(addr string, listen func(string) (net.Listener, error), stor
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if listen == nil {
+		listen = dashListen
 	}
 	dashListener, err := listen(addr)
 	if err != nil {
@@ -668,11 +672,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	// Only now, so /healthz can read the server and the model state from its
 	// first answer. NewServer binds nothing, so a listen failure here needs no
 	// dataplane cleanup.
-	listenDash := opts.listenDash
-	if listenDash == nil {
-		listenDash = dashListen
-	}
-	dashSrv, err := startDashboard(dashAddr, listenDash, dashStore, flagLog, srv, modelStartFailed)
+	dashSrv, err := startDashboard(dashAddr, opts.listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
 		return err
 	}
@@ -765,12 +765,12 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 		if errors.Is(err, dataplane.ErrDrainTimeout) || shutdownCtx.Err() != nil {
 			slog.Warn("ward serve: shutdown drain budget elapsed; forcing close",
 				"error", err.Error(),
-				"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out; the error counts the classifications (0 means a query, not the classifier, was stuck); raise timeouts.shutdown in ward.yaml if this recurs",
+				"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out; if the error counts the classifications (the drain itself timed out), 0 means a query, not the classifier, was stuck; raise timeouts.shutdown in ward.yaml if this recurs",
 			)
-		} else if containsAny(err.Error(), "server not started") {
-			// miekg returns "server not started" if Shutdown races the startup path.
-			// This is harmless — the server never fully started so there is nothing
-			// to drain. Log at DEBUG so it doesn't alarm operators.
+		} else if errors.Is(err, dataplane.ErrNotStarted) {
+			// dataplane.ErrNotStarted: a listener was not serving when this Shutdown ran (Serve had
+			// not activated it, or another Shutdown call owns it). Harmless: Serve still returns.
+			// Log at DEBUG so it doesn't alarm operators.
 			slog.Debug("ward serve: shutdown called before server fully started; nothing to drain")
 		} else {
 			slog.Error("ward serve: shutdown error",
