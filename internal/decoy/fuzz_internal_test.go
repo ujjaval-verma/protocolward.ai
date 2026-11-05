@@ -43,6 +43,9 @@ func FuzzDecoyParseLine(f *testing.F) {
 			if host != "" {
 				t.Fatalf("parseLine(%q) !ok but host %q", raw, host)
 			}
+			if tr := strings.TrimSpace(raw); reason == "" && tr != "" && !strings.HasPrefix(tr, "#") {
+				t.Fatalf("parseLine(%q) rejected with no reason but is not a comment or blank line", raw)
+			}
 			return
 		}
 		if reason != "" || host == "" {
@@ -58,11 +61,12 @@ func FuzzDecoyParseLine(f *testing.F) {
 	})
 }
 
-// FuzzDecoyNew asserts New accounts for every non-blank line of a source: each
-// is accepted or counted in SkippedLines (comments included, as the loader
-// does today); a source with nothing loadable fails with an EmptySourceError
-// that names a remediation; and invalid-name WARN logs per source never exceed
-// warnCapPerSource. The oracle splits lines itself and uses parseLine.
+// FuzzDecoyNew asserts New accounts for every line of a source: each is
+// accepted, a silent skip (comment or blank) or counted in SkippedLines; a
+// source with nothing loadable fails with an EmptySourceError that names a
+// remediation; and skipped-line WARN logs per source never exceed
+// warnCapPerSource. The oracle splits lines itself, classifies comment and
+// blank lines independently of parseLine, and uses parseLine for the rest.
 func FuzzDecoyNew(f *testing.F) {
 	matches, err := filepath.Glob("../../testdata/dod/decoys/*.txt")
 	if err != nil {
@@ -111,30 +115,30 @@ func FuzzDecoyNew(f *testing.F) {
 			lines = lines[:len(lines)-1]
 		}
 		want := map[string]struct{}{}
-		var acceptedLines, nonBlankLines, wantSkipped, wantWarn int
+		var acceptedLines, commentOrBlank, wantSkipped int
 		for _, raw := range lines {
 			raw = strings.TrimSuffix(raw, "\r")
 			host, ok, reason := parseLine(raw)
-			blank := strings.TrimSpace(raw) == ""
-			if !blank {
-				nonBlankLines++
+			tr := strings.TrimSpace(raw)
+			silent := tr == "" || strings.HasPrefix(tr, "#")
+			if silent {
+				commentOrBlank++
 			}
 			switch {
 			case ok:
 				acceptedLines++
 				want[host] = struct{}{}
-			case !blank:
+			case reason != "":
 				wantSkipped++
-				if reason != "" {
-					wantWarn++
-				}
+			case !silent:
+				t.Fatalf("parseLine(%q) rejected with no reason but is not a comment or blank line", raw)
 			}
 		}
 
 		set, stats, err := New([]hostlist.Source{{ID: id, Path: path}})
 		gotWarns := warns.Take(id)
-		if wantWarns := min(wantWarn, warnCapPerSource); gotWarns != wantWarns {
-			t.Fatalf("WARN count = %d, want %d (invalid names %d, cap %d)", gotWarns, wantWarns, wantWarn, warnCapPerSource)
+		if wantWarns := min(wantSkipped, warnCapPerSource); gotWarns != wantWarns {
+			t.Fatalf("WARN count = %d, want %d (skipped lines %d, cap %d)", gotWarns, wantWarns, wantSkipped, warnCapPerSource)
 		}
 
 		if len(want) == 0 {
@@ -155,8 +159,8 @@ func FuzzDecoyNew(f *testing.F) {
 		if len(stats) != 1 || stats[0].ID != id {
 			t.Fatalf("stats = %+v, want one entry for %q", stats, id)
 		}
-		if acceptedLines+stats[0].SkippedLines != nonBlankLines {
-			t.Fatalf("accepted %d + SkippedLines %d != non-blank lines %d", acceptedLines, stats[0].SkippedLines, nonBlankLines)
+		if acceptedLines+stats[0].SkippedLines+commentOrBlank != len(lines) {
+			t.Fatalf("accepted %d + SkippedLines %d + comment or blank %d != lines %d", acceptedLines, stats[0].SkippedLines, commentOrBlank, len(lines))
 		}
 		if stats[0].SkippedLines != wantSkipped {
 			t.Fatalf("SkippedLines = %d, want %d", stats[0].SkippedLines, wantSkipped)

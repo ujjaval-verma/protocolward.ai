@@ -18,9 +18,10 @@
 //
 // # Invariants
 //
-//   - No silent drops (invariant #7): every parser skip is counted in Stats and
-//     the first 16 skips per source emit a WARN log; subsequent skips increment
-//     the counter silently and are reported in the per-source summary.
+//   - No silent drops (invariant #7): every skipped line that carries content is
+//     counted in Stats and the first 16 per source emit a WARN log; subsequent
+//     skips increment the counter silently and are reported in the per-source
+//     summary. Comment and blank lines are not counted.
 //   - Every error names remediation (invariant #8): exported error types include
 //     a remediation hint in their Error() string.
 //   - Strict at the file level, lenient at the line level: missing or
@@ -55,7 +56,7 @@ type Stats struct {
 	ID           string
 	Path         string
 	Entries      int // unique hostnames parsed from this source; duplicates within the same source count once, but a hostname also present in another source still counts here
-	SkippedLines int
+	SkippedLines int // lines with content that could not be loaded, each rejected with a reason; the first 16 per source are logged at WARN; comment and blank lines are not counted
 	LoadDuration time.Duration
 }
 

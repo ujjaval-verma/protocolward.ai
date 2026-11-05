@@ -260,3 +260,27 @@ func TestNew_InvalidNameWarnsCappedAt16(t *testing.T) {
 		t.Errorf("WARN count = %d; want 16", n)
 	}
 }
+
+func TestNew_SkippedLinesCountsOnlyRejectedLinesWithAReason(t *testing.T) {
+	defer obs.Capture(t)()
+	body := "vault.lan\n# comment\n  # indented comment\n\nvault.lan # inline\na b c\nbad!name.test\n"
+	path := writeFile(t, "decoys.txt", body)
+
+	_, stats, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 2 {
+		t.Fatalf("stats = entries %d skipped %d; want 1/2", stats[0].Entries, stats[0].SkippedLines)
+	}
+	warns := invalidSkipWarns(t)
+	if len(warns) != 2 {
+		t.Fatalf("WARN count = %d; want 2", len(warns))
+	}
+	if r, _ := warns[0]["reason"].(string); !strings.Contains(r, "got 3 fields") {
+		t.Errorf("warn 0 reason = %q; want the field count", r)
+	}
+	if r, _ := warns[1]["reason"].(string); !strings.Contains(r, "failed validation") {
+		t.Errorf("warn 1 reason = %q; want the failed validation", r)
+	}
+}
