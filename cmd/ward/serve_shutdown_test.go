@@ -641,6 +641,16 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 		serveOpts{notifySignals: sig.notify, exit: rec.exit})
 	// Bounded on every path: the child is killed by the 2s close grace, and
 	// the deferred wait below blocks until serveRun (and so the reap) is over.
+	// Budget, both within wardWaitBound (5s): after "ward serve: stopped" the
+	// remaining work is dashSrv.Close (immediate), the classifier close
+	// (model.DefaultCloseGrace 2s, then kill; the child execs sleep, so no
+	// grandchild holds the pipes) and hatch.disarm, about 2.1s. The deferred
+	// path (returned == false, after w.cancel()) adds all of shutdownServe:
+	// dashboard Shutdown <= 1s, dataplane drain within timeouts.shutdown
+	// (50ms here) and the Serve-return wait <= 500ms, about 3.6s. This assumes
+	// no Classify is in flight (Adapter.Close can wait up to
+	// DefaultReplyTimeout, 4s, for one); that only arises after a t.Fatal
+	// before the child replied.
 	returned := false
 	defer func() {
 		w.cancel()
@@ -649,8 +659,8 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 		}
 		select {
 		case <-w.exited:
-		case <-time.After(10 * time.Second):
-			t.Error("serveRun did not return within 10s")
+		case <-time.After(wardWaitBound):
+			t.Error("serveRun did not return within wardWaitBound")
 		}
 	}()
 
@@ -680,8 +690,8 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 		if err := w.runErr; err != nil {
 			t.Fatalf("serveRun = %v, want nil", err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("serveRun did not return within 10s")
+	case <-time.After(wardWaitBound):
+		t.Fatal("serveRun did not return within wardWaitBound")
 	}
 	// The injected exit returns, so serveRun runs on; disarm then waits for
 	// the hatch goroutine, so by now the exit has been recorded.

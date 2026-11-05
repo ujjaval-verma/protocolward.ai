@@ -175,7 +175,7 @@ func (b *safeBuffer) String() string {
 }
 
 // runServeExpectingExit builds the ward binary (once), launches
-// `ward serve --config cfgPath`, waits for process exit (up to 10s), and
+// `ward serve --config cfgPath`, waits for process exit (up to wardWaitBound), and
 // returns the exit code plus stderr. Used for startup-error assertions.
 func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 	t.Helper()
@@ -186,8 +186,8 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 	cmd := exec.Command(bin, "serve", "--config", cfgPath, "--dash-listen-addr", "127.0.0.1:0")
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
-	// context-bounded run with a 10s hard limit.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// context-bounded run with a wardWaitBound hard limit.
+	ctx, cancel := context.WithTimeout(context.Background(), wardWaitBound)
 	defer cancel()
 	cmdErr := make(chan error, 1)
 	if startErr := cmd.Start(); startErr != nil {
@@ -207,7 +207,7 @@ func runServeExpectingExit(t *testing.T, cfgPath string) (int, string) {
 		return code, stderrBuf.String()
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
-		t.Fatal("runServeExpectingExit: process did not exit within 10s (expected startup error)")
+		t.Fatal("runServeExpectingExit: process did not exit within wardWaitBound (expected startup error)")
 		return 1, stderrBuf.String()
 	}
 }
