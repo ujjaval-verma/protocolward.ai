@@ -639,8 +639,10 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 	// After captureStdout, so the logger serveRun installs writes into logs.
 	w := startInProcWard(t, fmt.Sprintf("model:\n  command:\n    - /bin/sh\n    - -c\n    - %q\n    - sh\n    - %q\n", script, started),
 		serveOpts{notifySignals: sig.notify, exit: rec.exit})
-	// Bounded on every path: the child is killed by the 2s close grace, and
-	// the deferred wait below blocks until serveRun (and so the reap) is over.
+	// serveRun's own bounds (the Classify timeout and the close grace) end the
+	// run on every path, so the deferred wait below never gives up: it reports
+	// slowness once wardWaitBound (5s) passes, then still waits for serveRun to
+	// exit, so the test cannot return while serveRun is running.
 	// Budget, both within wardWaitBound (5s): after "ward serve: stopped" the
 	// remaining work is dashSrv.Close (immediate), the classifier close
 	// (model.DefaultCloseGrace 2s, then kill; the child execs sleep, so no
@@ -650,7 +652,9 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 	// (50ms here) and the Serve-return wait <= 500ms, about 3.6s. This assumes
 	// no Classify is in flight (Adapter.Close can wait up to
 	// DefaultReplyTimeout, 4s, for one); that only arises after a t.Fatal
-	// before the child replied.
+	// before the child replied. On that in-flight-Classify path the deferred
+	// total is about 7.5s: the wardWaitBound report fires at 5s, but the test
+	// still waits for serveRun to exit.
 	returned := false
 	defer func() {
 		w.cancel()
@@ -661,6 +665,7 @@ func TestServeRun_SignalDuringReap_Exits130(t *testing.T) {
 		case <-w.exited:
 		case <-time.After(wardWaitBound):
 			t.Error("serveRun did not return within wardWaitBound")
+			<-w.exited
 		}
 	}()
 
