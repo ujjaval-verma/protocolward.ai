@@ -342,8 +342,9 @@ func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, clos
 }
 
 // startDashboard builds the dashboard handler, binds addr with listen (nil
-// means dashListen), serves in a goroutine and logs dashboard: ready with the bound address. On a bind
-// failure it prints the startup error and returns a *serveError (Code 1).
+// means dashListen), serves in a goroutine and logs dashboard: ready with the
+// bound address. On a bind failure it prints the startup error and returns a
+// *serveError (Code 1).
 func startDashboard(addr string, listen func(string) (net.Listener, error), store *web.Store, flags *web.FlagLog, srv *dataplane.Server, modelStartFailed bool) (*http.Server, error) {
 	dashSrv := &http.Server{
 		Addr: addr,
