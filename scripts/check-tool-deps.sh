@@ -86,5 +86,8 @@ EOF2
   fi
 done
 
-[ "$bad" -eq 0 ] || exit 1
+if [ "$bad" -ne 0 ]; then
+  echo "check-tool-deps: hint: make each target depend on \$(TOOLS_DIR)/<tool> for the tools its recipe runs, not on the phony 'tools' aggregate; if a target now needs another tool, update expected() in scripts/check-tool-deps.sh" >&2
+  exit 1
+fi
 echo "check-tool-deps: OK"
