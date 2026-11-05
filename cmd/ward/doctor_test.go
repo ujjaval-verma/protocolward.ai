@@ -8,28 +8,133 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
 
-func TestProbeBind_HappyPath(t *testing.T) {
-	// Use 127.0.0.1:0 to let the OS pick a free port. We cannot use
-	// probeBind directly with :0 because it binds and releases twice (once
-	// for UDP, once for TCP) and the OS will assign different ports.
-	// Instead, reserve a free TCP port, release it, and reuse the number.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
+// bindCallLog records, in order, every fake listen call and every Close of
+// the sockets those calls returned.
+type bindCallLog struct {
+	mu     sync.Mutex
+	events []string
+	addrs  []string
+}
+
+func (l *bindCallLog) add(ev, addr string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, ev)
+	l.addrs = append(l.addrs, addr)
+}
+
+func (l *bindCallLog) snapshot() (events, addrs []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...), append([]string(nil), l.addrs...)
+}
+
+// recordingPacketConn records Close, then closes the real socket it wraps.
+type recordingPacketConn struct {
+	net.PacketConn
+	log *bindCallLog
+}
+
+func (c *recordingPacketConn) Close() error {
+	c.log.add("udp-close", "")
+	return c.PacketConn.Close()
+}
+
+// recordingListener records Close, then closes the real listener it wraps.
+type recordingListener struct {
+	net.Listener
+	log *bindCallLog
+}
+
+func (l *recordingListener) Close() error {
+	l.log.add("tcp-close", "")
+	return l.Listener.Close()
+}
+
+// fakeUDPOK returns a listenUDP that records the call and hands back a real
+// socket on 127.0.0.1:0 (the requested address is never bound).
+func fakeUDPOK(t *testing.T, log *bindCallLog) func(network, address string) (net.PacketConn, error) {
+	t.Helper()
+	return func(network, address string) (net.PacketConn, error) {
+		log.add("udp-listen:"+network, address)
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Errorf("fake udp socket: %v", err)
+			return nil, err
+		}
+		return &recordingPacketConn{PacketConn: pc, log: log}, nil
 	}
-	addr := l.Addr().String()
-	l.Close()
+}
 
-	// Small grace to let the OS release.
-	time.Sleep(10 * time.Millisecond)
+func TestProbeBind_HappyPath(t *testing.T) {
+	var log bindCallLog
+	listenTCP := func(network, address string) (net.Listener, error) {
+		log.add("tcp-listen:"+network, address)
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Errorf("fake tcp listener: %v", err)
+			return nil, err
+		}
+		return &recordingListener{Listener: l, log: &log}, nil
+	}
 
-	if err := probeBind(addr); err != nil {
-		t.Errorf("probeBind(%q): %v", addr, err)
+	if err := probeBindWith(placeholderListen, fakeUDPOK(t, &log), listenTCP); err != nil {
+		t.Fatalf("probeBindWith(%q): %v", placeholderListen, err)
+	}
+	events, addrs := log.snapshot()
+	wantEvents := []string{"udp-listen:udp", "udp-close", "tcp-listen:tcp", "tcp-close"}
+	if !slices.Equal(events, wantEvents) {
+		t.Errorf("events = %v; want %v", events, wantEvents)
+	}
+	if addrs[0] != placeholderListen || addrs[2] != placeholderListen {
+		t.Errorf("listen addresses = %q, %q; want %q for both", addrs[0], addrs[2], placeholderListen)
+	}
+}
+
+func TestProbeBind_TCPInUse_Fails(t *testing.T) {
+	var log bindCallLog
+	listenTCP := func(network, address string) (net.Listener, error) {
+		log.add("tcp-listen:"+network, address)
+		return nil, &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}
+	}
+
+	err := probeBindWith(placeholderListen, fakeUDPOK(t, &log), listenTCP)
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("err = %v; want it to wrap EADDRINUSE", err)
+	}
+	if !strings.Contains(err.Error(), "tcp bind") || !strings.Contains(err.Error(), placeholderListen) {
+		t.Errorf("err = %q; want it to name %q and %q", err, "tcp bind", placeholderListen)
+	}
+	events, _ := log.snapshot()
+	wantEvents := []string{"udp-listen:udp", "udp-close", "tcp-listen:tcp"}
+	if !slices.Equal(events, wantEvents) {
+		t.Errorf("events = %v; want %v (UDP closed before TCP tried)", events, wantEvents)
+	}
+}
+
+func TestProbeBind_UDPInUse_NeverTriesTCP(t *testing.T) {
+	listenUDP := func(string, string) (net.PacketConn, error) {
+		return nil, &net.OpError{Op: "listen", Net: "udp", Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}
+	}
+	listenTCP := func(string, string) (net.Listener, error) {
+		t.Error("listenTCP called after the UDP bind failed")
+		return nil, errors.New("unexpected")
+	}
+
+	err := probeBindWith(placeholderListen, listenUDP, listenTCP)
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("err = %v; want it to wrap EADDRINUSE", err)
+	}
+	if !strings.Contains(err.Error(), "udp bind") {
+		t.Errorf("err = %q; want it to contain %q", err, "udp bind")
 	}
 }
 

@@ -37,16 +37,26 @@ var (
 // probeBind attempts to briefly bind UDP+TCP on listenAddr. Returns nil if
 // both succeed and release cleanly. Failure → the underlying *net.OpError.
 func probeBind(listenAddr string) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
-	if err != nil {
+	return probeBindWith(listenAddr, net.ListenPacket, net.Listen)
+}
+
+// probeBindWith is probeBind with the listen functions injected, so tests can
+// exercise each outcome without binding a real port. Both are called with
+// listenAddr verbatim; the UDP socket is released before the TCP bind.
+func probeBindWith(
+	listenAddr string,
+	listenUDP func(network, address string) (net.PacketConn, error),
+	listenTCP func(network, address string) (net.Listener, error),
+) error {
+	if _, err := net.ResolveUDPAddr("udp", listenAddr); err != nil {
 		return fmt.Errorf("resolve %q: %w", listenAddr, err)
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := listenUDP("udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("udp bind %q: %w", listenAddr, err)
 	}
 	udpConn.Close()
-	tcpListener, err := net.Listen("tcp", listenAddr)
+	tcpListener, err := listenTCP("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("tcp bind %q: %w", listenAddr, err)
 	}
