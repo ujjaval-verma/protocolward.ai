@@ -771,8 +771,8 @@ func (w *inProcWard) stop(t *testing.T) {
 // wardWaitBound only turns a hang into a failure; nothing passes on a timeout.
 const wardWaitBound = 5 * time.Second
 
-// placeholderListen is the listen: value launchWard writes to ward.yaml; the
-// --listen-addr override must replace it.
+// placeholderListen is a fixed listen: value tests write but never bind
+// (launchWard and serveMinimalCfg override it; doctor tests pass it to fakes).
 const placeholderListen = "127.0.0.1:5354"
 
 // wardProc is a running `ward serve` subprocess. dnsAddr and dashAddr are

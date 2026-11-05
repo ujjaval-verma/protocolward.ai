@@ -18,6 +18,9 @@ import (
 
 type doctorOpts struct {
 	configPath string
+	// bindProbe checks that listenAddr can be bound. nil means probeBind; tests
+	// inject a fake so they never have to bind a real port.
+	bindProbe func(listenAddr string) error
 }
 
 // upstreamProbeResult is one row in the doctor report.
@@ -99,7 +102,11 @@ func doctorRun(out io.Writer, opts doctorOpts) error {
 	anyFail := false
 
 	// Bind probe.
-	if bindErr := probeBind(cfg.Listen); bindErr != nil {
+	bindProbe := opts.bindProbe
+	if bindProbe == nil {
+		bindProbe = probeBind
+	}
+	if bindErr := bindProbe(cfg.Listen); bindErr != nil {
 		anyFail = true
 		fmt.Fprintln(out, doctorFailStyle.Render("[FAIL]")+" bind "+cfg.Listen)
 		fmt.Fprintln(out, doctorMutedStyle.Render("       "+bindErr.Error()))

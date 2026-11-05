@@ -208,37 +208,57 @@ timeouts:
 	return p
 }
 
-func TestDoctorRun_AllProbesGreen(t *testing.T) {
-	// Reserve a free port for ward listen + a separate TCP listener for upstream.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve listen: %v", err)
-	}
-	listenAddr := l.Addr().String()
-	l.Close()
-	time.Sleep(10 * time.Millisecond)
+// recordingBindProbe is a doctorOpts.bindProbe fake that records its calls.
+type recordingBindProbe struct {
+	mu    sync.Mutex
+	calls []string
+	err   error
+}
 
-	upstreamL, err := net.Listen("tcp", "127.0.0.1:0")
+func (r *recordingBindProbe) probe(listenAddr string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, listenAddr)
+	return r.err
+}
+
+func (r *recordingBindProbe) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+// holdUpstream listens on 127.0.0.1:0 for the whole test and accepts and
+// closes connections, so the doctor's upstream probe succeeds.
+func holdUpstream(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen upstream: %v", err)
 	}
-	defer upstreamL.Close()
+	t.Cleanup(func() { l.Close() })
 	go func() {
 		for {
-			c, err := upstreamL.Accept()
+			c, err := l.Accept()
 			if err != nil {
 				return
 			}
 			c.Close()
 		}
 	}()
+	return l.Addr().String()
+}
 
-	cfgPath := writeWardYAMLForDoctor(t, listenAddr, upstreamL.Addr().String())
+func TestDoctorRun_AllProbesGreen(t *testing.T) {
+	cfgPath := writeWardYAMLForDoctor(t, placeholderListen, holdUpstream(t))
 
+	var bp recordingBindProbe
 	var buf bytes.Buffer
-	err = doctorRun(&buf, doctorOpts{configPath: cfgPath})
-	if err != nil {
+	if err := doctorRun(&buf, doctorOpts{configPath: cfgPath, bindProbe: bp.probe}); err != nil {
 		t.Fatalf("doctorRun: %v\n%s", err, buf.String())
+	}
+	if got := bp.recorded(); !slices.Equal(got, []string{placeholderListen}) {
+		t.Errorf("bindProbe calls = %v; want exactly [%s]", got, placeholderListen)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "bind") {
@@ -253,30 +273,55 @@ func TestDoctorRun_AllProbesGreen(t *testing.T) {
 }
 
 func TestDoctorRun_UpstreamUnreachable_ExitsNonZero(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	listenAddr := l.Addr().String()
-	l.Close()
-	time.Sleep(10 * time.Millisecond)
+	cfgPath := writeWardYAMLForDoctor(t, placeholderListen, "127.0.0.1:1")
 
-	cfgPath := writeWardYAMLForDoctor(t, listenAddr, "127.0.0.1:1")
-
+	var bp recordingBindProbe
 	var buf bytes.Buffer
-	err = doctorRun(&buf, doctorOpts{configPath: cfgPath})
+	err := doctorRun(&buf, doctorOpts{configPath: cfgPath, bindProbe: bp.probe})
 	if err == nil {
 		t.Fatalf("expected non-nil error (probe FAIL), got nil; output:\n%s", buf.String())
 	}
 	if !strings.Contains(buf.String(), "[FAIL]") {
 		t.Errorf("output missing '[FAIL]'; got:\n%s", buf.String())
 	}
+	if got := bp.recorded(); !slices.Equal(got, []string{placeholderListen}) {
+		t.Errorf("bindProbe calls = %v; want exactly [%s]", got, placeholderListen)
+	}
+}
+
+func TestDoctorRun_BindProbeFails_ReportsFail(t *testing.T) {
+	cfgPath := writeWardYAMLForDoctor(t, placeholderListen, holdUpstream(t))
+
+	bp := recordingBindProbe{err: &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}}
+	var buf bytes.Buffer
+	err := doctorRun(&buf, doctorOpts{configPath: cfgPath, bindProbe: bp.probe})
+	var se *serveError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %T %v; want *serveError", err, err)
+	}
+	if se.Code != 1 {
+		t.Errorf("Code = %d want 1", se.Code)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"[FAIL]",
+		" bind 127.0.0.1:5354",
+		"remediation: port already in use at 127.0.0.1:5354; stop the process using that port or change listen in ward.yaml",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q; got:\n%s", want, out)
+		}
+	}
 }
 
 func TestDoctorRun_UnknownKey_ExitsCode2(t *testing.T) {
 	p := writeExampleWithBogusKey(t)
 	var buf bytes.Buffer
-	err := doctorRun(&buf, doctorOpts{configPath: p})
+	failIfCalled := func(listenAddr string) error {
+		t.Errorf("bindProbe called with %q; a config error must stop before probing", listenAddr)
+		return nil
+	}
+	err := doctorRun(&buf, doctorOpts{configPath: p, bindProbe: failIfCalled})
 	var se *serveError
 	if !errors.As(err, &se) {
 		t.Fatalf("err = %T %v; want *serveError", err, err)
