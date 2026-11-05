@@ -18,9 +18,10 @@
 //
 // # Invariants
 //
-//   - No silent drops (invariant #7): every parser skip is counted in Stats and
-//     the first 16 skips per source emit a WARN log; subsequent skips increment
-//     the counter silently and are reported in the per-source summary.
+//   - No silent drops (invariant #7): every skipped line that carries content is
+//     counted in Stats and the first 16 per source emit a WARN log; subsequent
+//     skips increment the counter silently and are reported in the per-source
+//     summary. Comment and blank lines are not counted.
 //   - Every error names remediation (invariant #8): exported error types include
 //     a remediation hint in their Error() string.
 //   - Strict at the file level, lenient at the line level: missing or
@@ -52,9 +53,12 @@ type Source struct {
 
 // Stats describes per-source parse outcome.
 type Stats struct {
-	ID           string
-	Path         string
-	Entries      int // unique hostnames parsed from this source; duplicates within the same source count once, but a hostname also present in another source still counts here
+	ID      string
+	Path    string
+	Entries int // unique hostnames parsed from this source; duplicates within the same source count once, but a hostname also present in another source still counts here
+	// SkippedLines counts lines with content that could not be loaded, each
+	// rejected with a reason; the first 16 per source are logged at WARN;
+	// comment and blank lines are not counted.
 	SkippedLines int
 	LoadDuration time.Duration
 }
@@ -392,6 +396,11 @@ func loadOne(src Source, idx uint16, set *Set) (Stats, error) {
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
+		if errors.Is(scanErr, bufio.ErrTooLong) {
+			// The line that overflowed is the one after the last line scanned.
+			n := lineNo + 1
+			return Stats{}, fmt.Errorf("hostlist: %q line %d reaches the 1 MiB line limit (the limit counts the line ending): %w — remediation: split or remove line %d; each line holds one rule (a hostname is at most 253 bytes)", src.Path, n, scanErr, n)
+		}
 		return Stats{}, fmt.Errorf("hostlist: read %q: %w — remediation: check the file is not truncated", src.Path, scanErr)
 	}
 

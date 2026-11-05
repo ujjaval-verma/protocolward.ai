@@ -3,6 +3,7 @@
 package hostlist_test
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -256,5 +257,28 @@ func TestLoad_OverlongNamesSkipped(t *testing.T) {
 		if !strings.Contains(reason, "labels 1-63 bytes") || !strings.Contains(reason, "up to 253 bytes") {
 			t.Errorf("reason lacks the new rule text: %q", reason)
 		}
+	}
+}
+
+func TestLoad_OverlongLineErrorsWithLineAndRemediation(t *testing.T) {
+	defer obs.Capture(t)()
+	body := "0.0.0.0 one.example\n0.0.0.0 two.example\n" + strings.Repeat("a", 1<<20+1) + "\n"
+	path := filepath.Join(t.TempDir(), "list.txt")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := hostlist.Load([]hostlist.Source{{ID: "l1", Path: path}})
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("Load error = %v; want it to wrap bufio.ErrTooLong", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "line 3") {
+		t.Errorf("error %q does not name line 3", msg)
+	}
+	const marker = " — remediation: "
+	i := strings.LastIndex(msg, marker)
+	if i < 0 || !strings.Contains(msg[i+len(marker):], "split or remove line 3") {
+		t.Errorf("error %q has no remediation naming \"split or remove line 3\"", msg)
 	}
 }

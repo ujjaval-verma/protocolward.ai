@@ -16,6 +16,7 @@
 - **Amended:** 2026-10-26 — nightly runs the fuzz targets for 60 s each via make fuzz (§1; issue #23)
 - **Amended:** 2026-10-26 — `nightly.yml` renamed `main-verify.yml`; "nightly" in this ADR now means that workflow (§1)
 - **Amended:** 2026-11-01 — Dependabot version-update PRs on (weekly, grouped); pre-commit revs frozen to commit SHAs (§1, §4; issue #27)
+- **Amended:** 2026-11-05 — make fuzz adds FuzzHostlistLoad and FuzzDecoyNew; main-verify says when no corpus file was written (§1; issues #68, #83)
 
 ## Context
 
@@ -62,6 +63,8 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 - Dependabot's update jobs show in the Actions tab, but they are run by GitHub and are not workflows in this repository. "Nothing runs on pushes or pull requests" still holds for the repository's workflows, and the Actions allowlist needs no change.
 - Security-update PRs stay off (issue #41 is unchanged).
 - Dependabot does not watch the Makefile `*_VERSION` pins, `mise.toml`, the pnpm `packageManager` pin or `.nvmrc`. Those stay manual.
+
+**Amendment (2026-11-05, issues #68 and #83).** `make fuzz`, main-verify's last step, now also fuzzes `hostlist.Load` (`FuzzHostlistLoad`) and `decoy.New` (`FuzzDecoyNew`), 60 s each like the others. They assert line accounting against a line-by-line oracle that splits the input itself, the per-source WARN cap, and that an empty source's error names a remediation. When the full run fails and no fuzz corpus file was written, the corpus step now says so and names the likely causes instead of printing nothing. This is detection only: permissions, actions and the cron schedule are unchanged.
 
 ### 2. Hook tiering with strict latency budgets
 

@@ -3,6 +3,7 @@
 package decoy_test
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -258,5 +259,66 @@ func TestNew_InvalidNameWarnsCappedAt16(t *testing.T) {
 	}
 	if n := len(invalidSkipWarns(t)); n != 16 {
 		t.Errorf("WARN count = %d; want 16", n)
+	}
+}
+
+func TestNew_SkippedLinesCountsOnlyRejectedLinesWithAReason(t *testing.T) {
+	defer obs.Capture(t)()
+	body := "vault.lan\n# comment\n  # indented comment\n\nvault.lan # inline\na b c\nbad!name.test\n"
+	path := writeFile(t, "decoys.txt", body)
+
+	_, stats, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 2 {
+		t.Fatalf("stats = entries %d skipped %d; want 1/2", stats[0].Entries, stats[0].SkippedLines)
+	}
+	warns := invalidSkipWarns(t)
+	if len(warns) != 2 {
+		t.Fatalf("WARN count = %d; want 2", len(warns))
+	}
+	if r, _ := warns[0]["reason"].(string); !strings.Contains(r, "got 3 fields") {
+		t.Errorf("warn 0 reason = %q; want the field count", r)
+	}
+	if r, _ := warns[1]["reason"].(string); !strings.Contains(r, "failed validation") {
+		t.Errorf("warn 1 reason = %q; want the failed validation", r)
+	}
+}
+
+func TestNew_OverlongLineErrorsWithLineAndRemediation(t *testing.T) {
+	defer obs.Capture(t)()
+	body := "one.decoy.test\ntwo.decoy.test\n" + strings.Repeat("a", 1<<20+1) + "\n"
+	path := writeFile(t, "decoys.txt", body)
+
+	_, _, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("New error = %v; want it to wrap bufio.ErrTooLong", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "line 3") {
+		t.Errorf("error %q does not name line 3", msg)
+	}
+	const marker = " — remediation: "
+	i := strings.LastIndex(msg, marker)
+	if i < 0 || !strings.Contains(msg[i+len(marker):], "split or remove line 3") {
+		t.Errorf("error %q has no remediation naming \"split or remove line 3\"", msg)
+	}
+}
+
+func TestNew_LongSingleTokenLineIsSkippedNotFatal(t *testing.T) {
+	defer obs.Capture(t)()
+	body := "vault.lan\n" + strings.Repeat("a", 100<<10) + "\n"
+	path := writeFile(t, "decoys.txt", body)
+
+	_, stats, err := decoy.New([]hostlist.Source{{ID: "d1", Path: path}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if stats[0].Entries != 1 || stats[0].SkippedLines != 1 {
+		t.Fatalf("stats = entries %d skipped %d; want 1/1", stats[0].Entries, stats[0].SkippedLines)
+	}
+	if warns := invalidSkipWarns(t); len(warns) != 1 {
+		t.Fatalf("WARN count = %d; want 1", len(warns))
 	}
 }

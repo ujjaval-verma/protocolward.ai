@@ -3,19 +3,16 @@
 package decoy
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
 	"protocolward.ai/ward/internal/hostlist"
+	"protocolward.ai/ward/internal/obs"
 )
 
 // FuzzDecoyParseLine asserts parseLine never panics, keeps its (host, ok,
@@ -46,6 +43,9 @@ func FuzzDecoyParseLine(f *testing.F) {
 			if host != "" {
 				t.Fatalf("parseLine(%q) !ok but host %q", raw, host)
 			}
+			if tr := strings.TrimSpace(raw); reason == "" && tr != "" && !strings.HasPrefix(tr, "#") {
+				t.Fatalf("parseLine(%q) rejected with no reason but is not a comment or blank line", raw)
+			}
 			return
 		}
 		if reason != "" || host == "" {
@@ -61,67 +61,12 @@ func FuzzDecoyParseLine(f *testing.F) {
 	})
 }
 
-// warnCounter is a slog.Handler that counts records with one message, keyed by
-// their source_id attribute. take returns and clears one id's count, so the
-// map does not grow while fuzzing.
-type warnCounter struct {
-	msg    string
-	mu     sync.Mutex
-	counts map[string]int
-}
-
-func (h *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *warnCounter) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != h.msg {
-		return nil
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "source_id" {
-			h.mu.Lock()
-			h.counts[a.Value.String()]++
-			h.mu.Unlock()
-			return false
-		}
-		return true
-	})
-	return nil
-}
-
-func (h *warnCounter) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *warnCounter) WithGroup(string) slog.Handler      { return h }
-
-func (h *warnCounter) take(id string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	n := h.counts[id]
-	delete(h.counts, id)
-	return n
-}
-
-// installWarnCounter makes a warnCounter the default logger for the target and
-// restores the previous slog default, log output and log flags on cleanup.
-// With the built-in default handler slog.SetDefault redirects the log package,
-// so restoring the slog default alone would not undo it.
-func installWarnCounter(f *testing.F, msg string) *warnCounter {
-	f.Helper()
-	h := &warnCounter{msg: msg, counts: map[string]int{}}
-	prev := slog.Default()
-	prevWriter, prevFlags := log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(h))
-	f.Cleanup(func() {
-		slog.SetDefault(prev)
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	})
-	return h
-}
-
-// FuzzDecoyNew asserts New accounts for every non-blank line of a source: each
-// is accepted or counted in SkippedLines (comments included, as the loader
-// does today); a source with nothing loadable fails with an EmptySourceError
-// that names a remediation; and invalid-name WARN logs per source never exceed
-// warnCapPerSource. The oracle splits lines itself and uses parseLine.
+// FuzzDecoyNew asserts New accounts for every line of a source: each is
+// accepted, a silent skip (comment or blank) or counted in SkippedLines; a
+// source with nothing loadable fails with an EmptySourceError that names a
+// remediation; and skipped-line WARN logs per source never exceed
+// warnCapPerSource. The oracle splits lines itself, classifies comment and
+// blank lines independently of parseLine, and uses parseLine for the rest.
 func FuzzDecoyNew(f *testing.F) {
 	matches, err := filepath.Glob("../../testdata/dod/decoys/*.txt")
 	if err != nil {
@@ -148,7 +93,7 @@ func FuzzDecoyNew(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
-	warns := installWarnCounter(f, "decoy: skipped invalid hostname")
+	warns := obs.CountRecords(f, "decoy: skipped invalid hostname")
 	path := filepath.Join(f.TempDir(), "source.txt")
 	var seq atomic.Uint64
 
@@ -170,30 +115,30 @@ func FuzzDecoyNew(f *testing.F) {
 			lines = lines[:len(lines)-1]
 		}
 		want := map[string]struct{}{}
-		var acceptedLines, nonBlankLines, wantSkipped, wantWarn int
+		var acceptedLines, commentOrBlank, wantSkipped int
 		for _, raw := range lines {
 			raw = strings.TrimSuffix(raw, "\r")
 			host, ok, reason := parseLine(raw)
-			blank := strings.TrimSpace(raw) == ""
-			if !blank {
-				nonBlankLines++
+			tr := strings.TrimSpace(raw)
+			silent := tr == "" || strings.HasPrefix(tr, "#")
+			if silent {
+				commentOrBlank++
 			}
 			switch {
 			case ok:
 				acceptedLines++
 				want[host] = struct{}{}
-			case !blank:
+			case reason != "":
 				wantSkipped++
-				if reason != "" {
-					wantWarn++
-				}
+			case !silent:
+				t.Fatalf("parseLine(%q) rejected with no reason but is not a comment or blank line", raw)
 			}
 		}
 
 		set, stats, err := New([]hostlist.Source{{ID: id, Path: path}})
-		gotWarns := warns.take(id)
-		if wantWarns := min(wantWarn, warnCapPerSource); gotWarns != wantWarns {
-			t.Fatalf("WARN count = %d, want %d (invalid names %d, cap %d)", gotWarns, wantWarns, wantWarn, warnCapPerSource)
+		gotWarns := warns.Take(id)
+		if wantWarns := min(wantSkipped, warnCapPerSource); gotWarns != wantWarns {
+			t.Fatalf("WARN count = %d, want %d (skipped lines %d, cap %d)", gotWarns, wantWarns, wantSkipped, warnCapPerSource)
 		}
 
 		if len(want) == 0 {
@@ -214,8 +159,8 @@ func FuzzDecoyNew(f *testing.F) {
 		if len(stats) != 1 || stats[0].ID != id {
 			t.Fatalf("stats = %+v, want one entry for %q", stats, id)
 		}
-		if acceptedLines+stats[0].SkippedLines != nonBlankLines {
-			t.Fatalf("accepted %d + SkippedLines %d != non-blank lines %d", acceptedLines, stats[0].SkippedLines, nonBlankLines)
+		if acceptedLines+stats[0].SkippedLines+commentOrBlank != len(lines) {
+			t.Fatalf("accepted %d + SkippedLines %d + comment or blank %d != lines %d", acceptedLines, stats[0].SkippedLines, commentOrBlank, len(lines))
 		}
 		if stats[0].SkippedLines != wantSkipped {
 			t.Fatalf("SkippedLines = %d, want %d", stats[0].SkippedLines, wantSkipped)

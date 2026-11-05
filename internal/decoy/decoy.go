@@ -22,8 +22,10 @@
 // Every decoy name, from a file line or from FromEntries, is validated and
 // normalized by hostlist.NormalizeName, and Match folds queries with
 // hostlist.FoldName; see those functions for the exact rule set. A file line
-// whose name fails validation is skipped, counted in Stats.SkippedLines and
-// reported with a WARN log (capped per source).
+// that carries content ward cannot load (a name that fails validation, or a
+// shape other than "<hostname>" or "<ip> <hostname>") is skipped, counted in
+// Stats.SkippedLines and reported with a WARN log (capped per source). Comment
+// and blank lines are neither counted nor logged.
 //
 // # Construction
 //
@@ -32,7 +34,9 @@
 //
 // # Invariants
 //
-//   - No silent drops (invariant #7): every parser skip is reported via Stats.
+//   - No silent drops (invariant #7): every skipped line that carries content
+//     is counted in Stats and the first 16 per source emit a WARN; comment and
+//     blank lines are not skipped content and are not reported.
 //   - Every error names remediation (invariant #8): exported error types
 //     include a remediation hint in their Error() string.
 //   - decoy.Set deliberately does NOT implement policy.Matcher. The Match
@@ -45,6 +49,7 @@ package decoy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -110,9 +115,12 @@ func truncateEntry(s string) string {
 // Stats describes per-source parse outcome. Same shape as hostlist.Stats so
 // the caller can log both kinds uniformly.
 type Stats struct {
-	ID           string
-	Path         string
-	Entries      int
+	ID      string
+	Path    string
+	Entries int
+	// SkippedLines counts lines with content that could not be loaded, each
+	// rejected with a reason; the first 16 per source are logged at WARN;
+	// comment and blank lines are not counted.
 	SkippedLines int
 	LoadDuration time.Duration
 }
@@ -187,6 +195,7 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 
 	stat := Stats{ID: src.ID, Path: src.Path}
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSizeBytes)
 	lineNo := 0
 	warns := 0
 	for scanner.Scan() {
@@ -194,17 +203,17 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 		raw := scanner.Text()
 		host, ok, reason := parseLine(raw)
 		if !ok {
-			if strings.TrimSpace(raw) != "" {
+			if reason != "" {
 				stat.SkippedLines++
-			}
-			if reason != "" && warns < warnCapPerSource {
-				slog.Warn("decoy: skipped invalid hostname",
-					"source_id", src.ID,
-					"path", src.Path,
-					"line", lineNo,
-					"reason", reason,
-				)
-				warns++
+				if warns < warnCapPerSource {
+					slog.Warn("decoy: skipped invalid hostname",
+						"source_id", src.ID,
+						"path", src.Path,
+						"line", lineNo,
+						"reason", reason,
+					)
+					warns++
+				}
 			}
 			continue
 		}
@@ -217,6 +226,11 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 		stat.Entries++
 	}
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			// The line that overflowed is the one after the last line scanned.
+			n := lineNo + 1
+			return Stats{}, fmt.Errorf("decoy: %q line %d reaches the 1 MiB line limit (the limit counts the line ending): %w — remediation: split or remove line %d; each line holds one hostname (at most 253 bytes)", src.Path, n, err, n)
+		}
 		return Stats{}, fmt.Errorf("decoy: scan %q: %w — remediation: check filesystem health and re-run", src.Path, err)
 	}
 	if stat.Entries == 0 {
@@ -226,15 +240,17 @@ func (s *Set) loadOne(src hostlist.Source) (Stats, error) {
 	return stat, nil
 }
 
-// warnCapPerSource bounds the invalid-name WARN logs per source, matching
-// hostlist; further skips are still counted in Stats.SkippedLines.
+// warnCapPerSource bounds the skipped-line WARN logs per source (invalid names
+// and unsupported shapes), matching hostlist; further skips are still counted
+// in Stats.SkippedLines.
 const warnCapPerSource = 16
 
 // parseLine extracts the decoy hostname from one file line: a single field,
 // or the second field of "<ip> <hostname>"; inline "#" comments are stripped.
 // The name is validated and normalized by hostlist.NormalizeName. ok=false
-// with reason "" means a comment, blank or unsupported-shape line; a non-empty
-// reason means the chosen field is not a valid hostname and is worth a WARN.
+// with reason "" means a comment or blank line only; a non-empty reason means
+// the line carries content that cannot be loaded (an unsupported field count,
+// or a chosen field that is not a valid hostname) and is worth a WARN.
 func parseLine(raw string) (host string, ok bool, reason string) {
 	line := strings.TrimSpace(raw)
 	if line == "" || strings.HasPrefix(line, "#") {
@@ -253,7 +269,7 @@ func parseLine(raw string) (host string, ok bool, reason string) {
 		// hosts-file shape: "0.0.0.0 hostname"
 		token = fields[1]
 	default:
-		return "", false, ""
+		return "", false, "expected \"<hostname>\" or \"<ip> <hostname>\" (got " + strconv.Itoa(len(fields)) + " fields)"
 	}
 	norm, valid := hostlist.NormalizeName(token)
 	if !valid {
@@ -261,3 +277,6 @@ func parseLine(raw string) (host string, ok bool, reason string) {
 	}
 	return norm, true, ""
 }
+
+// maxLineSizeBytes matches hostlist: the longest line a source may hold.
+const maxLineSizeBytes = 1 << 20

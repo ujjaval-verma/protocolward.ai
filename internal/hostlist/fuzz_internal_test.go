@@ -3,17 +3,15 @@
 package hostlist
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
+
+	"protocolward.ai/ward/internal/obs"
 )
 
 // seedLines returns every line of every file matching the globs, relative to
@@ -79,62 +77,6 @@ func FuzzParseLine(f *testing.F) {
 	})
 }
 
-// warnCounter is a slog.Handler that counts records with one message, keyed by
-// their source_id attribute. take returns and clears one id's count, so the
-// map does not grow while fuzzing.
-type warnCounter struct {
-	msg    string
-	mu     sync.Mutex
-	counts map[string]int
-}
-
-func (h *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *warnCounter) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != h.msg {
-		return nil
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "source_id" {
-			h.mu.Lock()
-			h.counts[a.Value.String()]++
-			h.mu.Unlock()
-			return false
-		}
-		return true
-	})
-	return nil
-}
-
-func (h *warnCounter) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *warnCounter) WithGroup(string) slog.Handler      { return h }
-
-func (h *warnCounter) take(id string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	n := h.counts[id]
-	delete(h.counts, id)
-	return n
-}
-
-// installWarnCounter makes a warnCounter the default logger for the target and
-// restores the previous slog default, log output and log flags on cleanup.
-// With the built-in default handler slog.SetDefault redirects the log package,
-// so restoring the slog default alone would not undo it.
-func installWarnCounter(f *testing.F, msg string) *warnCounter {
-	f.Helper()
-	h := &warnCounter{msg: msg, counts: map[string]int{}}
-	prev := slog.Default()
-	prevWriter, prevFlags := log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(h))
-	f.Cleanup(func() {
-		slog.SetDefault(prev)
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	})
-	return h
-}
-
 // FuzzHostlistLoad asserts Load accounts for every line of a source: each line
 // is loaded, a silent skip (comment or blank), or counted in SkippedLines; a
 // source with nothing loadable fails with an EmptySourceError that names a
@@ -173,7 +115,7 @@ func FuzzHostlistLoad(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
-	warns := installWarnCounter(f, "hostlist: skipped unparsable line")
+	warns := obs.CountRecords(f, "hostlist: skipped unparsable line")
 	path := filepath.Join(f.TempDir(), "source.txt")
 	var seq atomic.Uint64
 
@@ -208,7 +150,7 @@ func FuzzHostlistLoad(f *testing.F) {
 		}
 
 		set, stats, err := Load([]Source{{ID: id, Path: path}})
-		gotWarns := warns.take(id)
+		gotWarns := warns.Take(id)
 		if wantWarns := min(wantSkipped, warnCapPerSource); gotWarns != wantWarns {
 			t.Fatalf("WARN count = %d, want %d (skipped lines %d, cap %d)", gotWarns, wantWarns, wantSkipped, warnCapPerSource)
 		}
