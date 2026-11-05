@@ -204,8 +204,12 @@ check-actions-pinned: ## Fail on a GitHub Actions uses: not pinned to a full com
 check-workflows: $(TOOLS_DIR)/actionlint ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
 	$(Q)$(TOOLS_DIR)/actionlint -shellcheck= -pyflakes=
 
+.PHONY: check-tool-deps
+check-tool-deps: ## Verify each make target builds only the pinned tools it runs (dry run, fresh-clone layout)
+	$(Q)scripts/check-tool-deps.sh
+
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint gate — the "is everything OK" gate
+check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
