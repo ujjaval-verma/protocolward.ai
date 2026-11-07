@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -361,5 +362,107 @@ func TestEval_ModelLogLines_NotOnStderr(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestOpenModelClassifier(t *testing.T) {
+	const (
+		infoBuiltin = `"level":"INFO","msg":"policy: model loaded","builtin":"lexical","mode":"flag-only"}`
+		infoCommand = `"level":"INFO","msg":"policy: model loaded","command":"/bin/cat","argc":1}`
+		debugClose  = `"level":"DEBUG","msg":"policy: model close (non-fatal)","error":"exit status 3"}`
+	)
+	exit3 := []string{"/bin/sh", "-c", "exit 3"}
+	cases := []struct {
+		name     string
+		m        *config.ModelConfig
+		bin      string
+		discard  bool
+		wantType string // "lexical", "adapter" or "" (nil classifier)
+		wantErr  bool
+		wantOwn  []string // substrings, one per expected line, after Classify+closeFn
+	}{
+		{name: "builtin", m: &config.ModelConfig{Builtin: "lexical"}, wantType: "lexical", wantOwn: []string{infoBuiltin}},
+		{name: "command", m: &config.ModelConfig{Command: []string{"/bin/cat"}}, bin: "/bin/cat", wantType: "adapter", wantOwn: []string{infoCommand}},
+		{name: "spawn failure", m: &config.ModelConfig{Command: []string{"/nonexistent/ward-test-model"}}, wantErr: true},
+		{name: "close error", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", wantType: "adapter",
+			wantOwn: []string{`"msg":"policy: model loaded","command":"/bin/sh","argc":3}`, debugClose}},
+		{name: "discard logger", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", discard: true, wantType: "adapter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.bin != "" {
+				requireBin(t, tc.bin)
+			}
+			def := captureSlog(t)
+			own := &safeBuffer{}
+			logger := slog.New(slog.NewJSONHandler(own, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			if tc.discard {
+				logger = slog.New(slog.DiscardHandler)
+			}
+			c, closeFn, err := openModelClassifier(tc.m, logger)
+			if closeFn == nil {
+				t.Fatal("closeFn = nil, want non-nil")
+			}
+			if tc.wantErr {
+				if err == nil || !strings.HasPrefix(err.Error(), "model: child start: ") {
+					t.Fatalf("err = %v, want model: child start: ...", err)
+				}
+				if c != nil {
+					t.Errorf("classifier = %T, want nil", c)
+				}
+				closeFn()
+				if got := own.String(); got != "" {
+					t.Errorf("logger output = %q, want empty on spawn failure", got)
+				}
+				if got := def.String(); got != "" {
+					t.Errorf("default slog output = %q, want empty", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			switch tc.wantType {
+			case "lexical":
+				if _, ok := c.(*detect.Lexical); !ok {
+					t.Errorf("classifier = %T, want *detect.Lexical", c)
+				}
+			case "adapter":
+				if _, ok := c.(*model.Adapter); !ok {
+					t.Errorf("classifier = %T, want *model.Adapter", c)
+				}
+			}
+			if tc.name == "close error" || tc.name == "discard logger" {
+				if _, cerr := c.Classify(context.Background(), pmodel.Input{Hostname: "example.com"}); cerr == nil {
+					t.Fatal("Classify error = nil, want an error from the exited child")
+				}
+			}
+			// Before closeFn only the loaded line may exist.
+			if len(tc.wantOwn) > 0 {
+				lines := strings.Split(strings.TrimSpace(own.String()), "\n")
+				if len(lines) != 1 || !strings.Contains(lines[0], tc.wantOwn[0]) {
+					t.Errorf("logger output before close = %q, want one line containing %q", own.String(), tc.wantOwn[0])
+				}
+			}
+			closeFn()
+			lines := strings.Split(strings.TrimSpace(own.String()), "\n")
+			if len(tc.wantOwn) == 0 {
+				if own.String() != "" {
+					t.Errorf("logger output = %q, want empty", own.String())
+				}
+			} else {
+				if len(lines) != len(tc.wantOwn) {
+					t.Fatalf("logger lines = %d (%q), want %d", len(lines), own.String(), len(tc.wantOwn))
+				}
+				for i, w := range tc.wantOwn {
+					if !strings.Contains(lines[i], w) {
+						t.Errorf("line %d = %q, want it to contain %q", i, lines[i], w)
+					}
+				}
+			}
+			if got := def.String(); got != "" {
+				t.Errorf("default slog output = %q, want empty: nothing may bypass logger", got)
+			}
+		})
 	}
 }
