@@ -103,18 +103,31 @@ func BenchmarkLoad(b *testing.B) {
 	}
 }
 
-const retainedEntries = 1_000_000
-
-// BenchmarkLoadRetained reports the heap a loaded 1 000 000-entry Set retains
-// after a GC (retained-B/entry), excluding load-time garbage.
+// BenchmarkLoadRetained reports the heap a loaded Set retains after a GC
+// (retained-B/entry), excluding load-time garbage, at 250k, 1M, 1.5M and 2M
+// 22-byte names. Information only.
 func BenchmarkLoadRetained(b *testing.B) {
+	for _, size := range []struct {
+		name    string
+		entries int
+	}{
+		{"250k", 250_000},
+		{"1M", 1_000_000},
+		{"1.5M", 1_500_000},
+		{"2M", 2_000_000},
+	} {
+		b.Run(size.name, func(b *testing.B) { benchLoadRetained(b, size.entries) })
+	}
+}
+
+func benchLoadRetained(b *testing.B, entries int) {
 	path := filepath.Join(b.TempDir(), "retained.hosts")
 	f, err := os.Create(path)
 	if err != nil {
 		b.Fatalf("create: %v", err)
 	}
 	w := bufio.NewWriter(f)
-	for i := range retainedEntries {
+	for i := range entries {
 		fmt.Fprintf(w, "0.0.0.0 host%07d.zone%02d.com\n", i, i%97)
 	}
 	if err := w.Flush(); err != nil {
@@ -140,8 +153,8 @@ func BenchmarkLoadRetained(b *testing.B) {
 		if loadErr != nil {
 			b.Fatalf("Load: %v", loadErr)
 		}
-		if len(stats) != 1 || stats[0].Entries != retainedEntries {
-			b.Fatalf("Load stats = %+v, want one source with %d entries", stats, retainedEntries)
+		if len(stats) != 1 || stats[0].Entries != entries {
+			b.Fatalf("Load stats = %+v, want one source with %d entries", stats, entries)
 		}
 		runtime.GC()
 		runtime.ReadMemStats(&after)
@@ -153,5 +166,5 @@ func BenchmarkLoadRetained(b *testing.B) {
 		sum += float64(delta)
 		b.StartTimer()
 	}
-	b.ReportMetric(sum/(float64(b.N)*retainedEntries), "retained-B/entry")
+	b.ReportMetric(sum/(float64(b.N)*float64(entries)), "retained-B/entry")
 }
