@@ -993,3 +993,29 @@ func TestClose_DuringDial_ErrClosed(t *testing.T) {
 	}
 	waitFor(t, time.Second, "the dialled connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
 }
+
+// A query whose first attempt fails, and whose retry fails because Close ran
+// during the retry's dial, returns ErrClosed, not the retry's error. The
+// retry's dialled connection is closed.
+func TestClose_RetryFailsAfterClose_ErrClosed(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{CloseWithoutReply: true})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	var dials atomic.Int32
+	upstream.SetAfterDialHook(client, func(err error) error {
+		if dials.Add(1) == 2 && err == nil {
+			client.Close()
+			return errors.New("injected dial failure")
+		}
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r := awaitQuery(t, goQuery(client, ctx), 3*time.Second)
+	wantClosed(t, "query whose retry failed after Close", r.err, srv.Addr)
+	if got := dials.Load(); got != 2 {
+		t.Errorf("client dialled %d times, want 2 (the first attempt and the retry)", got)
+	}
+	waitFor(t, time.Second, "every server connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
+}
