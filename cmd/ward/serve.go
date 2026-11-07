@@ -26,12 +26,10 @@ import (
 	"protocolward.ai/ward/internal/dataplane"
 	"protocolward.ai/ward/internal/decoy"
 	"protocolward.ai/ward/internal/hostlist"
-	"protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/internal/obs"
 	"protocolward.ai/ward/internal/policy"
 	"protocolward.ai/ward/internal/upstream"
 	"protocolward.ai/ward/internal/web"
-	"protocolward.ai/ward/pkg/detect"
 )
 
 // dashListen pre-binds the dashboard TCP listener so startup-time bind
@@ -278,67 +276,32 @@ func resolveConfigPath(flag string) (string, *serveError) {
 // newServeClassifier builds the slow-path classifier from cfg.Model. It
 // returns a nil classifier when no model is configured or a command model
 // fails to start (startFailed is then true and ward runs fast-path-only).
-// closeFn is never nil; it reaps the model child, if any.
+// closeFn is never nil; it reaps the model child, if any. The switch itself is
+// openModelClassifier, shared with ward eval.
 func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
-	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
-	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
-	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
-	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
-	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
-	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
-	var adapterToClose *model.Adapter
-	switch {
-	case cfg.Model == nil:
+	if cfg.Model == nil {
 		// No model: stanza — fast-path-only.
-	case cfg.Model.Builtin == config.ModelBuiltinLexical:
-		// In-process detector: no sibling, nothing to close, no
-		// ErrUnavailable latch. Flag-only (ADR-0006).
-		c = detect.New()
-		slog.Info("policy: model loaded",
-			"builtin", cfg.Model.Builtin,
-			"mode", "flag-only",
+		return nil, func() {}, false
+	}
+	c, closeFn, err := openModelClassifier(cfg.Model, slog.Default())
+	if err != nil {
+		// Continue with nil classifier — ward runs fast-path-only.
+		// Single canonical `policy: model unavailable` slog line so
+		// operators see one event, not two (Ralph N3). stderr still
+		// gets the lipgloss-styled startup line for human eyes; the
+		// slog stream gets the canonical msg.
+		msg := fmt.Sprintf("policy: model unavailable: %v", err)
+		rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
+		fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
+		fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
+		fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
+		slog.Warn("policy: model unavailable",
+			"error", err.Error(),
+			"remediation", rem,
 		)
-	default:
-		ad, mErr := model.New(context.Background(), model.Config{
-			Command: cfg.Model.Command,
-			Env:     cfg.Model.Env,
-		})
-		if mErr != nil {
-			startFailed = true
-			// Continue with nil classifier — ward runs fast-path-only.
-			// Single canonical `policy: model unavailable` slog line so
-			// operators see one event, not two (Ralph N3). stderr still
-			// gets the lipgloss-styled startup line for human eyes; the
-			// slog stream gets the canonical msg.
-			msg := fmt.Sprintf("policy: model unavailable: %v", mErr)
-			rem := "fix model.command in ward.yaml, or remove the model: stanza to run fast-path-only"
-			fmt.Fprintln(os.Stderr, styleLabel.Render("model error"))
-			fmt.Fprintln(os.Stderr, stylePlain.Render(msg))
-			fmt.Fprintln(os.Stderr, styleRemediation.Render("remediation: "+rem))
-			slog.Warn("policy: model unavailable",
-				"error", mErr.Error(),
-				"remediation", rem,
-			)
-		} else {
-			c = ad
-			adapterToClose = ad
-			slog.Info("policy: model loaded",
-				"command", cfg.Model.Command[0],
-				"argc", len(cfg.Model.Command),
-			)
-		}
+		return nil, closeFn, true
 	}
-	closeFn = func() {
-		if adapterToClose != nil {
-			if cErr := adapterToClose.Close(); cErr != nil {
-				// Per Adapter.Close docstring: a non-nil error here is the
-				// normal shutdown signature (poison or SIGKILL), not
-				// actionable. Debug-level so it doesn't alarm operators.
-				slog.Debug("policy: model close (non-fatal)", "error", cErr.Error())
-			}
-		}
-	}
-	return c, closeFn, startFailed
+	return c, closeFn, false
 }
 
 // startDashboard builds the dashboard handler, binds addr with listen (nil

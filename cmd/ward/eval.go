@@ -10,12 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"protocolward.ai/ward/internal/config"
-	"protocolward.ai/ward/internal/model"
 	"protocolward.ai/ward/pkg/detect"
 	pmodel "protocolward.ai/ward/pkg/model"
 	"protocolward.ai/ward/pkg/schema"
@@ -262,9 +262,9 @@ func evalRunWith(out io.Writer, opts evalOpts, clf pmodel.Classifier) error {
 // 2. Cleanup closes the adapter (if any); safe to call before the adapter is
 // constructed.
 //
-// context.Background() is passed to model.New so the adapter's lifetime
-// is owned solely by Close — same pattern as newServeClassifier in cmd/ward/serve.go (per
-// SP10b Ralph F1).
+// The builtin/command switch, and the context.Background() rationale for the
+// adapter's lifetime, live in openModelClassifier. Eval passes it a discard
+// logger because it prints no log lines.
 func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
 	cfgPath, se := resolveConfigPath(configPath)
 	if se != nil {
@@ -281,20 +281,14 @@ func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
 		printStartupError("eval error", msg, rem)
 		return nil, func() {}, &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
-	if cfg.Model.Builtin == config.ModelBuiltinLexical {
-		return detect.New(), func() {}, nil
-	}
-	ad, err := model.New(context.Background(), model.Config{
-		Command: cfg.Model.Command,
-		Env:     cfg.Model.Env,
-	})
+	c, closeFn, err := openModelClassifier(cfg.Model, slog.New(slog.DiscardHandler))
 	if err != nil {
 		msg := fmt.Sprintf("harness error: model adapter spawn: %v", err)
 		rem := "verify model.command in ward.yaml points at an executable that speaks the SP10b wire format"
 		printStartupError("eval error", msg, rem)
-		return nil, func() {}, &serveError{Code: 2, Message: msg, Remediation: rem}
+		return nil, closeFn, &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
-	return ad, func() { _ = ad.Close() }, nil
+	return c, closeFn, nil
 }
 
 func newEvalCmd() *cobra.Command {
