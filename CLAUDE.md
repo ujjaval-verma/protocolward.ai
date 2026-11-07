@@ -34,7 +34,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 ```
 make bootstrap  # one-time: all pinned tools into .tools/ + pre-commit and pre-push hooks (other targets build only the tools they run)
 make help       # all targets, by section
-make check      # lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow lint (actionlint) + tool-deps gate
+make check      # lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow lint (actionlint) + tool-deps gate
 make ci         # check + build + wasm compile/size gate (run before pushing; there is no PR CI)
 make test       # tests with race detector
 make bench      # hot-path benchmarks (-benchmem)
