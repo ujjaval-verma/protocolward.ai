@@ -35,11 +35,11 @@ func openModelClassifier(m *config.ModelConfig, logger *slog.Logger) (c pmodel.C
 		return detect.New(), func() {}, nil
 	}
 	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
-	// context.Background(), NOT serveCtx. The adapter's lifetime is owned by
-	// `Close`; ctx cancellation in exec.CommandContext SIGKILLs the child,
-	// bypassing the stdin-EOF graceful shutdown path. SIGTERM → ctx.Done()
-	// → srv.Shutdown drains in-flight Classify calls (via the dataplane
-	// inFlight WaitGroup) → adapter.Close reaps the child cleanly.
+	// context.Background(), not the caller's context (serveCtx in ward
+	// serve): the adapter's lifetime is owned by Close; ctx cancellation in
+	// exec.CommandContext SIGKILLs the child, bypassing the stdin-EOF
+	// graceful path. In ward serve, SIGTERM → srv.Shutdown drains in-flight
+	// Classify calls → closeFn reaps the child.
 	ad, err := model.New(context.Background(), model.Config{
 		Command: m.Command,
 		Env:     m.Env,
