@@ -972,3 +972,24 @@ func TestClose_RacesWaiters_NoDialAfterClose(t *testing.T) {
 		})
 	}
 }
+
+// A dial that completes after Close ran returns ErrClosed, and the dialled
+// connection is closed.
+func TestClose_DuringDial_ErrClosed(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	upstream.SetAfterDialHook(client, func(err error) error {
+		client.Close()
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r := awaitQuery(t, goQuery(client, ctx), 3*time.Second)
+	wantClosed(t, "query whose dial straddled Close", r.err, srv.Addr)
+	if got := srv.Conns(); got != 1 {
+		t.Errorf("server accepted %d connections, want 1 (the straddling dial only)", got)
+	}
+	waitFor(t, time.Second, "the dialled connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
+}

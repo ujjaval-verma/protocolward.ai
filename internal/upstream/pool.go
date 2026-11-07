@@ -118,6 +118,13 @@ func (c *Client) checkout(ctx context.Context, fresh bool) (*pconn, error) {
 	closeAll(expired)
 
 	pc, err := c.dial(ctx)
+	if c.afterDial != nil {
+		if herr := c.afterDial(err); herr != nil && err == nil {
+			// The hook turned a successful dial into a failure.
+			_ = pc.raw.Close()
+			return nil, &DialError{Upstream: c.cfg.Address, Err: herr}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
