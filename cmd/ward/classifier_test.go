@@ -272,6 +272,9 @@ func TestBuildClassifier_SpawnFailure_HarnessError(t *testing.T) {
 	if got := stderr(); !strings.HasPrefix(got, "eval error\nharness error: model adapter spawn: ") {
 		t.Errorf("stderr = %q, want eval error label then harness error", got)
 	}
+	if got := stderr(); !strings.HasSuffix(got, "\nremediation: "+rem+"\n") {
+		t.Errorf("stderr = %q, want remediation line suffix", got)
+	}
 	recs := slogRecords(t, logs.String())
 	if len(recs) != 1 {
 		t.Fatalf("slog records = %d (%s), want 1", len(recs), logs.String())
