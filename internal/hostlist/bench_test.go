@@ -105,7 +105,9 @@ func BenchmarkLoad(b *testing.B) {
 
 // BenchmarkLoadRetained reports the heap a loaded Set retains after a GC
 // (retained-B/entry), excluding load-time garbage, at 250k, 1M, 1.5M and 2M
-// 22-byte names. Information only.
+// 22-byte names. Information only. 250k, 1M and 2M fall at the same point of
+// the index map's doubling cycle; 1.5M falls between doublings, so the
+// per-entry figure moves in steps as the map grows.
 func BenchmarkLoadRetained(b *testing.B) {
 	for _, size := range []struct {
 		name    string
