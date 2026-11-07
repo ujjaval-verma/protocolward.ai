@@ -219,6 +219,7 @@ func TestNewServeClassifier_CloseErrorLogsDebug(t *testing.T) {
 	c, closeFn, startFailed := newServeClassifier(config.Config{
 		Model: &config.ModelConfig{Command: []string{"/bin/sh", "-c", "exit 3"}},
 	})
+	t.Cleanup(closeFn) // reap the child if an assertion below fails; Close is idempotent
 	if startFailed || c == nil {
 		t.Fatalf("c = %v, startFailed = %v, want a classifier", c, startFailed)
 	}
@@ -324,6 +325,9 @@ func TestBuildClassifier_CloseError_NoRecord(t *testing.T) {
 	cfg := writeEvalModelCfg(t, "model:\n  command: [\"/bin/sh\", \"-c\", \"exit 3\"]\n")
 	logs := captureSlog(t)
 	clf, cleanup, err := buildClassifier(cfg)
+	if cleanup != nil {
+		t.Cleanup(cleanup) // reap the child if an assertion below fails; Close is idempotent
+	}
 	if err != nil {
 		t.Fatalf("buildClassifier: %v", err)
 	}
@@ -418,6 +422,7 @@ func TestOpenModelClassifier(t *testing.T) {
 			if closeFn == nil {
 				t.Fatal("closeFn = nil, want non-nil")
 			}
+			t.Cleanup(closeFn) // reap the child if an assertion below fails; Close is idempotent
 			if tc.wantErr {
 				if err == nil || !strings.HasPrefix(err.Error(), "model: child start: ") {
 					t.Fatalf("err = %v, want model: child start: ...", err)
