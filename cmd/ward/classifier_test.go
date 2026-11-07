@@ -69,8 +69,9 @@ func requireBin(t *testing.T, path string) {
 // slogRecords decodes the JSON lines captureSlog collected.
 func slogRecords(t *testing.T, s string) []map[string]any {
 	t.Helper()
-	var out []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
@@ -384,8 +385,10 @@ func TestOpenModelClassifier(t *testing.T) {
 		{name: "builtin", m: &config.ModelConfig{Builtin: "lexical"}, wantType: "lexical", wantOwn: []string{infoBuiltin}},
 		{name: "command", m: &config.ModelConfig{Command: []string{"/bin/cat"}}, bin: "/bin/cat", wantType: "adapter", wantOwn: []string{infoCommand}},
 		{name: "spawn failure", m: &config.ModelConfig{Command: []string{"/nonexistent/ward-test-model"}}, wantErr: true},
-		{name: "close error", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", wantType: "adapter",
-			wantOwn: []string{`"msg":"policy: model loaded","command":"/bin/sh","argc":3}`, debugClose}},
+		{
+			name: "close error", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", wantType: "adapter",
+			wantOwn: []string{`"msg":"policy: model loaded","command":"/bin/sh","argc":3}`, debugClose},
+		},
 		{name: "discard logger", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", discard: true, wantType: "adapter"},
 	}
 	for _, tc := range cases {
