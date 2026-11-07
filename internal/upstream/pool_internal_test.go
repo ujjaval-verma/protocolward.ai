@@ -187,3 +187,37 @@ func TestRelease_AfterClose_RawClose_NoWait(t *testing.T) {
 		t.Errorf("release after Close took %v against a stalled peer, want <= %v (raw close)", el, offQueryLimit)
 	}
 }
+
+// The expiry close runs off the query path: release returns at once even
+// though closing the expired connection blocks on a stalled peer.
+func TestRelease_ExpiryClose_OffQueryPath(t *testing.T) {
+	t.Parallel()
+	c := newClient(Config{Address: "pipe.test:853"}, 4, time.Millisecond)
+	expired := stalledPipeConn(t)
+	expired.lastUsed = time.Now().Add(-time.Hour)
+	other := stalledPipeConn(t)
+	c.mu.Lock()
+	c.idle = append(c.idle, expired)
+	c.busy[other] = struct{}{}
+	c.mu.Unlock()
+
+	t0 := time.Now()
+	c.release(other)
+	el := time.Since(t0)
+
+	// The background close is bounded by closeNotifyTimeout; wait for it
+	// (the raw conn closes) so the goroutine ends with the test.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := expired.raw.Write([]byte{0}); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expired connection was never closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if el > offQueryLimit {
+		t.Errorf("release took %v with an expired stalled connection, want <= %v (close off the query path)", el, offQueryLimit)
+	}
+}
