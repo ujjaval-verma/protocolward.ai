@@ -17,6 +17,7 @@
 - **Amended:** 2026-10-26 — `nightly.yml` renamed `main-verify.yml`; "nightly" in this ADR now means that workflow (§1)
 - **Amended:** 2026-11-01 — Dependabot version-update PRs on (weekly, grouped); pre-commit revs frozen to commit SHAs (§1, §4; issue #27)
 - **Amended:** 2026-11-05 — make fuzz adds FuzzHostlistLoad and FuzzDecoyNew; main-verify says when no corpus file was written (§1; issues #68, #83)
+- **Amended:** 2026-11-07 — main-verify logs the upstream burst timing as its last step, evidence only (§1; issue #54)
 
 ## Context
 
@@ -65,6 +66,8 @@ To add a new third-party action, pin it by full commit SHA in the workflow and a
 - Dependabot does not watch the Makefile `*_VERSION` pins, `mise.toml`, the pnpm `packageManager` pin or `.nvmrc`. Those stay manual.
 
 **Amendment (2026-11-05, issues #68 and #83).** `make fuzz`, main-verify's last step, now also fuzzes `hostlist.Load` (`FuzzHostlistLoad`) and `decoy.New` (`FuzzDecoyNew`), 60 s each like the others. They assert line accounting against a line-by-line oracle that splits the input itself, the per-source WARN cap, and that an empty source's error names a remediation. When the full run fails and no fuzz corpus file was written, the corpus step now says so and names the likely causes instead of printing nothing. This is detection only: permissions, actions and the cron schedule are unchanged.
+
+**Amendment (2026-11-07, issue #54).** The full main-verify run now ends with a step, `upstream burst timing (evidence only)`, that runs `TestQuery_Burst100At20ms` verbosely under `-race`, 3 times at each of `-cpu 1`, `2` and `4`, so the burst time is in the log under a `GOMAXPROCS=` label (`make test` runs without `-v` and never prints it). `make fuzz` is therefore no longer the last step, as the 2026-10-26 and 2026-11-05 amendments call it. The step runs whenever the full run was not cancelled, even after an earlier step failed. It is `continue-on-error`, so it never gates: `make ci` still enforces the 500 ms burst bound, unchanged. It is a standing log, not a temporary one. It adds no action and leaves `permissions` unchanged.
 
 ### 2. Hook tiering with strict latency budgets
 
@@ -149,7 +152,7 @@ When `web/` or `site/` ship real build pipelines, evaluate Node 24's `--permissi
 ## References
 
 - `Makefile` — `make audit` ladder; `.tools/govulncheck` install target
-- `.github/workflows/main-verify.yml` — post-merge verification of `main` (§1 amendments of 2026-10-20 and 2026-10-26)
+- `.github/workflows/main-verify.yml` — post-merge verification of `main` (§1 amendments of 2026-10-20, 2026-10-26, 2026-11-05 and 2026-11-07)
 - GitHub repository settings (Actions permissions, secret scanning; Dependabot alerts, private vulnerability reporting): recorded in the §1 amendments of 2026-10-21 and 2026-10-23 (issues #12, #41); not in version control
 - `.github/dependabot.yml` — version-update PRs (§1 amendment of 2026-11-01)
 - `.pre-commit-config.yaml` — hook tiering; external revs frozen to commit SHAs (§1 amendment of 2026-11-01)
