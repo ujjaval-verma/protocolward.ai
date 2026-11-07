@@ -36,9 +36,9 @@ type pconn struct {
 	lastUsed time.Time // set when the connection is pushed onto idle
 }
 
-// closeAll closes the raw TCP connection of each pconn, with no close_notify:
-// the close used by everything except idle expiry (closeGracefully). Never
-// call it with c.mu held.
+// closeAll closes the raw TCP connection of each pconn, with no close_notify
+// (used by Close; every other non-expiry close calls pc.raw.Close directly).
+// Never call it with c.mu held.
 func closeAll(pcs []*pconn) {
 	for _, pc := range pcs {
 		_ = pc.raw.Close()

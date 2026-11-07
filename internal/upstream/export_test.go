@@ -31,12 +31,11 @@ func SetAfterReadHook(c *Client, f func()) { c.afterRead = f }
 func SetAfterFreeHook(c *Client, f func()) { c.afterFree = f }
 
 // SetAfterDialHook sets a function that checkout calls right after every
-// dial returns, before it re-locks the pool, with the dial's error. The hook
-// returns err unchanged, or replaces a nil err with an error, which checkout
-// then returns as a dial failure after closing the dialled connection. It
-// must never turn a non-nil err into nil: checkout would then return a nil
-// connection with no error. Set it before the first Query and never change
-// it afterwards.
+// dial returns, before it re-locks the pool, with the dial's error. A nil
+// return for a non-nil err is ignored: checkout still returns the dial error.
+// A non-nil return for a successful dial makes checkout close the connection
+// and return a DialError. Set it before the first Query and never change it
+// afterwards.
 func SetAfterDialHook(c *Client, f func(err error) error) { c.afterDial = f }
 
 // IdleLen returns the number of connections on the idle stack.
