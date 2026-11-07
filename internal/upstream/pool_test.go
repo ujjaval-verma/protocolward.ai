@@ -756,6 +756,36 @@ func TestQuery_IdleExpiry_ExtrasClosed(t *testing.T) {
 		t.Errorf("server accepted %d connections, want 4 (the query reuses the top connection)", got)
 	}
 	waitFor(t, time.Second, "the client to close the 3 expired extras (Open == 1)", func() bool { return srv.Open() == 1 })
+	if got := srv.GracefulCloses(); got != 3 {
+		t.Errorf("server saw %d graceful closes (close_notify), want 3 (every expired extra)", got)
+	}
+	if got := srv.AbruptCloses(); got != 0 {
+		t.Errorf("server saw %d abrupt closes (no close_notify), want 0", got)
+	}
+}
+
+// Close closes the raw TCP connections, so the server sees no close_notify.
+// This also shows the fake server tells the two kinds of close apart.
+func TestClose_RawClose_NoCloseNotify(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond, IdleClose: time.Minute})
+	client := newPoolClient(t, srv, 2, time.Minute)
+	defer client.Close()
+
+	if err := firstErr(burst(client, 2, 2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.Conns(); got != 2 {
+		t.Fatalf("scheduling precondition, not a pool result: 2 concurrent queries opened %d connections, want 2", got)
+	}
+	client.Close()
+	waitFor(t, time.Second, "every server connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
+	if got := srv.AbruptCloses(); got != 2 {
+		t.Errorf("server saw %d abrupt closes (no close_notify), want 2", got)
+	}
+	if got := srv.GracefulCloses(); got != 0 {
+		t.Errorf("server saw %d graceful closes (close_notify), want 0 (Close is the raw TCP close)", got)
+	}
 }
 
 // wantClosed fails unless err wraps upstream.ErrClosed and names the upstream.
@@ -971,4 +1001,51 @@ func TestClose_RacesWaiters_NoDialAfterClose(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A dial that completes after Close ran returns ErrClosed, and the dialled
+// connection is closed.
+func TestClose_DuringDial_ErrClosed(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	upstream.SetAfterDialHook(client, func(err error) error {
+		client.Close()
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r := awaitQuery(t, goQuery(client, ctx), 3*time.Second)
+	wantClosed(t, "query whose dial straddled Close", r.err, srv.Addr)
+	if got := srv.Conns(); got != 1 {
+		t.Errorf("server accepted %d connections, want 1 (the straddling dial only)", got)
+	}
+	waitFor(t, time.Second, "the dialled connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
+}
+
+// A query whose first attempt fails, and whose retry fails because Close ran
+// during the retry's dial, returns ErrClosed, not the retry's error. The
+// retry's dialled connection is closed.
+func TestClose_RetryFailsAfterClose_ErrClosed(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{CloseWithoutReply: true})
+	client := newPoolClient(t, srv, 1, time.Minute)
+	var dials atomic.Int32
+	upstream.SetAfterDialHook(client, func(err error) error {
+		if dials.Add(1) == 2 && err == nil {
+			client.Close()
+			return errors.New("injected dial failure")
+		}
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r := awaitQuery(t, goQuery(client, ctx), 3*time.Second)
+	wantClosed(t, "query whose retry failed after Close", r.err, srv.Addr)
+	if got := dials.Load(); got != 2 {
+		t.Errorf("client dialled %d times, want 2 (the first attempt and the retry)", got)
+	}
+	waitFor(t, time.Second, "every server connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
 }

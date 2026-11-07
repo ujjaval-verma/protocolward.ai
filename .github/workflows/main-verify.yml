@@ -1,11 +1,12 @@
-# Protocol Ward — main verify (ADR-0002 §1, amendments of 2026-10-20 and 2026-10-26).
+# Protocol Ward — main verify (ADR-0002 §1, amendments of 2026-10-20, 2026-10-26, 2026-11-05 and 2026-11-07).
 # Verifies main after merge: dispatched with force_full=true after automated
 # merges, otherwise run by the daily cron as a backstop (when main is unchanged
 # since the last successful run, only govulncheck runs, as a vuln scan).
 # Post-merge detection only: never a required check, never runs on pushes or
 # pull requests. A failure opens or updates one issue labelled
 # ci:main-verify-failure; the next green run closes it. The full run ends with
-# `make fuzz` (60 s per fuzz target; issue #23).
+# `make fuzz` (60 s per fuzz target; issue #23) and then an evidence-only step
+# that logs the upstream burst timing (`continue-on-error`; issue #54).
 name: main verify
 
 on:
@@ -171,6 +172,20 @@ jobs:
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No fuzz corpus file was written: the failure was in an earlier step, in building a fuzz test binary, or in a seed corpus entry (Go writes no corpus file for a failing seed)."
           fi
+
+      # Evidence only, and permanent (issue #54): logs the burst time at each
+      # GOMAXPROCS, which make test never prints. It never gates: make ci still
+      # enforces the 500 ms bound.
+      - name: upstream burst timing (evidence only)
+        if: ${{ !cancelled() && env.MODE == 'full' }}
+        continue-on-error: true
+        run: |
+          rc=0
+          for p in 1 2 4; do
+            echo "GOMAXPROCS=$p"
+            go test -race -count=3 -timeout 2m -cpu "$p" -run '^TestQuery_Burst100At20ms$' -v ./internal/upstream || rc=1
+          done
+          exit $rc
 
   report:
     name: failure issue
