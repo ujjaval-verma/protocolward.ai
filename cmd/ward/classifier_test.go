@@ -381,6 +381,7 @@ func TestOpenModelClassifier(t *testing.T) {
 		m        *config.ModelConfig
 		bin      string
 		discard  bool
+		classify bool   // call Classify (expected to fail) before closeFn
 		wantType string // "lexical", "adapter" or "" (nil classifier)
 		wantErr  bool
 		wantOwn  []string // substrings, one per expected line, after Classify+closeFn
@@ -389,18 +390,18 @@ func TestOpenModelClassifier(t *testing.T) {
 		{name: "command", m: &config.ModelConfig{Command: []string{"/bin/cat"}}, bin: "/bin/cat", wantType: "adapter", wantOwn: []string{infoCommand}},
 		{name: "spawn failure", m: &config.ModelConfig{Command: []string{"/nonexistent/ward-test-model"}}, wantErr: true},
 		{
-			name: "close error", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", wantType: "adapter",
+			name: "close error", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", classify: true, wantType: "adapter",
 			wantOwn: []string{`"msg":"policy: model loaded","command":"/bin/sh","argc":3}`, debugClose},
 		},
 		{
-			name: "env passthrough", bin: "/bin/sh", wantType: "adapter",
+			name: "env passthrough", bin: "/bin/sh", classify: true, wantType: "adapter",
 			m: &config.ModelConfig{
 				Command: []string{"/bin/sh", "-c", "[ \"$WARD_T\" = x ] || exit 7; exit 3"},
 				Env:     []string{"WARD_T=x"},
 			},
 			wantOwn: []string{`"msg":"policy: model loaded","command":"/bin/sh","argc":3}`, debugClose},
 		},
-		{name: "discard logger", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", discard: true, wantType: "adapter"},
+		{name: "discard logger", m: &config.ModelConfig{Command: exit3}, bin: "/bin/sh", discard: true, classify: true, wantType: "adapter"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -446,7 +447,7 @@ func TestOpenModelClassifier(t *testing.T) {
 					t.Errorf("classifier = %T, want *model.Adapter", c)
 				}
 			}
-			if tc.name == "close error" || tc.name == "discard logger" || tc.name == "env passthrough" {
+			if tc.classify {
 				if _, cerr := c.Classify(context.Background(), pmodel.Input{Hostname: "example.com"}); cerr == nil {
 					t.Fatal("Classify error = nil, want an error from the exited child")
 				}
