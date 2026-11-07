@@ -32,12 +32,13 @@ const (
 // pconn is one pooled DoT connection.
 type pconn struct {
 	dc       *dns.Conn // framing over the *tls.Conn
-	raw      net.Conn  // the TCP connection under TLS; closed directly
+	raw      net.Conn  // the TCP connection under TLS; closed directly, except on expiry (closeGracefully)
 	lastUsed time.Time // set when the connection is pushed onto idle
 }
 
-// closeAll closes the raw TCP connection of each pconn. Never call it with
-// c.mu held.
+// closeAll closes the raw TCP connection of each pconn, with no close_notify:
+// the close used by everything except idle expiry (closeGracefully). Never
+// call it with c.mu held.
 func closeAll(pcs []*pconn) {
 	for _, pc := range pcs {
 		_ = pc.raw.Close()

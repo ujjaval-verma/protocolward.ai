@@ -15,8 +15,13 @@
 //     the client is not closed and its context has not ended.
 //   - Idle connections form a last-in-first-out stack: a query reuses the most
 //     recently used one. Connections other than the most recent one are closed
-//     once they have been idle for 10 s; the most recent idle connection never
-//     expires.
+//     once they have been idle for 10 s, at the next checkout or release; the
+//     most recent idle connection never expires.
+//   - An expired idle connection is closed through TLS, so the upstream gets a
+//     close_notify, in a short-lived goroutine so no query waits on it. Each
+//     such close is bounded by 100 ms, after which the TCP connection is
+//     closed under it. Every other close, by Close or after a failure, is the
+//     raw TCP close.
 //   - A connection goes back on the stack only after a clean write and read; on
 //     any error only that connection is closed.
 //   - A failed attempt gets one retry, on a freshly dialled connection, unless
@@ -25,7 +30,9 @@
 //     wraps the context error.
 //   - Close closes every connection and makes waiting and later queries
 //     return ErrClosed, as well as an in-flight query that has not yet got
-//     its reply.
+//     its reply. An expired connection already handed to the background
+//     close is no longer in the pool, so Close does not reach it: its
+//     goroutine closes it, the k-th one within k × 100 ms.
 //
 // # TLS roots
 //
@@ -188,6 +195,10 @@ func (c *Client) Address() string { return c.cfg.Address }
 // waiting Query return ErrClosed. It does not wait for in-flight queries: an
 // in-flight query that has not yet got its reply sees its connection fail and
 // returns ErrClosed. Safe to call more than once.
+//
+// An expired idle connection already handed to the background close is no
+// longer in the pool, so Close does not reach it: that goroutine closes the
+// expired connections one after another, the k-th within k × 100 ms.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
