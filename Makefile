@@ -165,6 +165,11 @@ fmt: $(TOOLS_DIR)/gofumpt ## Format Go code (gofumpt)
 vet: ## go vet
 	$(Q)$(GO) vet $(PKG)
 
+.PHONY: vet-32bit
+vet-32bit: ## go vet for 32-bit targets (linux/arm GOARM=7 and linux/386): fails on a 32-bit compile error
+	$(Q)GOOS=linux GOARCH=arm GOARM=7 $(GO) vet $(PKG)
+	$(Q)GOOS=linux GOARCH=386 $(GO) vet $(PKG)
+
 .PHONY: tidy
 tidy: ## go mod tidy
 	$(Q)$(GO) mod tidy
@@ -209,7 +214,7 @@ check-tool-deps: ## Verify lint/fmt/vuln/check-workflows/check/ci/pre-push/audit
 	$(Q)scripts/check-tool-deps.sh
 
 .PHONY: check
-check: lint vet test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps ## Lint + vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate — the "is everything OK" gate
+check: lint vet vet-32bit test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps ## Lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
