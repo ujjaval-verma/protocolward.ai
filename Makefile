@@ -167,8 +167,8 @@ vet: ## go vet
 
 .PHONY: vet-32bit
 vet-32bit: ## go vet for 32-bit targets (linux/arm GOARM=7 and linux/386): fails on a 32-bit compile error
-	$(Q)GOOS=linux GOARCH=arm GOARM=7 $(GO) vet $(PKG)
-	$(Q)GOOS=linux GOARCH=386 $(GO) vet $(PKG)
+	$(Q)CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 $(GO) vet $(PKG)
+	$(Q)CGO_ENABLED=0 GOOS=linux GOARCH=386 $(GO) vet $(PKG)
 
 .PHONY: tidy
 tidy: ## go mod tidy
