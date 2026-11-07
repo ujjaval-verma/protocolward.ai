@@ -3,6 +3,7 @@
 package upstream_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,10 +11,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,16 +52,52 @@ type FakeDoTOptions struct {
 }
 
 // FakeDoTServer is a minimal in-process DoT (DNS-over-TLS) server for tests.
+//
+// It records how each client close arrived: graceful when the client sent a
+// TLS record (its close_notify) after its last query and before EOF, abrupt
+// when the TCP connection ended with no such record. A Go client sends
+// nothing else after its last query (session tickets flow server to client),
+// and crypto/tls returns io.EOF for both kinds, so the raw byte count decides.
+// The classification assumes a gap between the last query and the close: a
+// close_notify read in the same raw read as the last query frame would count
+// before the post-frame baseline and be classed abrupt. A test that queries
+// and closes back to back must not assert these counters. A failed
+// handshake, a read deadline, a read error other than EOF or a server-side
+// close counts as neither.
 type FakeDoTServer struct {
-	Addr    string
-	TLSConf *tls.Config // wire this into upstream.Config.TLSConfig to verify correctly
-	mu      sync.Mutex
-	queries []*dns.Msg
-	opts    FakeDoTOptions
-	ln      net.Listener
-	conns   int // connections accepted, counted at Accept (guarded by mu)
-	open    int // connections whose handler is still running (guarded by mu)
-	maxOpen int // peak of open (guarded by mu)
+	Addr     string
+	TLSConf  *tls.Config // wire this into upstream.Config.TLSConfig to verify correctly
+	mu       sync.Mutex
+	queries  []*dns.Msg
+	opts     FakeDoTOptions
+	ln       net.Listener
+	tlsConf  *tls.Config // the server's TLS config
+	conns    int         // connections accepted, counted at Accept (guarded by mu)
+	open     int         // connections whose handler is still running (guarded by mu)
+	maxOpen  int         // peak of open (guarded by mu)
+	graceful int         // client closes with a close_notify (guarded by mu)
+	abrupt   int         // client closes without one (guarded by mu)
+}
+
+// countingConn counts the raw bytes read from the TCP connection under TLS.
+type countingConn struct {
+	net.Conn
+	n atomic.Int64
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// bytesRead returns the raw bytes read so far.
+func (c *countingConn) bytesRead() int64 { return c.n.Load() }
+
+// tcpConn returns the underlying *net.TCPConn, or nil if there is none.
+func (c *countingConn) tcpConn() *net.TCPConn {
+	tcp, _ := c.Conn.(*net.TCPConn)
+	return tcp
 }
 
 // newFakeDoT starts a fake DoT server on a random loopback port and registers
@@ -86,7 +125,7 @@ func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
 		MinVersion: tls.VersionTLS12,
 	}
 
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", serverTLS)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("fake DoT: listen: %v", err)
 	}
@@ -96,6 +135,7 @@ func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
 		TLSConf: clientTLS,
 		opts:    opts,
 		ln:      ln,
+		tlsConf: serverTLS,
 	}
 
 	t.Cleanup(func() { ln.Close() })
@@ -137,6 +177,22 @@ func (s *FakeDoTServer) MaxOpen() int {
 	return s.maxOpen
 }
 
+// GracefulCloses returns the number of client closes that sent a
+// close_notify after the last query.
+func (s *FakeDoTServer) GracefulCloses() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.graceful
+}
+
+// AbruptCloses returns the number of client closes that sent no TLS record
+// after the last query: a bare TCP close.
+func (s *FakeDoTServer) AbruptCloses() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.abrupt
+}
+
 func (s *FakeDoTServer) serve() {
 	for {
 		conn, err := s.ln.Accept()
@@ -150,28 +206,43 @@ func (s *FakeDoTServer) serve() {
 			s.maxOpen = s.open
 		}
 		s.mu.Unlock()
-		go s.handleConn(conn)
+		raw := &countingConn{Conn: conn}
+		go s.handleConn(tls.Server(raw, s.tlsConf), raw)
 	}
 }
 
 // closeConn closes conn the way the options ask: a TLS close (close_notify
-// then FIN), or with ResetOnClose a bare RST on the TCP connection.
-func (s *FakeDoTServer) closeConn(conn net.Conn) {
+// then FIN), or with ResetOnClose a bare RST on the TCP connection. It panics
+// rather than fall back to a FIN when ResetOnClose cannot reach the TCP
+// connection.
+func (s *FakeDoTServer) closeConn(conn *tls.Conn, raw *countingConn) {
 	if s.opts.ResetOnClose {
-		if tc, ok := conn.(*tls.Conn); ok {
-			if tcp, ok := tc.NetConn().(*net.TCPConn); ok {
-				_ = tcp.SetLinger(0)
-				_ = tcp.Close()
-				return
-			}
+		tcp := raw.tcpConn()
+		if tcp == nil {
+			panic("fake DoT: ResetOnClose needs a *net.TCPConn under TLS")
 		}
+		_ = tcp.SetLinger(0)
+		_ = tcp.Close()
+		return
 	}
 	_ = conn.Close()
 }
 
-func (s *FakeDoTServer) handleConn(conn net.Conn) {
+// recordClientClose classifies a client close seen as io.EOF on a frame's
+// length prefix: graceful if raw bytes arrived since baseline, else abrupt.
+func (s *FakeDoTServer) recordClientClose(raw *countingConn, baseline int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if raw.bytesRead() > baseline {
+		s.graceful++
+	} else {
+		s.abrupt++
+	}
+}
+
+func (s *FakeDoTServer) handleConn(conn *tls.Conn, raw *countingConn) {
 	defer func() {
-		s.closeConn(conn)
+		s.closeConn(conn, raw)
 		s.mu.Lock()
 		s.open--
 		s.mu.Unlock()
@@ -179,6 +250,15 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 	if s.opts.CloseOnHandshake {
 		return
 	}
+	hsCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	err := conn.HandshakeContext(hsCtx)
+	cancel()
+	if err != nil {
+		return
+	}
+	// Raw bytes read up to the end of the handshake, then of each complete
+	// query frame.
+	baseline := raw.bytesRead()
 	// dlMu orders the loop's deadline against the arming one, so a read
 	// that started before IdleCloseAfter closed still gets IdleClose.
 	var dlMu sync.Mutex
@@ -220,6 +300,9 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 		// Read 2-byte length prefix.
 		lenBuf := make([]byte, 2)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			if errors.Is(err, io.EOF) {
+				s.recordClientClose(raw, baseline)
+			}
 			return
 		}
 		msgLen := int(lenBuf[0])<<8 | int(lenBuf[1])
@@ -227,6 +310,7 @@ func (s *FakeDoTServer) handleConn(conn net.Conn) {
 		if _, err := io.ReadFull(conn, msgBuf); err != nil {
 			return
 		}
+		baseline = raw.bytesRead()
 
 		msg := new(dns.Msg)
 		if err := msg.Unpack(msgBuf); err != nil {

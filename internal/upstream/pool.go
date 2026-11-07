@@ -22,6 +22,11 @@ const (
 	// defaultIdleTimeout is how long an idle connection other than the most
 	// recently used one is kept before the next checkout or release closes it.
 	defaultIdleTimeout = 10 * time.Second
+	// closeNotifyTimeout bounds the close of one expired idle connection.
+	// tls.Conn.Close sets its own 5 s write deadline for the close_notify,
+	// overriding any set before it, so a timer closes the raw connection
+	// instead.
+	closeNotifyTimeout = 100 * time.Millisecond
 )
 
 // pconn is one pooled DoT connection.
@@ -36,6 +41,19 @@ type pconn struct {
 func closeAll(pcs []*pconn) {
 	for _, pc := range pcs {
 		_ = pc.raw.Close()
+	}
+}
+
+// closeGracefully closes each expired idle connection through TLS, so the
+// peer gets a close_notify, one after another. Each close is bounded by
+// closeNotifyTimeout: a timer closes the raw connection under a close_notify
+// write that is still blocked. Callers run it in its own goroutine, so no
+// query waits on a peer, and never with c.mu held.
+func closeGracefully(pcs []*pconn) {
+	for _, pc := range pcs {
+		timer := time.AfterFunc(closeNotifyTimeout, func() { _ = pc.raw.Close() })
+		_ = pc.dc.Conn.Close()
+		timer.Stop()
 	}
 }
 
@@ -110,12 +128,16 @@ func (c *Client) checkout(ctx context.Context, fresh bool) (*pconn, error) {
 			c.idle = c.idle[:n-1]
 			c.busy[pc] = struct{}{}
 			c.mu.Unlock()
-			closeAll(expired)
+			if len(expired) > 0 {
+				go closeGracefully(expired)
+			}
 			return pc, nil
 		}
 	}
 	c.mu.Unlock()
-	closeAll(expired)
+	if len(expired) > 0 {
+		go closeGracefully(expired)
+	}
 
 	pc, err := c.dial(ctx)
 	if c.afterDial != nil {
@@ -157,7 +179,9 @@ func (c *Client) release(pc *pconn) {
 	c.idle = append(c.idle, pc)
 	expired := c.sweepLocked(now)
 	c.mu.Unlock()
-	closeAll(expired)
+	if len(expired) > 0 {
+		go closeGracefully(expired)
+	}
 }
 
 // sweepLocked removes and returns the idle connections that have expired,

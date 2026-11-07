@@ -756,6 +756,36 @@ func TestQuery_IdleExpiry_ExtrasClosed(t *testing.T) {
 		t.Errorf("server accepted %d connections, want 4 (the query reuses the top connection)", got)
 	}
 	waitFor(t, time.Second, "the client to close the 3 expired extras (Open == 1)", func() bool { return srv.Open() == 1 })
+	if got := srv.GracefulCloses(); got != 3 {
+		t.Errorf("server saw %d graceful closes (close_notify), want 3 (every expired extra)", got)
+	}
+	if got := srv.AbruptCloses(); got != 0 {
+		t.Errorf("server saw %d abrupt closes (no close_notify), want 0", got)
+	}
+}
+
+// Close closes the raw TCP connections, so the server sees no close_notify.
+// This also shows the fake server tells the two kinds of close apart.
+func TestClose_RawClose_NoCloseNotify(t *testing.T) {
+	t.Parallel()
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess, Latency: 20 * time.Millisecond, IdleClose: time.Minute})
+	client := newPoolClient(t, srv, 2, time.Minute)
+	defer client.Close()
+
+	if err := firstErr(burst(client, 2, 2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.Conns(); got != 2 {
+		t.Fatalf("scheduling precondition, not a pool result: 2 concurrent queries opened %d connections, want 2", got)
+	}
+	client.Close()
+	waitFor(t, time.Second, "every server connection to close (Open == 0)", func() bool { return srv.Open() == 0 })
+	if got := srv.AbruptCloses(); got != 2 {
+		t.Errorf("server saw %d abrupt closes (no close_notify), want 2", got)
+	}
+	if got := srv.GracefulCloses(); got != 0 {
+		t.Errorf("server saw %d graceful closes (close_notify), want 0 (Close is the raw TCP close)", got)
+	}
 }
 
 // wantClosed fails unless err wraps upstream.ErrClosed and names the upstream.
