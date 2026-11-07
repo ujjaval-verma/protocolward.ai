@@ -6,11 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"protocolward.ai/ward/internal/config"
 	"protocolward.ai/ward/internal/model"
@@ -225,4 +229,137 @@ func TestNewServeClassifier_CloseErrorLogsDebug(t *testing.T) {
 		t.Errorf("slog output %q lacks %q", logs.String(), want)
 	}
 	_ = stderr()
+}
+
+// writeEvalModelCfg writes a ward.yaml with the model-less body used by the
+// eval tests plus the given model: stanza, and returns its path.
+func writeEvalModelCfg(t *testing.T, modelStanza string) string {
+	t.Helper()
+	cfg := filepath.Join(t.TempDir(), "ward.yaml")
+	body := `listen: "127.0.0.1:5354"
+upstreams:
+  - address: "9.9.9.9:853"
+    server_name: "dns.quad9.net"
+` + modelStanza
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestBuildClassifier_SpawnFailure_HarnessError(t *testing.T) {
+	cfg := writeEvalModelCfg(t, "model:\n  command: [\"/nonexistent/ward-test-model\"]\n")
+	logs := captureSlog(t)
+	stderr := captureStderr(t)
+	clf, cleanup, err := buildClassifier(cfg)
+	se := asServeError(t, err, 2)
+	if !strings.HasPrefix(se.Message, "harness error: model adapter spawn: model: child start: ") {
+		t.Errorf("Message = %q, want harness error spawn prefix", se.Message)
+	}
+	const rem = "verify model.command in ward.yaml points at an executable that speaks the SP10b wire format"
+	if se.Remediation != rem {
+		t.Errorf("Remediation = %q, want %q", se.Remediation, rem)
+	}
+	if clf != nil {
+		t.Errorf("classifier = %T, want nil", clf)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup = nil, want non-nil")
+	}
+	cleanup()
+	if got := stderr(); !strings.HasPrefix(got, "eval error\nharness error: model adapter spawn: ") {
+		t.Errorf("stderr = %q, want eval error label then harness error", got)
+	}
+	recs := slogRecords(t, logs.String())
+	if len(recs) != 1 {
+		t.Fatalf("slog records = %d (%s), want 1", len(recs), logs.String())
+	}
+	r := recs[0]
+	if r["level"] != "ERROR" || r["msg"] != "startup error" || r["label"] != "eval error" ||
+		r["error"] != se.Message || r["remediation"] != se.Remediation {
+		t.Errorf("record = %v, want ERROR startup error / eval error / message / remediation", r)
+	}
+}
+
+func TestBuildClassifier_LoadedPathsLogNothing(t *testing.T) {
+	cases := []struct {
+		name, stanza, bin string
+	}{
+		{"builtin", "model:\n  builtin: lexical\n", ""},
+		{"command", "model:\n  command: [\"/bin/cat\"]\n", "/bin/cat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.bin != "" {
+				requireBin(t, tc.bin)
+			}
+			cfg := writeEvalModelCfg(t, tc.stanza)
+			logs := captureSlog(t)
+			stderr := captureStderr(t)
+			clf, cleanup, err := buildClassifier(cfg)
+			if err != nil {
+				t.Fatalf("buildClassifier: %v", err)
+			}
+			if clf == nil {
+				t.Error("classifier = nil, want non-nil")
+			}
+			cleanup()
+			if got := stderr(); got != "" {
+				t.Errorf("stderr = %q, want empty", got)
+			}
+			if got := logs.String(); got != "" {
+				t.Errorf("slog output = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestBuildClassifier_CloseError_NoRecord(t *testing.T) {
+	requireBin(t, "/bin/sh")
+	cfg := writeEvalModelCfg(t, "model:\n  command: [\"/bin/sh\", \"-c\", \"exit 3\"]\n")
+	logs := captureSlog(t)
+	clf, cleanup, err := buildClassifier(cfg)
+	if err != nil {
+		t.Fatalf("buildClassifier: %v", err)
+	}
+	if _, err := clf.Classify(context.Background(), pmodel.Input{Hostname: "example.com"}); err == nil {
+		t.Fatal("Classify error = nil, want an error from the exited child")
+	}
+	cleanup()
+	if got := logs.String(); got != "" {
+		t.Errorf("slog output = %q, want empty (eval's closer is silent)", got)
+	}
+}
+
+func TestEval_ModelLogLines_NotOnStderr(t *testing.T) {
+	t.Parallel()
+	requireBin(t, "/bin/sh")
+	bin, err := buildWardBin()
+	if err != nil {
+		t.Fatalf("build ward: %v", err)
+	}
+	cfg := writeEvalModelCfg(t, "model:\n  command: [\"/bin/sh\", \"-c\", \"exit 3\"]\n")
+	suite := filepath.Join(t.TempDir(), "suite.jsonl")
+	if err := os.WriteFile(suite, []byte(`{"hostname":"example.com","expected_verdict":"benign","label":"x"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "eval", "--config", cfg, "--suite", suite)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	var ee *exec.ExitError
+	if !errors.As(runErr, &ee) || ee.ExitCode() != 2 {
+		t.Fatalf("run error = %v, want exit code 2\nstderr: %s", runErr, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "harness error: classify record 0") {
+		t.Errorf("stderr lacks classify record error: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "policy: model") {
+		t.Errorf("stderr contains a policy: model line: %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
 }
