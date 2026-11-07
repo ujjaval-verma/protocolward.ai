@@ -94,14 +94,14 @@ func selfSignedCert(t *testing.T, name string) (tls.Certificate, *x509.CertPool)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
 }
 
-// A close_notify to a peer that has stopped reading is cut off after
-// closeNotifyTimeout, not after tls's own 5 s write deadline.
-func TestCloseGracefully_Bounded(t *testing.T) {
-	t.Parallel()
+// stalledPipeConn returns a pconn over a net.Pipe whose TLS handshake is done
+// and whose peer then never reads, so a close_notify write blocks. Cleanup
+// closes both ends.
+func stalledPipeConn(t *testing.T) *pconn {
+	t.Helper()
 	const name = "pipe.test"
 	cert, pool := selfSignedCert(t, name)
 	clientEnd, serverEnd := net.Pipe()
-	defer clientEnd.Close()
 
 	// The server finishes the handshake, then never reads again. Session
 	// tickets are off, or the TLS 1.3 server's ticket write could deadlock
@@ -117,10 +117,11 @@ func TestCloseGracefully_Bounded(t *testing.T) {
 		defer cancel()
 		srvDone <- srv.HandshakeContext(ctx)
 	}()
-	defer func() {
+	t.Cleanup(func() {
+		_ = clientEnd.Close()
 		_ = serverEnd.Close()
 		<-srvDone
-	}()
+	})
 
 	cli := tls.Client(clientEnd, &tls.Config{RootCAs: pool, ServerName: name, MinVersion: tls.VersionTLS12})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -130,18 +131,59 @@ func TestCloseGracefully_Bounded(t *testing.T) {
 	}
 	select {
 	case err := <-srvDone:
-		srvDone <- err // for the deferred wait
+		srvDone <- err // for the cleanup wait
 		if err != nil {
 			t.Fatalf("server handshake: %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server handshake did not finish within 2s")
 	}
+	return &pconn{dc: &dns.Conn{Conn: cli}, raw: clientEnd}
+}
 
-	pc := &pconn{dc: &dns.Conn{Conn: cli}, raw: clientEnd}
+// A close_notify to a peer that has stopped reading is cut off after
+// closeNotifyTimeout, not after tls's own 5 s write deadline.
+func TestCloseGracefully_Bounded(t *testing.T) {
+	t.Parallel()
+	pc := stalledPipeConn(t)
 	t0 := time.Now()
 	closeGracefully([]*pconn{pc})
 	if el, limit := time.Since(t0), closeNotifyTimeout+400*time.Millisecond; el > limit {
 		t.Errorf("closeGracefully took %v against a peer that does not read, want <= %v", el, limit)
+	}
+}
+
+// offQueryLimit is well under closeNotifyTimeout: a close that returns within
+// it did not wait on the peer's close_notify.
+const offQueryLimit = 50 * time.Millisecond
+
+// A failed connection is closed raw: discard returns at once even though a
+// close_notify would block on the stalled peer.
+func TestDiscard_RawClose_NoWait(t *testing.T) {
+	t.Parallel()
+	c := newClient(Config{Address: "pipe.test:853"}, 4, time.Minute)
+	pc := stalledPipeConn(t)
+	c.mu.Lock()
+	c.busy[pc] = struct{}{}
+	c.mu.Unlock()
+	t0 := time.Now()
+	c.discard(pc)
+	if el := time.Since(t0); el > offQueryLimit {
+		t.Errorf("discard took %v against a stalled peer, want <= %v (raw close)", el, offQueryLimit)
+	}
+}
+
+// A connection released after Close is closed raw, not through TLS.
+func TestRelease_AfterClose_RawClose_NoWait(t *testing.T) {
+	t.Parallel()
+	c := newClient(Config{Address: "pipe.test:853"}, 4, time.Minute)
+	pc := stalledPipeConn(t)
+	// Not in busy, so Close does not reach it: release's own close is the
+	// one under test.
+	c.Close()
+	t0 := time.Now()
+	c.release(pc)
+	if el := time.Since(t0); el > offQueryLimit {
+		t.Errorf("release after Close took %v against a stalled peer, want <= %v (raw close)", el, offQueryLimit)
 	}
 }
