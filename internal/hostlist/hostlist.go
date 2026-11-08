@@ -133,8 +133,9 @@ func truncateEntry(s string) string {
 // concatenated byte arena. A hash-indexed table maps hash(host) to a packed
 // word (arena offset, length, list index), instead of a string header and
 // allocation per entry. Measured by BenchmarkLoadRetained: about 60 B/entry
-// retained at 1M 22-byte names, of which roughly 38 B is the index including
-// map overhead. Match probes the full name and then each label-bounded suffix,
+// retained at 1M 22-byte names, just after an index map doubling, and lower
+// between doublings (about 47 B at 1.5M); of the 1M figure roughly 38 B is the
+// index including map overhead. Match probes the full name and then each label-bounded suffix,
 // longest first, and verifies every candidate against the arena, so a hash
 // collision can never produce a false hit. Names that cannot be packed live in
 // the overflow map: hash collisions, arena-offset overflow and (defensive)
