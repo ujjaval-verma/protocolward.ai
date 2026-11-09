@@ -60,7 +60,7 @@ func parseLine(line string) (hostname string, ok bool, reason string) {
 		return validateHostname(host)
 	}
 	if ip != "0.0.0.0" && ip != "127.0.0.1" {
-		return "", false, "leading IP must be 0.0.0.0, 127.0.0.1, or 0, got " + strconv.Quote(ip)
+		return "", false, "leading IP must be 0.0.0.0, 127.0.0.1, or 0, got " + strconv.Quote(truncateEntry(ip))
 	}
 	return validateHostname(host)
 }
@@ -71,7 +71,7 @@ func parseLine(line string) (hostname string, ok bool, reason string) {
 func validateHostname(host string) (string, bool, string) {
 	norm, ok := NormalizeName(host)
 	if !ok {
-		return "", false, "hostname " + strconv.Quote(host) + " failed validation (ASCII letters, digits, hyphen and underscore; labels 1-63 bytes without a leading or trailing hyphen; name up to 253 bytes; no empty labels)"
+		return "", false, "hostname " + strconv.Quote(truncateEntry(host)) + " failed validation (ASCII letters, digits, hyphen and underscore; labels 1-63 bytes without a leading or trailing hyphen; name up to 253 bytes; no empty labels)"
 	}
 	if isSystemAlias(norm) {
 		return "", false, "system alias " + strconv.Quote(norm) + " is excluded (never blocklist intent)"

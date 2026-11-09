@@ -174,6 +174,40 @@ func TestLoad_IntraSourceDuplicatesNotDoubleCounted(t *testing.T) {
 	}
 }
 
+func TestLoad_SkippedLineWarnBoundsContent(t *testing.T) {
+	defer obs.Capture(t)()
+	badHost := "0.0.0.0 " + strings.Repeat("a!", 50<<10)
+	badIP := strings.Repeat("9", 100<<10) + " bad.example"
+	path := filepath.Join(t.TempDir(), "list.txt")
+	mustWrite(t, path, badHost+"\n"+badIP+"\n0.0.0.0 ok.example\n")
+	if _, _, err := hostlist.Load([]hostlist.Source{{ID: "big", Path: path}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	warns := filterRecords(t, func(r map[string]any) bool {
+		return r["msg"] == "hostlist: skipped unparsable line"
+	})
+	if len(warns) != 2 {
+		t.Fatalf("got %d skipped-line WARNs, want 2", len(warns))
+	}
+	for i, line := range []string{badHost, badIP} {
+		content, _ := warns[i]["content"].(string)
+		reason, _ := warns[i]["reason"].(string)
+		if len(content) > 64+len("...") || !strings.HasSuffix(content, "...") {
+			t.Errorf("warn %d: content len=%d, want <= 67 and a trailing ...", i, len(content))
+		}
+		if !strings.HasPrefix(line, strings.TrimSuffix(content, "...")) {
+			t.Errorf("warn %d: content is not a prefix of the line", i)
+		}
+		token := strings.Fields(line)[0]
+		if i == 0 {
+			token = strings.Fields(line)[1]
+		}
+		if len(reason) >= 400 || strings.Contains(reason, token) {
+			t.Errorf("warn %d: reason len=%d, want < 400 and without the full token", i, len(reason))
+		}
+	}
+}
+
 // filterRecords returns all captured log records for which predicate returns true.
 func filterRecords(t *testing.T, predicate func(map[string]any) bool) []map[string]any {
 	t.Helper()
