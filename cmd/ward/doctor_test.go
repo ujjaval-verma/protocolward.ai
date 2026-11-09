@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -362,4 +363,33 @@ func TestDoctorRun_UnknownKey_ExitsCode2(t *testing.T) {
 	if strings.Contains(buf.String(), "[FAIL]") || strings.Contains(buf.String(), "[OK]") {
 		t.Errorf("doctor probed upstreams: %q", buf.String())
 	}
+}
+
+// TestProbeBind_TCPHeld_RealTCPBindFails reaches the real net.Listen wired into
+// probeBind: the test holds the TCP port, so only a real TCP bind can fail with
+// EADDRINUSE. It is race-tolerant, not race-free: another process can take the
+// UDP twin between takeTCPPortWithFreeUDP and probeBind. That outcome is told
+// apart by the "udp bind" error text, so it is retried on a fresh port and can
+// never pass the test; only the "tcp bind" outcome returns.
+func TestProbeBind_TCPHeld_RealTCPBindFails(t *testing.T) {
+	const attempts = 5
+	for i := 1; i <= attempts; i++ {
+		addr := takeTCPPortWithFreeUDP(t)
+		err := probeBind(addr)
+		if err == nil {
+			t.Fatalf("probeBind(%q) = nil with TCP held; the real TCP bind did not run", addr)
+		}
+		if strings.Contains(err.Error(), "udp bind") {
+			t.Logf("attempt %d: UDP twin lost for %s (%v); retrying on a fresh port", i, addr, err)
+			continue
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatalf("probeBind(%q) = %v; want an error wrapping EADDRINUSE", addr, err)
+		}
+		if want := fmt.Sprintf("tcp bind %q", addr); !strings.Contains(err.Error(), want) {
+			t.Fatalf("probeBind(%q) = %v; want it to contain %s", addr, err, want)
+		}
+		return
+	}
+	t.Fatalf("UDP twin lost in all %d attempts; the TCP half was never reached", attempts)
 }
