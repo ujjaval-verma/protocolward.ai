@@ -27,6 +27,12 @@
 // Stats.SkippedLines and reported with a WARN log (capped per source). Comment
 // and blank lines are neither counted nor logged.
 //
+// The skipped-line WARN keeps the message "decoy: skipped invalid hostname"
+// even though it also reports shape errors, because operators' log searches
+// depend on it. A rename changes a log key, so it waits for a release boundary
+// with a release-note entry. The "reason" attribute tells a shape error ("got
+// N fields") from a name that failed validation.
+//
 // # Construction
 //
 // New loads hosts-file sources from disk; FromEntries builds the same Set
