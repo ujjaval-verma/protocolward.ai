@@ -41,15 +41,15 @@ timeouts:
 // function can be injected here; instead the test holds whatever socket
 // another process might take:
 //   - The TCP listener is held for the whole test (t.Cleanup), so only the UDP
-//     twin can be lost, and only between this probe-close and ward's UDP bind.
-//   - If another process takes the UDP twin in that window, ward's UDP bind
-//     fails with EADDRINUSE instead of its TCP bind. bindErrRemediation maps
-//     both to the same "port already in use at <addr>" text and ward exits
-//     non-zero, so every assertion of assertBindFailureExit still holds.
-//     TestServe_UDPPortTaken_ExitsNonZeroWithRemediation proves, through the
-//     same helper, that the UDP outcome passes them all.
-//   - The TCP-specific path (UDP bound, TCP refused, UDP released) is proved
-//     without real ports in internal/dataplane's injected-listen tests.
+//     twin can be lost, and only between this probe-close and the later UDP
+//     bind by the code under test.
+//   - If another process takes the UDP twin in that window, the UDP bind fails
+//     with EADDRINUSE instead of the TCP bind. Callers are race-tolerant, not
+//     race-free: they detect a lost twin by the transport named in the error
+//     or stderr ("udp bind" / "listen udp"), then retry on a fresh port, so a
+//     lost twin can never count as a pass.
+//   - The TCP-specific path (UDP bound, TCP refused, UDP released) is also
+//     proved without real ports in internal/dataplane's injected-listen tests.
 func takeTCPPortWithFreeUDP(t *testing.T) string {
 	t.Helper()
 	for range 20 {
@@ -124,9 +124,28 @@ func TestServe_UDPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
 	}
 }
 
+// TestServe_TCPPortTaken_ExitsNonZeroWithRemediation proves the TCP bind is
+// the one that failed: stderr must name "listen tcp <addr>". It is
+// race-tolerant, not race-free: if another process takes the UDP twin, ward
+// reports "listen udp <addr>" instead; that is logged and retried on a fresh
+// port, never passed. Worst case is 5 attempts x the existing 5 s per-exec
+// bound (wardWaitBound), about 25 s; each attempt keeps the 2 s exit check.
 func TestServe_TCPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
+	const attempts = 5
 	warmWardBin(t)
-	assertBindFailureExit(t, takeTCPPortWithFreeUDP(t))
+	for i := 1; i <= attempts; i++ {
+		addr := takeTCPPortWithFreeUDP(t)
+		stderr := assertBindFailureExit(t, addr)
+		if strings.Contains(stderr, "listen udp "+addr) {
+			t.Logf("attempt %d: UDP twin lost for %s; retrying on a fresh port", i, addr)
+			continue
+		}
+		if want := "listen tcp " + addr; !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+		return
+	}
+	t.Fatalf("UDP twin lost in all %d attempts; the TCP bind was never reached", attempts)
 }
 
 // In-process: serveRun returns the bind error and does not leave the
