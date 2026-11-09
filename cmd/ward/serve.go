@@ -453,10 +453,8 @@ func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
 		if len(cfg.Allowlists) > 0 {
 			set, stats, err := allowlist.Load(cfg.Allowlists)
 			if err != nil {
-				msg := fmt.Sprintf("allowlist load failed: %v", err)
-				rem := "check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("allowlist error", msg, rem)
-				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+				return nil, nil, loaderServeError("allowlist error", "allowlist", err,
+					"check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template")
 			}
 			logListSourceStats(stats)
 			slog.Info("allowlist: ready",

@@ -352,6 +352,14 @@ func TestLoadHostLists(t *testing.T) {
 		se := asServeError(t, err, 1)
 		assertSingleLoaderRemediation(t, se, stderr(), "blocklist load failed:", "blocklists", p)
 	})
+	t.Run("overlong allowlist line", func(t *testing.T) {
+		captureSlog(t)
+		stderr := captureStderr(t)
+		p := writeOverlongFile(t)
+		_, _, err := loadHostLists(config.Config{Allowlists: []hostlist.Source{{ID: "al-1", Path: p}}})
+		se := asServeError(t, err, 1)
+		assertSingleLoaderRemediation(t, se, stderr(), "allowlist load failed:", "allowlists", p)
+	})
 }
 
 // writeOverlongFile writes a one-line file whose line exceeds the hostlist
