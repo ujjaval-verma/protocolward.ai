@@ -21,8 +21,9 @@
 //   - No silent drops (invariant #7): every skipped line that carries content is
 //     counted in Stats and the first 16 per source emit a WARN log; subsequent
 //     skips increment the counter silently and are reported in the per-source
-//     summary. Comment and blank lines are not counted. WARN records echo at
-//     most 64 bytes of the line.
+//     summary. Comment and blank lines are not counted. The WARN content echoes
+//     at most 64 bytes of the line (plus "..."), and reason quotes at most 64
+//     bytes of the rejected token.
 //   - Every error names remediation (invariant #8): exported error types include
 //     a remediation hint in their Error() string.
 //   - Strict at the file level, lenient at the line level: missing or
