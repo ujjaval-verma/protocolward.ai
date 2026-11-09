@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/netip"
@@ -792,4 +793,55 @@ func TestServeRun_DashFlagCheckedBeforeLists(t *testing.T) {
 			t.Errorf("Message = %q; the flag must be checked before the lists", se.Message)
 		}
 	})
+}
+
+func TestLoaderServeError(t *testing.T) {
+	const pathRem = "check [blocklists].path"
+	marked := errors.New(`line 3 of "a.txt" too long` + remediationMarker + "split the line")
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+		wantRem string
+	}{
+		{
+			name:    "plain error without a marker",
+			err:     errors.New("plain"),
+			wantMsg: "x load failed: plain",
+			wantRem: pathRem,
+		},
+		{
+			name:    "wrapped marked error keeps the outer prefix",
+			err:     fmt.Errorf("outer: %w", marked),
+			wantMsg: `x load failed: outer: line 3 of "a.txt" too long`,
+			wantRem: "split the line (secondary: " + pathRem + ")",
+		},
+		{
+			name:    "marker text inside the path splits at the last marker",
+			err:     errors.New(`open "a` + remediationMarker + `b.txt": denied` + remediationMarker + "fix perms"),
+			wantMsg: `x load failed: open "a` + remediationMarker + `b.txt": denied`,
+			wantRem: "fix perms (secondary: " + pathRem + ")",
+		},
+		{
+			name:    "blank loader hint falls back to the path hint",
+			err:     errors.New("cause" + remediationMarker + "  "),
+			wantMsg: "x load failed: cause",
+			wantRem: pathRem,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			captureSlog(t)
+			se := loaderServeError("label", "x", tt.err, pathRem)
+			if se.Code != 1 {
+				t.Errorf("Code = %d, want 1", se.Code)
+			}
+			if se.Message != tt.wantMsg {
+				t.Errorf("Message = %q, want %q", se.Message, tt.wantMsg)
+			}
+			if se.Remediation != tt.wantRem {
+				t.Errorf("Remediation = %q, want %q", se.Remediation, tt.wantRem)
+			}
+		})
+	}
 }

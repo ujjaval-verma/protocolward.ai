@@ -88,9 +88,14 @@ func (e *serveError) Error() string {
 func loaderServeError(label, what string, err error, pathRem string) *serveError {
 	msg := what + " load failed: " + err.Error()
 	rem := pathRem
-	if cause, loaderRem, ok := strings.Cut(err.Error(), remediationMarker); ok {
-		msg = what + " load failed: " + cause
-		rem = loaderRem + " (secondary: " + pathRem + ")"
+	// Split at the last marker: the loader hint is the tail of the error, and
+	// a quoted path may itself contain the marker text.
+	s := err.Error()
+	if i := strings.LastIndex(s, remediationMarker); i >= 0 {
+		msg = what + " load failed: " + s[:i]
+		if loaderRem := strings.TrimSpace(s[i+len(remediationMarker):]); loaderRem != "" {
+			rem = loaderRem + " (secondary: " + pathRem + ")"
+		}
 	}
 	printStartupError(label, msg, rem)
 	return &serveError{Code: 1, Message: msg, Remediation: rem}
