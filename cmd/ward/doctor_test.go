@@ -380,6 +380,9 @@ func TestProbeBind_TCPHeld_RealTCPBindFails(t *testing.T) {
 			t.Fatalf("probeBind(%q) = nil with TCP held; the real TCP bind did not run", addr)
 		}
 		if strings.Contains(err.Error(), "udp bind") {
+			if !errors.Is(err, syscall.EADDRINUSE) {
+				t.Fatalf("probeBind(%q) = %v; a UDP bind error other than EADDRINUSE is not a lost twin", addr, err)
+			}
 			t.Logf("attempt %d: UDP twin lost for %s (%v); retrying on a fresh port", i, addr, err)
 			continue
 		}

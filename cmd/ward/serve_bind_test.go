@@ -119,7 +119,7 @@ func TestServe_UDPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
 	stderr := assertBindFailureExit(t, addr)
 	// The test holds the UDP socket, so this is deterministic. It pins the
 	// string the TCP-taken test treats as "UDP twin lost".
-	if want := "listen udp " + addr; !strings.Contains(stderr, want) {
+	if want := "listen udp " + addr + ": bind: address already in use"; !strings.Contains(stderr, want) {
 		t.Errorf("stderr missing %q:\n%s", want, stderr)
 	}
 }
@@ -136,7 +136,7 @@ func TestServe_TCPPortTaken_ExitsNonZeroWithRemediation(t *testing.T) {
 	for i := 1; i <= attempts; i++ {
 		addr := takeTCPPortWithFreeUDP(t)
 		stderr := assertBindFailureExit(t, addr)
-		if strings.Contains(stderr, "listen udp "+addr) {
+		if strings.Contains(stderr, "listen udp "+addr+": bind: address already in use") {
 			t.Logf("attempt %d: UDP twin lost for %s; retrying on a fresh port", i, addr)
 			continue
 		}
