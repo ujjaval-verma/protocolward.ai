@@ -69,11 +69,31 @@ type serveError struct {
 	Remediation string
 }
 
+// remediationMarker separates a cause from its remediation. It matches the
+// marker that internal/ loader errors use (invariant 8); serveError.Error and
+// loaderServeError are the two sites that must agree on it.
+const remediationMarker = " — remediation: "
+
 func (e *serveError) Error() string {
 	if e.Remediation != "" {
-		return fmt.Sprintf("%s — remediation: %s", e.Message, e.Remediation)
+		return e.Message + remediationMarker + e.Remediation
 	}
 	return e.Message
+}
+
+// loaderServeError builds the startup error for a failed list or decoy load.
+// A loader error that already names a remediation keeps it as the primary
+// hint; serve's path hint is appended as secondary, so the error carries one
+// remediation marker. It prints the startup error before returning.
+func loaderServeError(label, what string, err error, pathRem string) *serveError {
+	msg := what + " load failed: " + err.Error()
+	rem := pathRem
+	if cause, loaderRem, ok := strings.Cut(err.Error(), remediationMarker); ok {
+		msg = what + " load failed: " + cause
+		rem = loaderRem + " (secondary: " + pathRem + ")"
+	}
+	printStartupError(label, msg, rem)
+	return &serveError{Code: 1, Message: msg, Remediation: rem}
 }
 
 // serveOpts holds the parsed flags for the serve subcommand.
@@ -420,10 +440,8 @@ func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
 		if len(cfg.Blocklists) > 0 {
 			set, stats, err := hostlist.Load(cfg.Blocklists)
 			if err != nil {
-				msg := fmt.Sprintf("blocklist load failed: %v", err)
-				rem := "check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("blocklist error", msg, rem)
-				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+				return nil, nil, loaderServeError("blocklist error", "blocklist", err,
+					"check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template")
 			}
 			logListSourceStats(stats)
 			slog.Info("blocklist: ready",

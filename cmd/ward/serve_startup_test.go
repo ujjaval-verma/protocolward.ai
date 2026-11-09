@@ -342,6 +342,72 @@ func TestLoadHostLists(t *testing.T) {
 			t.Errorf("Remediation = %q", se.Remediation)
 		}
 	})
+	t.Run("overlong blocklist line", func(t *testing.T) {
+		// Order matters: slog's JSON (which also carries "remediation") must go
+		// to the capture buffer, not to the captured stderr.
+		captureSlog(t)
+		stderr := captureStderr(t)
+		p := writeOverlongFile(t)
+		_, _, err := loadHostLists(config.Config{Blocklists: []hostlist.Source{{ID: "bl-1", Path: p}}})
+		se := asServeError(t, err, 1)
+		assertSingleLoaderRemediation(t, se, stderr(), "blocklist load failed:", "blocklists", p)
+	})
+}
+
+// writeOverlongFile writes a one-line file whose line exceeds the hostlist
+// line limit, so every loader rejects it with an error that carries its own
+// remediation.
+func writeOverlongFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "overlong.txt")
+	if err := os.WriteFile(p, []byte(strings.Repeat("a", 1<<20+1)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// assertSingleLoaderRemediation pins that a loader failure carries exactly one
+// remediation marker: the loader's hint first, serve's path hint secondary.
+func assertSingleLoaderRemediation(t *testing.T, se *serveError, stderr, msgPrefix, field, path string) {
+	t.Helper()
+	if n := strings.Count(se.Error(), " — remediation: "); n != 1 {
+		t.Errorf("marker count in Error() = %d, want 1: %q", n, se.Error())
+	}
+	if !strings.HasPrefix(se.Remediation, "split or remove line 1") {
+		t.Errorf("Remediation = %q, want prefix %q", se.Remediation, "split or remove line 1")
+	}
+	if want := "(secondary: check " + field + "[*].path values in ward.yaml"; !strings.Contains(se.Remediation, want) {
+		t.Errorf("Remediation = %q, want it to contain %q", se.Remediation, want)
+	}
+	if !strings.HasPrefix(se.Message, msgPrefix) {
+		t.Errorf("Message = %q, want prefix %q", se.Message, msgPrefix)
+	}
+	if !strings.Contains(se.Message, path) {
+		t.Errorf("Message = %q, want it to name %q", se.Message, path)
+	}
+	if strings.Contains(se.Message, " — remediation: ") {
+		t.Errorf("Message carries a marker: %q", se.Message)
+	}
+	n := 0
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(line, "remediation:") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("stderr remediation lines = %d, want 1: %q", n, stderr)
+	}
+}
+
+func TestServeError_Error(t *testing.T) {
+	// Literal strings, not the remediationMarker constant, so a misspelled
+	// constant fails here.
+	if got, want := (&serveError{Message: "m", Remediation: "r"}).Error(), "m — remediation: r"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if got := (&serveError{Message: "m"}).Error(); got != "m" {
+		t.Errorf("Error() with empty Remediation = %q, want %q", got, "m")
+	}
 }
 
 func TestLoadDecoys(t *testing.T) {
