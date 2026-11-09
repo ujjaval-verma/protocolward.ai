@@ -462,6 +462,17 @@ func TestLoadDecoys(t *testing.T) {
 			t.Errorf("Remediation = %q", se.Remediation)
 		}
 	})
+	t.Run("overlong decoy line", func(t *testing.T) {
+		captureSlog(t)
+		stderr := captureStderr(t)
+		p := writeOverlongFile(t)
+		set, total, err := loadDecoys(config.Config{Decoys: []hostlist.Source{{ID: "d-1", Path: p}}})
+		se := asServeError(t, err, 1)
+		if set != nil || total != 0 {
+			t.Errorf("got %v, %d on error", set, total)
+		}
+		assertSingleLoaderRemediation(t, se, stderr(), "decoy load failed:", "decoys", p)
+	})
 }
 
 func TestLoadServePolicy(t *testing.T) {

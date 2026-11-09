@@ -476,10 +476,8 @@ func loadDecoys(cfg config.Config) (decoys *decoy.Set, total int, err error) {
 	if len(cfg.Decoys) > 0 {
 		set, stats, err := decoy.New(cfg.Decoys)
 		if err != nil {
-			msg := fmt.Sprintf("decoy load failed: %v", err)
-			rem := "check decoys[*].path values in ward.yaml"
-			printStartupError("decoy error", msg, rem)
-			return nil, 0, &serveError{Code: 1, Message: msg, Remediation: rem}
+			return nil, 0, loaderServeError("decoy error", "decoy", err,
+				"check decoys[*].path values in ward.yaml")
 		}
 		for _, st := range stats {
 			slog.Info("decoy: loaded source",
