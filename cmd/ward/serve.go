@@ -69,11 +69,36 @@ type serveError struct {
 	Remediation string
 }
 
+// remediationMarker separates a cause from its remediation. It matches the
+// marker that internal/ loader errors use (invariant 8); serveError.Error and
+// loaderServeError are the two sites that must agree on it.
+const remediationMarker = " — remediation: "
+
 func (e *serveError) Error() string {
 	if e.Remediation != "" {
-		return fmt.Sprintf("%s — remediation: %s", e.Message, e.Remediation)
+		return e.Message + remediationMarker + e.Remediation
 	}
 	return e.Message
+}
+
+// loaderServeError builds the startup error for a failed list or decoy load.
+// A loader error that already names a remediation keeps it as the primary
+// hint; serve's path hint is appended as secondary, so the error carries one
+// remediation marker. It prints the startup error before returning.
+func loaderServeError(label, what string, err error, pathRem string) *serveError {
+	msg := what + " load failed: " + err.Error()
+	rem := pathRem
+	// Split at the last marker: the loader hint is the tail of the error, and
+	// a quoted path may itself contain the marker text.
+	s := err.Error()
+	if i := strings.LastIndex(s, remediationMarker); i >= 0 {
+		msg = what + " load failed: " + s[:i]
+		if loaderRem := strings.TrimSpace(s[i+len(remediationMarker):]); loaderRem != "" {
+			rem = loaderRem + " (secondary: " + pathRem + ")"
+		}
+	}
+	printStartupError(label, msg, rem)
+	return &serveError{Code: 1, Message: msg, Remediation: rem}
 }
 
 // serveOpts holds the parsed flags for the serve subcommand.
@@ -420,10 +445,8 @@ func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
 		if len(cfg.Blocklists) > 0 {
 			set, stats, err := hostlist.Load(cfg.Blocklists)
 			if err != nil {
-				msg := fmt.Sprintf("blocklist load failed: %v", err)
-				rem := "check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("blocklist error", msg, rem)
-				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+				return nil, nil, loaderServeError("blocklist error", "blocklist", err,
+					"check blocklists[*].path values in ward.yaml; see ward.example.yaml for a template")
 			}
 			logListSourceStats(stats)
 			slog.Info("blocklist: ready",
@@ -435,10 +458,8 @@ func loadHostLists(cfg config.Config) (allow, block policy.Matcher, err error) {
 		if len(cfg.Allowlists) > 0 {
 			set, stats, err := allowlist.Load(cfg.Allowlists)
 			if err != nil {
-				msg := fmt.Sprintf("allowlist load failed: %v", err)
-				rem := "check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template"
-				printStartupError("allowlist error", msg, rem)
-				return nil, nil, &serveError{Code: 1, Message: msg, Remediation: rem}
+				return nil, nil, loaderServeError("allowlist error", "allowlist", err,
+					"check allowlists[*].path values in ward.yaml; see ward.example.yaml for a template")
 			}
 			logListSourceStats(stats)
 			slog.Info("allowlist: ready",
@@ -460,10 +481,8 @@ func loadDecoys(cfg config.Config) (decoys *decoy.Set, total int, err error) {
 	if len(cfg.Decoys) > 0 {
 		set, stats, err := decoy.New(cfg.Decoys)
 		if err != nil {
-			msg := fmt.Sprintf("decoy load failed: %v", err)
-			rem := "check decoys[*].path values in ward.yaml"
-			printStartupError("decoy error", msg, rem)
-			return nil, 0, &serveError{Code: 1, Message: msg, Remediation: rem}
+			return nil, 0, loaderServeError("decoy error", "decoy", err,
+				"check decoys[*].path values in ward.yaml")
 		}
 		for _, st := range stats {
 			slog.Info("decoy: loaded source",

@@ -21,7 +21,9 @@
 //   - No silent drops (invariant #7): every skipped line that carries content is
 //     counted in Stats and the first 16 per source emit a WARN log; subsequent
 //     skips increment the counter silently and are reported in the per-source
-//     summary. Comment and blank lines are not counted.
+//     summary. Comment and blank lines are not counted. The WARN content echoes
+//     at most 64 bytes of the line (plus "..."), and reason quotes at most 64
+//     bytes of the rejected token.
 //   - Every error names remediation (invariant #8): exported error types include
 //     a remediation hint in their Error() string.
 //   - Strict at the file level, lenient at the line level: missing or
@@ -39,8 +41,6 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -317,8 +317,6 @@ func fromEntries(names []string, hash func(string) uint64) (*Set, error) {
 	for i, raw := range names {
 		host, ok, reason := validateHostname(raw)
 		if !ok {
-			// The reason quotes the host; keep that echo bounded too.
-			reason = strings.Replace(reason, strconv.Quote(raw), strconv.Quote(truncateEntry(raw)), 1)
 			return nil, &InvalidEntryError{Index: i, Entry: raw, Reason: reason}
 		}
 		set.add(host, 0)
@@ -390,7 +388,7 @@ func loadOne(src Source, idx uint16, set *Set) (Stats, error) {
 				"source_id", src.ID,
 				"path", src.Path,
 				"line", lineNo,
-				"content", line,
+				"content", truncateEntry(line),
 				"reason", reason,
 			)
 			warnsEmitted++
