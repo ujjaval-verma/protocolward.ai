@@ -718,7 +718,7 @@ wait:
 		"shutdown_budget", cfg.Timeouts.Shutdown.String(),
 	)
 
-	shutdownServe(srv, dash, serveErr, cfg.Timeouts.Shutdown)
+	shutdownServe(srv, dash, serveErr, cfg.Timeouts.Shutdown, cfg.Listen, fromFlag)
 	return nil
 }
 
@@ -730,7 +730,10 @@ type dashServer interface {
 
 // shutdownServe is the graceful shutdown: the dashboard first (1 s), then
 // the dataplane drain within budget, then a bounded wait for Serve to return.
-func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration) {
+// A non-nil error from Serve (a listener error or failed bind that raced the
+// shutdown signal) is logged at Error with the same remediation the early-exit
+// path prints, if Serve returns it within the 500 ms wait.
+func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration, listenAddr string, fromFlag bool) {
 	// ── Step 8: Graceful shutdown ─────────────────────────────────────────────
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), budget)
 	defer shutdownCancel()
@@ -757,7 +760,11 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 			// own abort after a listener error) already stopped them, and this call waited
 			// for it and drained; or one was serving and was stopped and drained while the
 			// other had not started. The error names the transport(s). Harmless: Serve still
-			// returns. Log at DEBUG so it doesn't alarm operators.
+			// returns. Log at DEBUG so it doesn't alarm operators. If a listener error
+			// made Serve stop (its own abort, or a failed bind), Serve returns that error
+			// and the drain below logs it at Error if Serve returns within its 500 ms
+			// wait, whichever Shutdown stopped the listeners; this line only says nothing
+			// is left serving.
 			slog.Debug("ward serve: a DNS listener was not serving when shutdown ran (not started yet, or already stopped by another shutdown); every listener that was serving is stopped and drained",
 				"error", err.Error(),
 				"remediation", "none needed: nothing is left serving",
@@ -765,14 +772,20 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 		} else {
 			slog.Error("ward serve: shutdown error",
 				"error", err.Error(),
-				"remediation", "check for listener errors in the log above",
+				"remediation", "check the listener error logged next, if any, and the log above",
 			)
 		}
 	}
 
 	// Drain the serveErr channel so the goroutine exits cleanly.
 	select {
-	case <-serveErr:
+	case err := <-serveErr:
+		if err != nil {
+			slog.Error("ward serve: listener error during shutdown",
+				"error", err.Error(),
+				"remediation", bindErrRemediationFor(err, listenAddr, fromFlag),
+			)
+		}
 	case <-time.After(500 * time.Millisecond):
 	}
 
