@@ -623,6 +623,16 @@ func TestShutdownServe(t *testing.T) {
 	})
 }
 
+// lateDoneCtx is an already-cancelled context whose Done pauses first, so the
+// goroutine serveUntilStopped started has bound (and failed) before its select
+// sees both the cancel and the listener error ready, even on one CPU.
+type lateDoneCtx struct{ context.Context }
+
+func (c lateDoneCtx) Done() <-chan struct{} {
+	time.Sleep(20 * time.Millisecond)
+	return c.Context.Done()
+}
+
 func TestServeUntilStopped(t *testing.T) {
 	const budget = 2 * time.Second
 	// run calls serveUntilStopped in a goroutine and returns its result. It
@@ -679,6 +689,39 @@ func TestServeUntilStopped(t *testing.T) {
 				t.Errorf("fromFlag=%v: hatch armed %d times on the listener-exit path, want 0", tc.fromFlag, n)
 			}
 		}
+	})
+
+	t.Run("passes listen and fromFlag to shutdownServe", func(t *testing.T) {
+		// A cancelled ctx races the listener's bind error; retry until the ctx path
+		// wins and Serve's error is drained, the only run that logs cfg.Listen and fromFlag.
+		base, cancel := context.WithCancel(context.Background())
+		cancel()
+		ctx := lateDoneCtx{base}
+		for attempt := 0; attempt < 50; attempt++ {
+			buf := captureSlog(t)
+			held, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := held.LocalAddr().String()
+			bindErr := newTestDataplane(t, addr).Serve()
+			if bindErr == nil {
+				_ = held.Close()
+				t.Fatal("Serve on a held port returned nil, want a bind error")
+			}
+			sig, rec := newFakeSignals(), &hatchRecorder{}
+			cfg := config.Config{Listen: addr, Timeouts: config.Timeouts{Shutdown: budget}}
+			err = run(t, ctx, newTestDataplane(t, addr), newFakeDash(rec), newExitHatch(sig.notify, rec.exit), cfg, true, nil)
+			_ = held.Close()
+			if err != nil || logIndex(logLines(t, buf), msgListenerErr) < 0 {
+				// The listener error won the select, or Shutdown beat Serve's bind so
+				// Serve returned nil without an error to log; retry.
+				continue
+			}
+			checkListenerErrLine(t, buf, func(e string) bool { return e == bindErr.Error() }, bindErrRemediationFor(bindErr, addr, true))
+			return
+		}
+		t.Fatal("serveUntilStopped took the listener-exit path on all 50 attempts")
 	})
 
 	// graceful runs the first-signal path; the returned recorder holds the
