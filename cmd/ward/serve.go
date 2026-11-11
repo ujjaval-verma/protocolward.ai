@@ -762,8 +762,8 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 			// other had not started. The error names the transport(s). Harmless: Serve still
 			// returns. Log at DEBUG so it doesn't alarm operators. If a listener error
 			// made Serve stop (its own abort, or a failed bind), Serve returns that error
-			// and the drain below logs it at Error, whichever Shutdown stopped the
-			// listeners and whether or not this branch ran; this line only says nothing
+			// and the drain below logs it at Error if Serve returns within its 500 ms
+			// wait, whichever Shutdown stopped the listeners; this line only says nothing
 			// is left serving.
 			slog.Debug("ward serve: a DNS listener was not serving when shutdown ran (not started yet, or already stopped by another shutdown); every listener that was serving is stopped and drained",
 				"error", err.Error(),
