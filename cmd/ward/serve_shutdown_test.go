@@ -425,6 +425,7 @@ func logIndex(lines []map[string]any, msg string) int {
 const (
 	msgShutdownReceived = "ward serve: shutdown signal received; draining in-flight queries"
 	msgStopped          = "ward serve: stopped"
+	msgListenerErr      = "ward serve: listener error during shutdown"
 	msgNotStarted       = "ward serve: a DNS listener was not serving when shutdown ran (not started yet, or already stopped by another shutdown); every listener that was serving is stopped and drained"
 )
 
@@ -447,15 +448,50 @@ func checkNotStartedLine(t *testing.T, line map[string]any) {
 	}
 }
 
+// checkListenerErrLine asserts lines holds exactly one msgListenerErr record,
+// at ERROR, with the wanted error and remediation, ahead of msgStopped, and
+// that msgNotStarted (DEBUG) is still logged.
+func checkListenerErrLine(t *testing.T, buf *safeBuffer, wantErr func(string) bool, wantRem string) {
+	t.Helper()
+	lines := logLines(t, buf)
+	n := 0
+	for _, m := range lines {
+		if m["msg"] == msgListenerErr {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%q records = %d, want 1\nlog:\n%s", msgListenerErr, n, buf.String())
+	}
+	le, st := logIndex(lines, msgListenerErr), logIndex(lines, msgStopped)
+	if st < 0 || le > st {
+		t.Errorf("want %q before %q; got indices %d, %d\nlog:\n%s", msgListenerErr, msgStopped, le, st, buf.String())
+	}
+	line := lines[le]
+	if line["level"] != "ERROR" {
+		t.Errorf("%q level = %v, want ERROR", msgListenerErr, line["level"])
+	}
+	if e, _ := line["error"].(string); !wantErr(e) {
+		t.Errorf("%q error = %q, not the wanted error", msgListenerErr, e)
+	}
+	rem, _ := line["remediation"].(string)
+	if rem == "" || rem != wantRem {
+		t.Errorf("%q remediation = %q, want non-empty %q", msgListenerErr, rem, wantRem)
+	}
+	if logIndex(lines, msgNotStarted) < 0 {
+		t.Errorf("no %q line\nlog:\n%s", msgNotStarted, buf.String())
+	}
+}
+
 func TestShutdownServe(t *testing.T) {
 	const budget = 2 * time.Second
-	run := func(t *testing.T, srv *dataplane.Server, dash *fakeDash, serveErr chan error) time.Duration {
+	run := func(t *testing.T, srv *dataplane.Server, dash *fakeDash, serveErr chan error, listenAddr string, fromFlag bool) time.Duration {
 		t.Helper()
 		done := make(chan struct{})
 		start := time.Now()
 		go func() {
 			defer close(done)
-			shutdownServe(srv, dash, serveErr, budget)
+			shutdownServe(srv, dash, serveErr, budget, listenAddr, fromFlag)
 		}()
 		select {
 		case <-done:
@@ -469,7 +505,7 @@ func TestShutdownServe(t *testing.T) {
 		dash := newFakeDash(&hatchRecorder{})
 		serveErr := make(chan error, 1)
 		serveErr <- nil
-		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr); took > 400*time.Millisecond {
+		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr, "127.0.0.1:0", false); took > 400*time.Millisecond {
 			t.Errorf("shutdownServe took %s with serveErr ready, want <= 400ms", took)
 		}
 		if n := dash.shutdownCalls(); n != 1 {
@@ -488,6 +524,9 @@ func TestShutdownServe(t *testing.T) {
 		}
 		if i := logIndex(lines, "ward serve: shutdown error"); i >= 0 {
 			t.Errorf("unexpected shutdown error line: %v", lines[i])
+		}
+		if i := logIndex(lines, msgListenerErr); i >= 0 {
+			t.Errorf("unexpected %q line: %v", msgListenerErr, lines[i])
 		}
 	})
 	t.Run("another shutdown already stopped the listeners", func(t *testing.T) {
@@ -508,7 +547,7 @@ func TestShutdownServe(t *testing.T) {
 			t.Fatalf("first Shutdown = %v; want nil", err)
 		}
 		dash := newFakeDash(&hatchRecorder{})
-		run(t, srv, dash, serveErr)
+		run(t, srv, dash, serveErr, "127.0.0.1:0", false)
 		lines := logLines(t, buf)
 		ns, st := logIndex(lines, msgNotStarted), logIndex(lines, msgStopped)
 		if ns < 0 || st < 0 || ns > st {
@@ -520,6 +559,9 @@ func TestShutdownServe(t *testing.T) {
 		if i := logIndex(lines, "ward serve: shutdown error"); i >= 0 {
 			t.Errorf("unexpected shutdown error line: %v", lines[i])
 		}
+		if i := logIndex(lines, msgListenerErr); i >= 0 {
+			t.Errorf("unexpected %q line: %v", msgListenerErr, lines[i])
+		}
 	})
 	t.Run("dashboard shutdown error", func(t *testing.T) {
 		buf := captureSlog(t)
@@ -527,7 +569,7 @@ func TestShutdownServe(t *testing.T) {
 		dash.shutdownErr = errors.New("dash stuck")
 		serveErr := make(chan error, 1)
 		serveErr <- nil
-		run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr)
+		run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr, "127.0.0.1:0", false)
 		lines := logLines(t, buf)
 		i := logIndex(lines, "dashboard: shutdown error")
 		if i < 0 {
@@ -540,12 +582,44 @@ func TestShutdownServe(t *testing.T) {
 	t.Run("serve still running", func(t *testing.T) {
 		buf := captureSlog(t)
 		dash := newFakeDash(&hatchRecorder{})
-		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, make(chan error, 1)); took < 500*time.Millisecond {
+		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, make(chan error, 1), "127.0.0.1:0", false); took < 500*time.Millisecond {
 			t.Errorf("shutdownServe took %s with serveErr empty, want the 500ms drain", took)
 		}
-		if logIndex(logLines(t, buf), msgStopped) < 0 {
+		lines := logLines(t, buf)
+		if logIndex(lines, msgStopped) < 0 {
 			t.Errorf("no %q line\nlog:\n%s", msgStopped, buf.String())
 		}
+		if i := logIndex(lines, msgListenerErr); i >= 0 {
+			t.Errorf("unexpected %q line: %v", msgListenerErr, lines[i])
+		}
+	})
+	t.Run("listener error from serve is logged", func(t *testing.T) {
+		for _, fromFlag := range []bool{false, true} {
+			buf := captureSlog(t)
+			held, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = held.Close() })
+			addr := held.LocalAddr().String()
+			srv := newTestDataplane(t, addr)
+			serveRet := srv.Serve()
+			if serveRet == nil {
+				t.Fatalf("fromFlag=%v: Serve on a held port returned nil, want a bind error", fromFlag)
+			}
+			serveErr := make(chan error, 1)
+			serveErr <- serveRet
+			run(t, srv, newFakeDash(&hatchRecorder{}), serveErr, addr, fromFlag)
+			checkListenerErrLine(t, buf, func(e string) bool { return e == serveRet.Error() }, bindErrRemediationFor(serveRet, addr, fromFlag))
+		}
+	})
+	t.Run("abort-path listener error is logged", func(t *testing.T) {
+		buf := captureSlog(t)
+		injected := fmt.Errorf("dataplane: udp listener on 127.0.0.1:1 %w: boom", dataplane.ErrListenerStopped)
+		serveErr := make(chan error, 1)
+		serveErr <- injected
+		run(t, newTestDataplane(t, "127.0.0.1:0"), newFakeDash(&hatchRecorder{}), serveErr, "127.0.0.1:0", false)
+		checkListenerErrLine(t, buf, func(e string) bool { return strings.Contains(e, "boom") }, bindErrRemediationFor(injected, "127.0.0.1:0", false))
 	})
 }
 
