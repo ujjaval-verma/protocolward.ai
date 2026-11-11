@@ -271,11 +271,16 @@ type Server struct {
 
 	// Test seams, nil in production. Internal tests set them before calling
 	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
-	// published and before either transport activates. afterTake runs in
-	// every Shutdown after the take and before any miekg call or wait on
-	// stopped. afterNotStarted runs in Shutdown when miekg answered "not started" for a
-	// transport, before its socket is closed.
-	beforeActivate  func()
+	// published and before either transport activates; betweenActivate
+	// (below) runs between the two activations. afterTake runs in every
+	// Shutdown after the take and before any miekg call or wait on stopped.
+	// afterNotStarted runs in Shutdown when miekg answered "not started" for
+	// a transport, before its socket is closed. All of them run with no lock
+	// held.
+	beforeActivate func()
+	// betweenActivate runs in Serve after the UDP ActivateAndServe goroutine is
+	// started and before the TCP one is.
+	betweenActivate func()
 	afterTake       func()
 	afterNotStarted func(transport string)
 
@@ -540,6 +545,9 @@ func (s *Server) Serve() error {
 	}
 	done := make(chan listenerResult, 2)
 	go func() { done <- listenerResult{"udp", s.udpSrv.ActivateAndServe()} }()
+	if s.betweenActivate != nil {
+		s.betweenActivate()
+	}
 	go func() { done <- listenerResult{"tcp", s.tcpSrv.ActivateAndServe()} }()
 
 	var first error
