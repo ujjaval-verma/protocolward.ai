@@ -168,6 +168,16 @@ func TestServe_ShutdownBetweenBindAndActivate_ReturnsNil(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
 	srv := newServeTestServer(t, "127.0.0.1:0")
+	// A non-*net.UDPConn makes miekg skip setUDPSocketOptions, which on
+	// Linux fails on the closed socket before NotifyStartedFunc; with the
+	// wrapper UDP's late activation reaches listenerStarted on every OS.
+	srv.listenUDP = func(n, a string) (net.PacketConn, error) {
+		pc, err := net.ListenPacket(n, a)
+		if err != nil {
+			return nil, err
+		}
+		return struct{ net.PacketConn }{pc}, nil
+	}
 	var shutErr error
 	srv.beforeActivate = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -198,6 +208,17 @@ func TestServe_ShutdownBetweenBindAndActivate_ReturnsNil(t *testing.T) {
 				t.Errorf("%s record: %s is empty; want it set (record %v)", transport, key, r)
 			}
 		}
+	}
+	if lines := listeningLines(t); len(lines) != 0 {
+		t.Errorf("dns: listening records = %v; want none (Shutdown began before readiness)", lines)
+	}
+	select {
+	case <-srv.Listening():
+		t.Error("Listening() is closed; want it open (Shutdown began before readiness)")
+	default:
+	}
+	if got := srv.Addr(); got != "" {
+		t.Errorf("Addr() = %q; want \"\" (Shutdown began before readiness)", got)
 	}
 }
 
