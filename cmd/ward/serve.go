@@ -772,7 +772,7 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 		} else {
 			slog.Error("ward serve: shutdown error",
 				"error", err.Error(),
-				"remediation", "check for listener errors in the log above",
+				"remediation", "check the listener error logged next, if any, and the log above",
 			)
 		}
 	}
