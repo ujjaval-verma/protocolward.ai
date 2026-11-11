@@ -211,6 +211,7 @@ check-workflows: $(TOOLS_DIR)/actionlint ## Lint .github/workflows with the pinn
 
 .PHONY: check-tool-deps
 check-tool-deps: ## Verify lint/fmt/vuln/check-workflows/check/ci/pre-push/audit/test/tools/bootstrap build only the pinned tools they run (dry run, fresh-clone layout)
+	$(Q)scripts/check-tool-deps-selftest.sh
 	$(Q)scripts/check-tool-deps.sh
 
 .PHONY: check
