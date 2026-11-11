@@ -401,7 +401,9 @@ func NewServer(cfg Config) (*Server, error) {
 // readiness (`dns: listening`, logged after both listeners serve), or ""
 // before that. Readiness is never announced if a Shutdown began first, even
 // if both listeners had already started; Addr then stays "". It is not
-// cleared when Serve returns.
+// cleared when Serve returns. A Shutdown begins when it marks the server as
+// stopping. A Shutdown call that overlaps the announcement may let it happen
+// first, and then stops both listeners.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -418,7 +420,9 @@ func (s *Server) Addr() string {
 // listeners had already started, and never if Serve fails to bind; it stays
 // open forever if Serve fails or returns early for any other reason, so
 // callers must also watch Serve's return, for example in a select with it.
-// Every call returns the same channel.
+// A Shutdown begins when it marks the server as stopping. A Shutdown call that
+// overlaps the announcement may let it happen first, and then stops both
+// listeners. Every call returns the same channel.
 func (s *Server) Listening() <-chan struct{} {
 	return s.addrCh
 }
