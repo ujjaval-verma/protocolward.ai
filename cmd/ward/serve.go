@@ -668,8 +668,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 // listener exit it closes the dashboard and returns an untyped nil or a
 // *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
 // drain, runs shutdownServe and returns nil. fromFlag says the listen address
-// came from --listen-addr. Once both DNS listeners serve, it logs the port-0
-// Warn when the address came from --listen-addr with port 0.
+// came from --listen-addr. Once the dataplane announces readiness
+// (`Listening()` closes, which never happens if a Shutdown began first), it
+// logs the port-0 Warn when the address came from --listen-addr with port 0.
 func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
