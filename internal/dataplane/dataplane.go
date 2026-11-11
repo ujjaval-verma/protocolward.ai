@@ -236,9 +236,10 @@ type Server struct {
 	udpSrv *dns.Server
 	tcpSrv *dns.Server
 
-	// addr is the resolved listen address. It is set once BOTH listeners
-	// are serving (listenersUp reaches 2), so a non-empty Addr() means
-	// Shutdown stops both transports.
+	// addr is the resolved listen address. It is set when readiness is
+	// announced: both listeners are serving (listenersUp reaches 2) and no
+	// Shutdown had begun, so a non-empty Addr() means the owning Shutdown
+	// stops both transports through miekg.
 	addrOnce    sync.Once
 	addr        string
 	addrCh      chan struct{} // closed when addr is set
@@ -254,9 +255,10 @@ type Server struct {
 	// Any subsequent call returns ErrAlreadyServing immediately without blocking.
 	serveStarted atomic.Bool
 
-	// lifeMu guards stopping, pc and ln. It is a leaf lock: nothing else is
-	// locked, and no miekg method, socket Close or test hook is called, while
-	// it is held.
+	// lifeMu guards stopping, pc and ln. It is a leaf lock with one
+	// exception: listenerStarted logs `dns: listening` and closes addrCh under
+	// it. Otherwise nothing else is locked, and no miekg method, socket Close
+	// or test hook is called, while it is held.
 	lifeMu   sync.Mutex
 	stopping bool           // set by every Shutdown (the first is the owner); never cleared
 	pc       net.PacketConn // bound by Serve; taken (and cleared) by the owner
@@ -269,11 +271,16 @@ type Server struct {
 
 	// Test seams, nil in production. Internal tests set them before calling
 	// Serve or Shutdown. beforeActivate runs in Serve after the sockets are
-	// published and before either transport activates. afterTake runs in
-	// every Shutdown after the take and before any miekg call or wait on
-	// stopped. afterNotStarted runs in Shutdown when miekg answered "not started" for a
-	// transport, before its socket is closed.
-	beforeActivate  func()
+	// published and before either transport activates; betweenActivate
+	// (below) runs between the two activations. afterTake runs in every
+	// Shutdown after the take and before any miekg call or wait on stopped.
+	// afterNotStarted runs in Shutdown when miekg answered "not started" for
+	// a transport, before its socket is closed. All of them run with no lock
+	// held.
+	beforeActivate func()
+	// betweenActivate runs in Serve after the UDP ActivateAndServe goroutine is
+	// started and before the TCP one is.
+	betweenActivate func()
 	afterTake       func()
 	afterNotStarted func(transport string)
 
@@ -390,11 +397,13 @@ func NewServer(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Addr returns the shared UDP/TCP listen address once both listeners are
-// serving, or "" before that. It is not cleared when Serve returns. If
-// Shutdown runs while Serve is starting (between bind and activation), Addr
-// may still become non-empty after Shutdown began; the listeners are already
-// stopped then.
+// Addr returns the shared UDP/TCP listen address once Serve has announced
+// readiness (`dns: listening`, logged after both listeners serve), or ""
+// before that. Readiness is never announced if a Shutdown began first, even
+// if both listeners had already started; Addr then stays "". It is not
+// cleared when Serve returns. A Shutdown begins when it marks the server as
+// stopping. A Shutdown call that overlaps the announcement may let it happen
+// first, and then stops both listeners.
 func (s *Server) Addr() string {
 	select {
 	case <-s.addrCh:
@@ -404,29 +413,46 @@ func (s *Server) Addr() string {
 	}
 }
 
-// Listening returns a channel that is closed once both the UDP and the TCP
-// listener are serving: right after `dns: listening` is logged, at the same
-// moment Addr becomes non-empty. It is never closed if Serve fails to bind,
-// and it stays open forever if Serve fails or returns early for any other
-// reason, so callers must also watch Serve's return, for example in a select
-// with it. Every call returns the same channel. If Shutdown runs while Serve
-// is starting (between bind and activation), the channel may still close
-// after Shutdown began; the listeners are already stopped then.
+// Listening returns a channel that is closed when Serve announces readiness:
+// right after `dns: listening` is logged, which happens when both the UDP and
+// the TCP listener serve, at the same moment Addr becomes non-empty. It is
+// never closed if a Shutdown began before that announcement, even if both
+// listeners had already started, and never if Serve fails to bind; it stays
+// open forever if Serve fails or returns early for any other reason, so
+// callers must also watch Serve's return, for example in a select with it.
+// A Shutdown begins when it marks the server as stopping. A Shutdown call that
+// overlaps the announcement may let it happen first, and then stops both
+// listeners. Every call returns the same channel.
 func (s *Server) Listening() <-chan struct{} {
 	return s.addrCh
 }
 
 // listenerStarted runs from each miekg server's NotifyStartedFunc. The
-// second call means both transports are serving: it logs `dns: listening`,
-// the post-bind readiness line, and publishes the address.
+// second call means both transports have activated (miekg set `started`; if
+// a Shutdown already closed a socket, that transport is about to fail):
+// unless a Shutdown has begun, it announces readiness — logs
+// `dns: listening`, publishes the address and closes the Listening channel.
+// The check and the announcement are one lifeMu section, so the announcement
+// never happens after a Shutdown began. Here a Shutdown "began" when it took
+// lifeMu and set stopping; a Shutdown called while this section holds lifeMu
+// waits for it, so the announcement can precede that call's take.
 func (s *Server) listenerStarted() {
-	if s.listenersUp.Add(1) == 2 {
-		s.addrOnce.Do(func() {
-			s.addr = s.udpSrv.PacketConn.LocalAddr().String()
-			slog.Info("dns: listening", "addr", s.addr, "transports", "udp+tcp")
-			close(s.addrCh)
-		})
+	if s.listenersUp.Add(1) != 2 {
+		return
 	}
+	// A socket method, not miekg: read outside the lock. PacketConn was
+	// published under lifeMu before activation and is never written again.
+	addr := s.udpSrv.PacketConn.LocalAddr().String()
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	if s.stopping {
+		return // Shutdown began first: the sockets are, or are about to be, closed
+	}
+	s.addrOnce.Do(func() {
+		s.addr = addr
+		slog.Info("dns: listening", "addr", s.addr, "transports", "udp+tcp")
+		close(s.addrCh)
+	})
 }
 
 // bindAttempts bounds the retry in bind when ListenAddr asks for an
@@ -523,6 +549,9 @@ func (s *Server) Serve() error {
 	}
 	done := make(chan listenerResult, 2)
 	go func() { done <- listenerResult{"udp", s.udpSrv.ActivateAndServe()} }()
+	if s.betweenActivate != nil {
+		s.betweenActivate()
+	}
 	go func() { done <- listenerResult{"tcp", s.tcpSrv.ActivateAndServe()} }()
 
 	var first error

@@ -425,14 +425,32 @@ func logIndex(lines []map[string]any, msg string) int {
 const (
 	msgShutdownReceived = "ward serve: shutdown signal received; draining in-flight queries"
 	msgStopped          = "ward serve: stopped"
-	msgNotStarted       = "ward serve: shutdown called before server fully started; nothing to drain"
+	msgNotStarted       = "ward serve: a DNS listener was not serving when shutdown ran (not started yet, or already stopped by another shutdown); every listener that was serving is stopped and drained"
 )
+
+// checkNotStartedLine checks the msgNotStarted record: DEBUG, an error
+// naming both transports (neither was serving when that Shutdown ran) and a
+// remediation.
+func checkNotStartedLine(t *testing.T, line map[string]any) {
+	t.Helper()
+	if line["level"] != "DEBUG" {
+		t.Errorf("%q level = %v, want DEBUG", msgNotStarted, line["level"])
+	}
+	errText, _ := line["error"].(string)
+	for _, want := range []string{"dataplane shutdown (udp)", "dataplane shutdown (tcp)"} {
+		if !strings.Contains(errText, want) {
+			t.Errorf("%q error = %q, want it to contain %q", msgNotStarted, errText, want)
+		}
+	}
+	if rem, _ := line["remediation"].(string); rem == "" {
+		t.Errorf("%q remediation is empty, want it set (line %v)", msgNotStarted, line)
+	}
+}
 
 func TestShutdownServe(t *testing.T) {
 	const budget = 2 * time.Second
-	run := func(t *testing.T, dash *fakeDash, serveErr chan error) time.Duration {
+	run := func(t *testing.T, srv *dataplane.Server, dash *fakeDash, serveErr chan error) time.Duration {
 		t.Helper()
-		srv := newTestDataplane(t, "127.0.0.1:0")
 		done := make(chan struct{})
 		start := time.Now()
 		go func() {
@@ -451,7 +469,7 @@ func TestShutdownServe(t *testing.T) {
 		dash := newFakeDash(&hatchRecorder{})
 		serveErr := make(chan error, 1)
 		serveErr <- nil
-		if took := run(t, dash, serveErr); took > 400*time.Millisecond {
+		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr); took > 400*time.Millisecond {
 			t.Errorf("shutdownServe took %s with serveErr ready, want <= 400ms", took)
 		}
 		if n := dash.shutdownCalls(); n != 1 {
@@ -465,8 +483,39 @@ func TestShutdownServe(t *testing.T) {
 		if ns < 0 || st < 0 || ns > st {
 			t.Errorf("want %q then %q; got indices %d, %d\nlog:\n%s", msgNotStarted, msgStopped, ns, st, buf.String())
 		}
-		if ns >= 0 && lines[ns]["level"] != "DEBUG" {
-			t.Errorf("%q level = %v, want DEBUG", msgNotStarted, lines[ns]["level"])
+		if ns >= 0 {
+			checkNotStartedLine(t, lines[ns])
+		}
+		if i := logIndex(lines, "ward serve: shutdown error"); i >= 0 {
+			t.Errorf("unexpected shutdown error line: %v", lines[i])
+		}
+	})
+	t.Run("another shutdown already stopped the listeners", func(t *testing.T) {
+		buf := captureSlog(t)
+		srv := newTestDataplane(t, "127.0.0.1:0")
+		serveErr := make(chan error, 1)
+		go func() { serveErr <- srv.Serve() }()
+		select {
+		case <-srv.Listening():
+		case err := <-serveErr:
+			t.Fatalf("Serve returned before listening: %v", err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("server not listening within 2s")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Fatalf("first Shutdown = %v; want nil", err)
+		}
+		dash := newFakeDash(&hatchRecorder{})
+		run(t, srv, dash, serveErr)
+		lines := logLines(t, buf)
+		ns, st := logIndex(lines, msgNotStarted), logIndex(lines, msgStopped)
+		if ns < 0 || st < 0 || ns > st {
+			t.Errorf("want %q then %q; got indices %d, %d\nlog:\n%s", msgNotStarted, msgStopped, ns, st, buf.String())
+		}
+		if ns >= 0 {
+			checkNotStartedLine(t, lines[ns])
 		}
 		if i := logIndex(lines, "ward serve: shutdown error"); i >= 0 {
 			t.Errorf("unexpected shutdown error line: %v", lines[i])
@@ -478,7 +527,7 @@ func TestShutdownServe(t *testing.T) {
 		dash.shutdownErr = errors.New("dash stuck")
 		serveErr := make(chan error, 1)
 		serveErr <- nil
-		run(t, dash, serveErr)
+		run(t, newTestDataplane(t, "127.0.0.1:0"), dash, serveErr)
 		lines := logLines(t, buf)
 		i := logIndex(lines, "dashboard: shutdown error")
 		if i < 0 {
@@ -491,7 +540,7 @@ func TestShutdownServe(t *testing.T) {
 	t.Run("serve still running", func(t *testing.T) {
 		buf := captureSlog(t)
 		dash := newFakeDash(&hatchRecorder{})
-		if took := run(t, dash, make(chan error, 1)); took < 500*time.Millisecond {
+		if took := run(t, newTestDataplane(t, "127.0.0.1:0"), dash, make(chan error, 1)); took < 500*time.Millisecond {
 			t.Errorf("shutdownServe took %s with serveErr empty, want the 500ms drain", took)
 		}
 		if logIndex(logLines(t, buf), msgStopped) < 0 {

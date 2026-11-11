@@ -168,6 +168,16 @@ func TestServe_ShutdownBetweenBindAndActivate_ReturnsNil(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
 	srv := newServeTestServer(t, "127.0.0.1:0")
+	// A non-*net.UDPConn makes miekg skip setUDPSocketOptions, which on
+	// Linux fails on the closed socket before NotifyStartedFunc; with the
+	// wrapper UDP's late activation reaches listenerStarted on every OS.
+	srv.listenUDP = func(n, a string) (net.PacketConn, error) {
+		pc, err := net.ListenPacket(n, a)
+		if err != nil {
+			return nil, err
+		}
+		return struct{ net.PacketConn }{pc}, nil
+	}
 	var shutErr error
 	srv.beforeActivate = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -198,6 +208,107 @@ func TestServe_ShutdownBetweenBindAndActivate_ReturnsNil(t *testing.T) {
 				t.Errorf("%s record: %s is empty; want it set (record %v)", transport, key, r)
 			}
 		}
+	}
+	if lines := listeningLines(t); len(lines) != 0 {
+		t.Errorf("dns: listening records = %v; want none (Shutdown began before readiness)", lines)
+	}
+	select {
+	case <-srv.Listening():
+		t.Error("Listening() is closed; want it open (Shutdown began before readiness)")
+	default:
+	}
+	if got := srv.Addr(); got != "" {
+		t.Errorf("Addr() = %q; want \"\" (Shutdown began before readiness)", got)
+	}
+}
+
+// UDP activates and serves; Shutdown runs before TCP activates. Shutdown
+// must report ErrNotStarted for tcp only, and readiness must never be
+// announced although UDP was serving.
+// Serial: obs.Capture swaps the global slog default.
+func TestServe_ShutdownWithOnlyUDPServing_ReportsTCPNotStarted(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv := newServeTestServer(t, "127.0.0.1:0")
+	udpUp := make(chan struct{})
+	// miekg calls NotifyStartedFunc after it set UDP's started flag, so once
+	// udpUp is closed a ShutdownContext on UDP is a real stop.
+	srv.udpSrv.NotifyStartedFunc = func() {
+		srv.listenerStarted()
+		close(udpUp)
+	}
+	hookDone := make(chan struct{})
+	var sawUDP bool
+	var shutErr error
+	srv.betweenActivate = func() {
+		// Runs on the Serve goroutine, so it cannot fail the test; the test
+		// goroutine reads sawUDP and shutErr after <-hookDone.
+		defer close(hookDone)
+		select {
+		case <-udpUp:
+			sawUDP = true
+		case <-time.After(500 * time.Millisecond):
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		shutErr = srv.Shutdown(ctx)
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	select {
+	case <-hookDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("betweenActivate never ran")
+	}
+	if !sawUDP {
+		t.Fatal("betweenActivate: UDP never reported started within 500ms")
+	}
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve = %v; want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return within 1s of the hook finishing")
+	}
+
+	if !errors.Is(shutErr, ErrNotStarted) || errors.Is(shutErr, ErrDrainTimeout) {
+		t.Errorf("Shutdown = %v; want an error wrapping ErrNotStarted and not ErrDrainTimeout", shutErr)
+	}
+	if shutErr != nil {
+		if msg := shutErr.Error(); !strings.Contains(msg, "dataplane shutdown (tcp)") || strings.Contains(msg, "dataplane shutdown (udp)") {
+			t.Errorf("Shutdown = %q; want a tcp error and no udp error (UDP was serving and stopped by miekg)", msg)
+		}
+	}
+
+	var stoppedTransports []string
+	for _, r := range obs.Captured(t) {
+		if r["level"] == "DEBUG" && r["msg"] == "dataplane: listener stopped during shutdown" {
+			transport, _ := r["transport"].(string)
+			stoppedTransports = append(stoppedTransports, transport)
+		}
+	}
+	if len(stoppedTransports) != 1 || stoppedTransports[0] != "tcp" {
+		t.Errorf("listener stopped during shutdown records for transports %v; want exactly one, tcp", stoppedTransports)
+	}
+	if lines := listeningLines(t); len(lines) != 0 {
+		t.Errorf("dns: listening records = %v; want none (Shutdown began before TCP activated)", lines)
+	}
+	select {
+	case <-srv.Listening():
+		t.Error("Listening() is closed; want it open (Shutdown began before readiness)")
+	default:
+	}
+	if got := srv.Addr(); got != "" {
+		t.Errorf("Addr() = %q; want \"\" (Shutdown began before readiness)", got)
 	}
 }
 

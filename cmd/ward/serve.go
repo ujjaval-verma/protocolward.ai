@@ -668,8 +668,9 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 // listener exit it closes the dashboard and returns an untyped nil or a
 // *serveError (Code 1). On cancel it arms the second-signal hatch, logs the
 // drain, runs shutdownServe and returns nil. fromFlag says the listen address
-// came from --listen-addr. Once both DNS listeners serve, it logs the port-0
-// Warn when the address came from --listen-addr with port 0.
+// came from --listen-addr. Once the dataplane announces readiness
+// (`Listening()` closes, which never happens if a Shutdown began first), it
+// logs the port-0 Warn when the address came from --listen-addr with port 0.
 func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServer, hatch *exitHatch, cfg config.Config, fromFlag bool) error {
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
@@ -750,10 +751,17 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 				"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out; if the error counts the classifications (the drain itself timed out), 0 means a query, not the classifier, was stuck; raise timeouts.shutdown in ward.yaml if this recurs",
 			)
 		} else if errors.Is(err, dataplane.ErrNotStarted) {
-			// dataplane.ErrNotStarted: a listener was not serving when this Shutdown ran (Serve had
-			// not activated it, or another Shutdown call owns it). Harmless: Serve still returns.
-			// Log at DEBUG so it doesn't alarm operators.
-			slog.Debug("ward serve: shutdown called before server fully started; nothing to drain")
+			// dataplane.ErrNotStarted, and the drain finished: a listener was not serving
+			// when this Shutdown ran. Three cases reach here: neither listener had started
+			// (Shutdown before Serve activated them); another Shutdown (for example Serve's
+			// own abort after a listener error) already stopped them, and this call waited
+			// for it and drained; or one was serving and was stopped and drained while the
+			// other had not started. The error names the transport(s). Harmless: Serve still
+			// returns. Log at DEBUG so it doesn't alarm operators.
+			slog.Debug("ward serve: a DNS listener was not serving when shutdown ran (not started yet, or already stopped by another shutdown); every listener that was serving is stopped and drained",
+				"error", err.Error(),
+				"remediation", "none needed: nothing is left serving",
+			)
 		} else {
 			slog.Error("ward serve: shutdown error",
 				"error", err.Error(),
