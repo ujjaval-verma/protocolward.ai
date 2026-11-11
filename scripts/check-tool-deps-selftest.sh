@@ -26,7 +26,7 @@ fi
 rc=0
 out="$(run "$T/base" 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ] || ! grep -qx 'check-tool-deps: OK' <<<"$out"; then
-  fail "the unmodified Makefile copy fails the check (fix the Makefile, not this selftest); check output follows:"$'\n'"$out"
+  fail "the unmodified Makefile copy fails the check (fix the Makefile or scripts/check-tool-deps.sh, not this selftest); check output follows:"$'\n'"$out"
 fi
 
 # Mutations, all applied to the lint rule.
