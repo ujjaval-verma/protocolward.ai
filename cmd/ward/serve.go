@@ -835,7 +835,7 @@ func bindErrRemediation(err error, listenAddr string) string {
 // the hint names that flag instead of ward.yaml.
 //
 // Serve wraps ErrListenerStopped only when ward was not stopping when it saw
-// the error, so this text fits both the early-exit and the shutdown path.
+// the error, so the ErrListenerStopped text fits both the early-exit and the shutdown path.
 func bindErrRemediationFor(err error, listenAddr string, fromFlag bool) string {
 	if errors.Is(err, dataplane.ErrListenerStopped) {
 		if fromFlag {
