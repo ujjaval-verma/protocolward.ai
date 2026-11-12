@@ -1342,3 +1342,25 @@ func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestServeCmd_ListenAddrHelp pins the --listen-addr help: it must name the
+// port-0 WARN line (hidden at log_level: error) and /healthz dns_addr, which
+// every log level reports.
+func TestServeCmd_ListenAddrHelp(t *testing.T) {
+	f := newServeCmd().Flags().Lookup("listen-addr")
+	if f == nil {
+		t.Fatal("serve has no --listen-addr flag")
+	}
+	for _, want := range []string{"ward serve: --listen-addr port 0; the kernel picks the DNS port", "dns_addr"} {
+		if !strings.Contains(f.Usage, want) {
+			t.Errorf("--listen-addr help lacks %q", want)
+		}
+	}
+	if strings.Contains(f.Usage, "dns: listening") {
+		t.Error("--listen-addr help still points at \"dns: listening\", an Info line that log_level: warn filters")
+	}
+	const want = `override listen: from ward.yaml for ward serve only (ward.yaml must still contain a valid listen:; ward doctor still probes listen:). Port 0 lets the kernel pick; the bound address is the addr field of the WARN line "ward serve: --listen-addr port 0; the kernel picks the DNS port" (not logged at log_level: error) and the dns_addr field of GET /healthz on the dashboard (reported at every log_level)`
+	if f.Usage != want {
+		t.Errorf("--listen-addr help =\n%s\nwant\n%s", f.Usage, want)
+	}
+}

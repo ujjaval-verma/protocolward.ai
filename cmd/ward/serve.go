@@ -982,6 +982,6 @@ Config file is located per the following search order:
 
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "path to ward.yaml config file")
 	cmd.Flags().StringVar(&opts.dashListenAddr, "dash-listen-addr", "", "override the dashboard bind (default 127.0.0.1:18987; a dashboard config option is planned). Must bind loopback (127.0.0.1, ::1, or localhost); non-loopback requires invariant 4 re-review (see internal/web package doc)")
-	cmd.Flags().StringVar(&opts.listenAddr, "listen-addr", "", "override listen: from ward.yaml for ward serve only (ward.yaml must still contain a valid listen:; ward doctor still probes listen:). Port 0 lets the kernel pick; the bound address is logged in dns: listening")
+	cmd.Flags().StringVar(&opts.listenAddr, "listen-addr", "", "override listen: from ward.yaml for ward serve only (ward.yaml must still contain a valid listen:; ward doctor still probes listen:). Port 0 lets the kernel pick; the bound address is the addr field of the WARN line \"ward serve: --listen-addr port 0; the kernel picks the DNS port\" (not logged at log_level: error) and the dns_addr field of GET /healthz on the dashboard (reported at every log_level)")
 	return cmd
 }
