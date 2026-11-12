@@ -833,9 +833,15 @@ func bindErrRemediation(err error, listenAddr string) string {
 // bindErrRemediationFor is bindErrRemediation with the source of the address
 // made explicit: when fromFlag is true the address came from --listen-addr, so
 // the hint names that flag instead of ward.yaml.
+//
+// Serve wraps ErrListenerStopped only when ward was not stopping when it saw
+// the error, so the ErrListenerStopped text fits both the early-exit and the shutdown path.
 func bindErrRemediationFor(err error, listenAddr string, fromFlag bool) string {
 	if errors.Is(err, dataplane.ErrListenerStopped) {
-		return "the DNS listener stopped unexpectedly; check the log above and restart ward"
+		if fromFlag {
+			return fmt.Sprintf("a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for --listen-addr (%s) is up and, if that sets a specific IP address, that the address is still assigned to this host", listenAddr)
+		}
+		return fmt.Sprintf("a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for listen in ward.yaml (%s) is up and, if that sets a specific IP address, that the address is still assigned to this host", listenAddr)
 	}
 	errStr := err.Error()
 	if containsAny(errStr, "permission denied", "operation not permitted") {

@@ -614,12 +614,23 @@ func TestShutdownServe(t *testing.T) {
 		}
 	})
 	t.Run("abort-path listener error is logged", func(t *testing.T) {
-		buf := captureSlog(t)
-		injected := fmt.Errorf("dataplane: udp listener on 127.0.0.1:1 %w: boom", dataplane.ErrListenerStopped)
-		serveErr := make(chan error, 1)
-		serveErr <- injected
-		run(t, newTestDataplane(t, "127.0.0.1:0"), newFakeDash(&hatchRecorder{}), serveErr, "127.0.0.1:0", false)
-		checkListenerErrLine(t, buf, func(e string) bool { return strings.Contains(e, "boom") }, bindErrRemediationFor(injected, "127.0.0.1:0", false))
+		for _, tc := range []struct {
+			name     string
+			fromFlag bool
+			wantRem  string
+		}{
+			{"listen from ward.yaml", false, "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for listen in ward.yaml (127.0.0.1:0) is up and, if that sets a specific IP address, that the address is still assigned to this host"},
+			{"listen from --listen-addr", true, "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for --listen-addr (127.0.0.1:0) is up and, if that sets a specific IP address, that the address is still assigned to this host"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				buf := captureSlog(t)
+				injected := fmt.Errorf("dataplane: udp listener on 127.0.0.1:1 %w: boom", dataplane.ErrListenerStopped)
+				serveErr := make(chan error, 1)
+				serveErr <- injected
+				run(t, newTestDataplane(t, "127.0.0.1:0"), newFakeDash(&hatchRecorder{}), serveErr, "127.0.0.1:0", tc.fromFlag)
+				checkListenerErrLine(t, buf, func(e string) bool { return strings.Contains(e, "boom") }, tc.wantRem)
+			})
+		}
 	})
 }
 
