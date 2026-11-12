@@ -220,7 +220,7 @@ func TestBindErrRemediation_ListenerStoppedAfterStart(t *testing.T) {
 				}
 				for _, frag := range []string{"check the log above", "port already in use", "CAP_NET_BIND_SERVICE", "port availability"} {
 					if strings.Contains(c.got, frag) {
-						t.Errorf("%s: remediation %q must not carry a bind hint (%q)", c.label, c.got, frag)
+						t.Errorf("%s: remediation %q must not contain %q (bind hint or the old log-above wording)", c.label, c.got, frag)
 					}
 				}
 			}
