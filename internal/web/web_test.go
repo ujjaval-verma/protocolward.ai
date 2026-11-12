@@ -540,3 +540,30 @@ func TestHandler_Healthz_Classifier_ReportsSourceStatusStaysOK(t *testing.T) {
 		}
 	}
 }
+
+// dns_addr is always present: "" with no source, the source's value
+// otherwise. It is not a health signal, so status stays "ok".
+func TestHandler_Healthz_DNSAddr(t *testing.T) {
+	t.Run("source", func(t *testing.T) {
+		srv := httptest.NewServer(web.HandlerWithOptions(web.NewStore(), web.Options{
+			DNSAddr: func() string { return "127.0.0.1:53817" },
+		}))
+		defer srv.Close()
+		body := getHealthz(t, srv.URL)
+		if body["dns_addr"] != "127.0.0.1:53817" {
+			t.Errorf("dns_addr = %v; want 127.0.0.1:53817", body["dns_addr"])
+		}
+		if body["status"] != "ok" {
+			t.Errorf("status = %v; want ok", body["status"])
+		}
+	})
+	t.Run("nil source", func(t *testing.T) {
+		srv := httptest.NewServer(web.Handler(web.NewStore()))
+		defer srv.Close()
+		body := getHealthz(t, srv.URL)
+		v, ok := body["dns_addr"]
+		if !ok || v != "" {
+			t.Errorf("dns_addr = %v (present %v); want \"\", always present", v, ok)
+		}
+	})
+}
