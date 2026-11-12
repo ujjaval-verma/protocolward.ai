@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -551,6 +552,40 @@ func TestServe_Healthz_ReportsClassifier(t *testing.T) {
 	isOK := func(b map[string]any) bool { return b["classifier"] == "ok" }
 	if got := serveHealthz(t, "model:\n  builtin: lexical\n", isOK); got["classifier"] != "ok" {
 		t.Errorf("builtin model: /healthz classifier = %v; want ok", got["classifier"])
+	}
+}
+
+// TestServe_Healthz_ReportsDNSAddr_AtLogLevelError: at log_level: error both
+// the port-0 WARN and "dns: listening" are filtered, and /healthz is the
+// place that still reports the kernel-picked DNS port.
+func TestServe_Healthz_ReportsDNSAddr_AtLogLevelError(t *testing.T) {
+	w := startInProcWard(t, "log_level: \"error\"\n", serveOpts{})
+	defer w.stop(t)
+	if slog.Default().Enabled(context.Background(), slog.LevelWarn) {
+		t.Fatal("slog default logger enables WARN; want it filtered at log_level: error")
+	}
+
+	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /healthz: %v", err)
+	}
+	if body["dns_addr"] != w.dnsAddr {
+		t.Errorf("/healthz dns_addr = %v; want the bound address %q", body["dns_addr"], w.dnsAddr)
+	}
+	_, port, err := net.SplitHostPort(w.dnsAddr)
+	if err != nil {
+		t.Fatalf("bound address %q: %v", w.dnsAddr, err)
+	}
+	if port == "0" || port == "" {
+		t.Errorf("bound port = %q; want the kernel-picked port", port)
+	}
+	if w.dnsAddr == placeholderListen {
+		t.Errorf("bound address = %q, the placeholder; want the --listen-addr override", w.dnsAddr)
 	}
 }
 

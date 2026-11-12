@@ -339,6 +339,7 @@ func startDashboard(addr string, listen func(string) (net.Listener, error), stor
 		Handler: web.HandlerWithOptions(store, web.Options{
 			Flags:           flags,
 			ClassifyDropped: srv.ClassifyDropped,
+			DNSAddr:         srv.Addr,
 			Classifier: func() string {
 				// A model that failed to start leaves classification off until
 				// ward restarts: report unavailable, not none. Checked first.
@@ -652,7 +653,8 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 
 	// ── Step 5b: Start the dashboard ─────────────────────────────────────────
 	// Only now, so /healthz can read the server and the model state from its
-	// first answer. NewServer binds nothing, so a listen failure here needs no
+	// first answer. /healthz reads the DNS address from the server on each
+	// request; it stays "" until Serve announces readiness. NewServer binds nothing, so a listen failure here needs no
 	// dataplane cleanup.
 	dashSrv, err := startDashboard(dashAddr, opts.listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
