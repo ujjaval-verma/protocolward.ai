@@ -652,10 +652,10 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	}
 
 	// ── Step 5b: Start the dashboard ─────────────────────────────────────────
-	// Only now, so /healthz can read the server and the model state from its
-	// first answer. /healthz reads the DNS address from the server on each
-	// request; it stays "" until Serve announces readiness. NewServer binds nothing, so a listen failure here needs no
-	// dataplane cleanup.
+	// Only now, so /healthz can read the server and the model state from its first
+	// answer. /healthz reads the DNS address from the server on each request; it
+	// stays "" until Serve announces readiness. NewServer binds nothing, so a
+	// listen failure here needs no dataplane cleanup.
 	dashSrv, err := startDashboard(dashAddr, opts.listenDash, dashStore, flagLog, srv, modelStartFailed)
 	if err != nil {
 		return err
