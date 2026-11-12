@@ -118,6 +118,13 @@ type healthzResponse struct {
 	// Classifier is "none", "ok" or "unavailable"; see Options.Classifier.
 	// Status stays ok whatever it says.
 	Classifier string `json:"classifier"`
+	// DNSAddr is the address the DNS listeners bound, as host:port. It is
+	// "" until the DNS listeners announced they were ready; a non-empty
+	// value is the bound address, is never cleared, and does not prove the
+	// listeners are serving now. Always present, and not a health signal:
+	// Status stays ok. It is the device's own bind address, not flow data
+	// (invariant 4): no name looked up, no answer, no timing.
+	DNSAddr string `json:"dns_addr"`
 }
 
 type healthzLastDecision struct {
@@ -154,11 +161,18 @@ type Options struct {
 	// off until ward restarts). nil reports "none". Like ClassifyDropped, not a health
 	// signal: Status stays ok, because answers are unaffected.
 	Classifier func() string
+	// DNSAddr reports the bound DNS address for /healthz dns_addr. nil
+	// reports "". A func, like ClassifyDropped, because internal/web must
+	// not import internal/dataplane. It is read on each request, since the
+	// address is unknown until the DNS listeners start. Unlike the
+	// "dns: listening" and port-0 WARN log lines, the field is reported at
+	// every log_level.
+	DNSAddr func() string
 }
 
 // HandlerWithOptions returns an http.Handler exposing the dashboard surface:
 //   - GET /        — server-rendered HTML dashboard (flags panel, decisions table, uptime)
-//   - GET /healthz — JSON health probe (last decision summary, uptime, classify_dropped, classifier)
+//   - GET /healthz — JSON health probe (last decision summary, uptime, classify_dropped, classifier, dns_addr)
 //
 // Both routes read from the supplied Store; the Flags panel reads from
 // opts.Flags (nil allowed). The server is expected to bind 127.0.0.1 only
@@ -207,6 +221,9 @@ func HandlerWithOptions(store *Store, opts Options) http.Handler {
 		resp.Classifier = "none"
 		if opts.Classifier != nil {
 			resp.Classifier = opts.Classifier()
+		}
+		if opts.DNSAddr != nil {
+			resp.DNSAddr = opts.DNSAddr()
 		}
 		if d, ok := store.Snapshot(); ok {
 			resp.LastDecision = &healthzLastDecision{

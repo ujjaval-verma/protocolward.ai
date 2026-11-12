@@ -4,7 +4,7 @@
 //
 // v0.1 exposes two routes:
 //   - GET /        — server-rendered HTML dashboard (recent decisions table + uptime), reading from Store.SnapshotAll
-//   - GET /healthz — JSON health probe (last decision summary + uptime), reading from Store.Snapshot
+//   - GET /healthz — JSON health probe (status, uptime_seconds, last_decision, classify_dropped, classifier, dns_addr); last_decision reads from Store.Snapshot
 //
 // The HTTP server binds 127.0.0.1 only; that loopback constraint is the
 // load-bearing assumption that keeps DNS-decision data (qnames in both
