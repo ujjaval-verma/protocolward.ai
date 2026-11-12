@@ -190,12 +190,40 @@ func TestServeRun_DNSPortTaken_ReturnsBindErrorAndClosesDashboard(t *testing.T) 
 func TestBindErrRemediation_ListenerStoppedAfterStart(t *testing.T) {
 	stopped := fmt.Errorf("dataplane: udp listener on 127.0.0.1:5353 %w: %w",
 		dataplane.ErrListenerStopped, net.ErrClosed)
-	got := bindErrRemediation(stopped, "127.0.0.1:5353")
-	want := "the DNS listener stopped unexpectedly; check the log above and restart ward"
-	if got != want {
-		t.Errorf("remediation = %q; want %q", got, want)
-	}
-	if strings.Contains(got, "ward.yaml") {
-		t.Errorf("remediation %q must not carry the bind hint", got)
+	for _, tc := range []struct {
+		name     string
+		addr     string
+		wantYAML string
+		wantFlag string
+	}{
+		{
+			name:     "specific address",
+			addr:     "127.0.0.1:5353",
+			wantYAML: "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for listen in ward.yaml (127.0.0.1:5353) is up and, if that sets a specific IP address, that the address is still assigned to this host",
+			wantFlag: "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for --listen-addr (127.0.0.1:5353) is up and, if that sets a specific IP address, that the address is still assigned to this host",
+		},
+		{
+			name:     "wildcard address",
+			addr:     ":53",
+			wantYAML: "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for listen in ward.yaml (:53) is up and, if that sets a specific IP address, that the address is still assigned to this host",
+			wantFlag: "a DNS listener failed while serving, not because ward was asked to stop; to serve DNS again, restart ward, and if the failure recurs, check that this host's network interface for --listen-addr (:53) is up and, if that sets a specific IP address, that the address is still assigned to this host",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, c := range []struct{ label, got, want string }{
+				{"bindErrRemediation", bindErrRemediation(stopped, tc.addr), tc.wantYAML},
+				{"fromFlag=false", bindErrRemediationFor(stopped, tc.addr, false), tc.wantYAML},
+				{"fromFlag=true", bindErrRemediationFor(stopped, tc.addr, true), tc.wantFlag},
+			} {
+				if c.got != c.want {
+					t.Errorf("%s: remediation = %q; want %q", c.label, c.got, c.want)
+				}
+				for _, frag := range []string{"check the log above", "port already in use", "CAP_NET_BIND_SERVICE", "port availability"} {
+					if strings.Contains(c.got, frag) {
+						t.Errorf("%s: remediation %q must not carry a bind hint (%q)", c.label, c.got, frag)
+					}
+				}
+			}
+		})
 	}
 }
