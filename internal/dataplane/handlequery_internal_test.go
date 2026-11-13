@@ -27,6 +27,8 @@ import (
 	"protocolward.ai/ward/internal/hostlist"
 	"protocolward.ai/ward/internal/obs"
 	"protocolward.ai/ward/internal/policy"
+	"protocolward.ai/ward/pkg/model"
+	"protocolward.ai/ward/pkg/schema"
 )
 
 // stubResponseWriter is a minimal dns.ResponseWriter for direct unit-testing
@@ -349,4 +351,54 @@ func TestHandleQuery_FoldOnce_RealLists(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { runFoldOnce(t, tc) })
 	}
+}
+
+// maliciousClassifier flags every name, so the async path always reaches
+// DecideWithVerdict and logs a `policy: classified` record.
+type maliciousClassifier struct{}
+
+func (maliciousClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return schema.VerdictMalicious, nil
+}
+
+// TestHandleQuery_FoldOnce_AsyncClassifierMixedCase pins that classifyAsync
+// gets the folded name even with no trailing dot to strip. A name that missed
+// the lists is forwarded, so the observable is the record's qname: a case-only
+// regression would hand DecideWithVerdict (and the log) the mixed-case name.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestHandleQuery_FoldOnce_AsyncClassifierMixedCase(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: time.Second,
+		Engine:          policy.NewEngine(nil, nil),
+		Classifier:      maliciousClassifier{},
+		BlockResponse: config.BlockResponseConfig{
+			Mode: config.BlockResponseModeAddress,
+			A:    netip.MustParseAddr("0.0.0.0"),
+			AAAA: netip.MustParseAddr("::"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("ADS.Example.COM", dns.TypeA)
+	raddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:12345")
+	srv.handleQuery(&stubResponseWriter{remoteAddr: raddr}, req)
+	srv.inFlight.Wait()
+
+	for _, r := range obs.Captured(t) {
+		if r["msg"] != "policy: classified" {
+			continue
+		}
+		if r["qname"] != "ads.example.com" || r["matched"] != "(model)" {
+			t.Errorf("classified record = %v, want qname ads.example.com, matched (model)", r)
+		}
+		return
+	}
+	t.Fatal("no `policy: classified` record")
 }
