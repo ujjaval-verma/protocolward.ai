@@ -21,7 +21,7 @@ linters:
     - nilerr
     - errorlint
     - exhaustive
-    # Issue #24 slice 1. gocognit and contextcheck come in later slices.
+    # Issue #24 slice 1. contextcheck comes in a later slice.
     - funlen
     - dupl
     - gocritic
@@ -30,8 +30,14 @@ linters:
     - errname
     - forcetypeassert
     - thelper
+    # Issue #24 slice 2.
+    - gocognit
 
 linters-settings:
+  gocognit:
+    # The v1 default, explicit for the v2 migration. Existing test
+    # functions over 30 are listed under issues.exclude-rules.
+    min-complexity: 30
   funlen:
     # 80 body lines. funlen does not count the signature or the closing
     # brace, so a function may span up to 82 source lines: this does not
@@ -94,7 +100,7 @@ issues:
       linters:
         - funlen
     - path: (^|/)dataplane/dataplane\.go$
-      source: '^func \(s \*Server\) (handleQuery|classifyAsync)\('
+      source: '^func \(s \*Server\) handleQuery\('
       linters:
         - funlen
     - path: (^|/)update/verify\.go$
@@ -105,3 +111,45 @@ issues:
       source: '^func (TestExitHatch|TestServeUntilStopped|TestShutdownServe|TestLoadServePolicy|TestLoadServeConfig|TestLoadHostLists|TestOpenModelClassifier|TestHandleQuery_Decoy_Alerts_And_Sinkholes|TestLoad_ValidationMessages_Locked|TestLoad_ValidationErrors_NameRemediation|FuzzHostlistLoad|FuzzDecoyNew|\(s \*FakeDoTServer\) handleConn|TestShutdown_SecondCallWaitsForOwnerToStopListeners|TestServe_ShutdownWithOnlyUDPServing_ReportsTCPNotStarted|writeVariant|BenchmarkHandleQuery)\('
       linters:
         - funlen
+    # gocognit ratchet (issue #24). These test functions were over 30
+    # when gocognit was enabled. Each rule pins its file and, by
+    # `source:`, the declaration up to the opening "(". Remove an entry
+    # when its function is split; never add one. Production code has no
+    # entry: any production function over 30 that lint analyses fails lint
+    # (host GOOS only; js/wasm files are not linted yet).
+    - path: (^|/)cmd/ward/classifier_test\.go$
+      source: '^func TestOpenModelClassifier\('
+      linters: [gocognit]
+    - path: (^|/)cmd/ward/serve_shutdown_test\.go$
+      source: '^func (TestServeUntilStopped|TestShutdownServe)\('
+      linters: [gocognit]
+    - path: (^|/)cmd/ward/serve_startup_test\.go$
+      source: '^func (TestLoadHostLists|TestLoadServePolicy|TestLoadServeConfig)\('
+      linters: [gocognit]
+    - path: (^|/)internal/config/config_test\.go$
+      source: '^func TestValidateListen\('
+      linters: [gocognit]
+    - path: (^|/)internal/config/fuzz_test\.go$
+      source: '^func FuzzLoad\('
+      linters: [gocognit]
+    - path: (^|/)internal/dataplane/handlequery_bench_internal_test\.go$
+      source: '^func BenchmarkHandleQuery\('
+      linters: [gocognit]
+    - path: (^|/)internal/dataplane/serve_bind_internal_test\.go$
+      source: '^func TestBind_TCPTwinRetry\('
+      linters: [gocognit]
+    - path: (^|/)internal/dataplane/serve_shutdown_internal_test\.go$
+      source: '^func TestShutdown_SecondCallWaitsForOwnerToStopListeners\('
+      linters: [gocognit]
+    - path: (^|/)internal/decoy/fuzz_internal_test\.go$
+      source: '^func FuzzDecoyNew\('
+      linters: [gocognit]
+    - path: (^|/)internal/hostlist/arena_internal_test\.go$
+      source: '^func TestCrossSourceSemantics\('
+      linters: [gocognit]
+    - path: (^|/)internal/hostlist/fuzz_internal_test\.go$
+      source: '^func FuzzHostlistLoad\('
+      linters: [gocognit]
+    - path: (^|/)internal/upstream/fake_dot_test\.go$
+      source: '^func \(s \*FakeDoTServer\) handleConn\('
+      linters: [gocognit]

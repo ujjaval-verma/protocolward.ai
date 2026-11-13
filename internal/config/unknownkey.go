@@ -171,48 +171,70 @@ func nullKeys(data []byte) []UnknownKey {
 	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
 		return nil
 	}
-	type id struct {
-		line    int
-		key     string
-		section string
+	w := nullKeyWalker{seen: map[nullKeyID]bool{}}
+	w.walk(doc.Content[0], "")
+	return w.out
+}
+
+// nullKeyID identifies one reported null key, so a node reached twice (an
+// alias, a merge) is reported once.
+type nullKeyID struct {
+	line    int
+	key     string
+	section string
+}
+
+// nullKeyWalker collects null keys in document order.
+type nullKeyWalker struct {
+	seen map[nullKeyID]bool
+	out  []UnknownKey
+}
+
+// walk follows an alias, then descends into sequences and mappings.
+func (w *nullKeyWalker) walk(n *yaml.Node, section string) {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
 	}
-	seen := map[id]bool{}
-	var out []UnknownKey
-	var walk func(n *yaml.Node, section string)
-	walk = func(n *yaml.Node, section string) {
-		if n.Kind == yaml.AliasNode && n.Alias != nil {
-			n = n.Alias
+	switch n.Kind { //nolint:exhaustive // only containers can hold keys
+	case yaml.SequenceNode:
+		for _, item := range n.Content {
+			w.walk(item, section)
 		}
-		switch n.Kind { //nolint:exhaustive // only containers can hold keys
-		case yaml.SequenceNode:
-			for _, item := range n.Content {
-				walk(item, section)
-			}
-		case yaml.MappingNode:
-			for i := 0; i+1 < len(n.Content); i += 2 {
-				k, v := n.Content[i], n.Content[i+1]
-				if k.ShortTag() == "!!null" {
-					key := k.Value
-					if key == "" {
-						key = "~"
-					}
-					sid := id{k.Line, key, section}
-					if !seen[sid] {
-						seen[sid] = true
-						out = append(out, UnknownKey{Line: k.Line, Key: key, Section: section, Valid: sectionKeys(section)})
-					}
-					continue
-				}
-				if k.ShortTag() == "!!merge" {
-					walk(v, section) // mapping or sequence of mappings, same section
-					continue
-				}
-				if child, ok := childSection(section, k.Value); ok {
-					walk(v, child)
-				}
-			}
+	case yaml.MappingNode:
+		w.mapping(n, section)
+	}
+}
+
+// mapping reports null keys of one mapping and descends into merge values
+// (same section) and known keys that open a child section.
+func (w *nullKeyWalker) mapping(n *yaml.Node, section string) {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.ShortTag() == "!!null" {
+			w.add(k, section)
+			continue
+		}
+		if k.ShortTag() == "!!merge" {
+			w.walk(v, section) // mapping or sequence of mappings, same section
+			continue
+		}
+		if child, ok := childSection(section, k.Value); ok {
+			w.walk(v, child)
 		}
 	}
-	walk(doc.Content[0], "")
-	return out
+}
+
+// add records a null key once per (line, key, section). An empty key is
+// reported as "~".
+func (w *nullKeyWalker) add(k *yaml.Node, section string) {
+	key := k.Value
+	if key == "" {
+		key = "~"
+	}
+	sid := nullKeyID{k.Line, key, section}
+	if w.seen[sid] {
+		return
+	}
+	w.seen[sid] = true
+	w.out = append(w.out, UnknownKey{Line: k.Line, Key: key, Section: section, Valid: sectionKeys(section)})
 }

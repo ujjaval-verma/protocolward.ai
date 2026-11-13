@@ -177,6 +177,8 @@ func TestLoad_UnknownKey_RejectTable(t *testing.T) {
 		{"null_key_in_merge_section", hdr3 + "timeouts:\n  <<: {~: 3s}\n", "~", 6, "timeouts"},
 		{"null_key_in_merge_top", baseYAML() + "<<: {null: {blocklists: [{id: a, path: b}]}}\n", "null", 10, ""},
 		{"null_key_in_merge_seq", baseYAML() + "<<: [{~: 1}]\n", "~", 10, ""},
+		{"null_key_via_alias_dedupe", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", ~: x}\n  - *u\n", "~", 3, "upstreams[]"},
+		{"null_key_empty_explicit", hdr3 + "?\n: 1\n", "~", 5, ""},
 		{"key_with_newline", baseYAML() + "\"a\\nb\": 1\n", "a\nb", 10, ""},
 		{"anchor_reused_merge", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - <<: *u\n", "servername", 3, "upstreams[]"},
 		{"anchor_reused_alias", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - *u\n", "servername", 3, "upstreams[]"},
@@ -233,6 +235,28 @@ func TestLoad_UnknownKey_ReportsAllInDocumentOrder(t *testing.T) {
 	}
 	if n := strings.Count(err.Error(), "; "); n != 2 {
 		t.Errorf(`"; " count = %d want 2 in %q`, n, err.Error())
+	}
+}
+
+func TestLoad_UnknownKey_NullKeyReachedOnlyViaAlias(t *testing.T) {
+	// The null key sits in the anchored flow map; the alias is a second
+	// route to it, so only alias-following reports the block_response copy.
+	_, err := loadYAMLString(t, hdr3+"timeouts: &t {~: 1}\nblock_response: *t\n")
+	var uke *config.UnknownKeyError
+	if !errors.As(err, &uke) {
+		t.Fatalf("err = %v; want *UnknownKeyError", err)
+	}
+	type lks struct {
+		Line         int
+		Key, Section string
+	}
+	got := make([]lks, 0, len(uke.Keys))
+	for _, k := range uke.Keys {
+		got = append(got, lks{k.Line, k.Key, k.Section})
+	}
+	want := []lks{{5, "~", "timeouts"}, {5, "~", "block_response"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Keys = %v want %v", got, want)
 	}
 }
 
