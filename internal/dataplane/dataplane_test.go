@@ -1186,40 +1186,21 @@ func TestHandleQuery_Block_AddressMode_Custom_A(t *testing.T) {
 // A x → NXDOMAIN, AA=1, RA=0.
 func TestHandleQuery_Block_NXDOMAIN_Mode_A(t *testing.T) {
 	t.Parallel()
-	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
-	addr := startPolicyServer(t, dataplane.Config{
-		ListenAddr:      "127.0.0.1:0",
-		Resolvers:       []dataplane.Resolver{&fakeResolver{addr: "127.0.0.1:9001"}},
-		QueryTimeout:    1 * time.Second,
-		ShutdownTimeout: 2 * time.Second,
-		Engine:          engine,
-		BlockResponse: config.BlockResponseConfig{
-			Mode: config.BlockResponseModeNXDOMAIN,
-		},
-	})
-
-	c := new(dns.Client)
-	msg := new(dns.Msg)
-	msg.SetQuestion("x.", dns.TypeA)
-	resp, _, err := c.Exchange(msg, addr)
-	if err != nil {
-		t.Fatalf("exchange: %v", err)
-	}
-	if resp.Rcode != dns.RcodeNameError {
-		t.Errorf("rcode: got %d, want NXDOMAIN", resp.Rcode)
-	}
-	if !resp.Authoritative {
-		t.Error("AA bit not set")
-	}
-	if resp.RecursionAvailable {
-		t.Error("RA bit should not be set on nxdomain block response")
-	}
+	assertNXDOMAINBlock(t, dns.TypeA, "RA bit should not be set on nxdomain block response")
 }
 
 // TestHandleQuery_Block_NXDOMAIN_Mode_AAAA: block={x}, mode=nxdomain
 // AAAA x → NXDOMAIN, AA=1, RA=0.
 func TestHandleQuery_Block_NXDOMAIN_Mode_AAAA(t *testing.T) {
 	t.Parallel()
+	assertNXDOMAINBlock(t, dns.TypeAAAA, "RA bit should not be set")
+}
+
+// assertNXDOMAINBlock queries a blocked name "x." of type qtype in nxdomain
+// mode and expects NXDOMAIN with AA=1 and RA=0. raMsg is the failure message
+// when RA is set.
+func assertNXDOMAINBlock(t *testing.T, qtype uint16, raMsg string) {
+	t.Helper()
 	engine := policy.NewEngine(nil, &stubMatcher{blockedSuffix: "x", listID: "test"})
 	addr := startPolicyServer(t, dataplane.Config{
 		ListenAddr:      "127.0.0.1:0",
@@ -1234,7 +1215,7 @@ func TestHandleQuery_Block_NXDOMAIN_Mode_AAAA(t *testing.T) {
 
 	c := new(dns.Client)
 	msg := new(dns.Msg)
-	msg.SetQuestion("x.", dns.TypeAAAA)
+	msg.SetQuestion("x.", qtype)
 	resp, _, err := c.Exchange(msg, addr)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
@@ -1246,7 +1227,7 @@ func TestHandleQuery_Block_NXDOMAIN_Mode_AAAA(t *testing.T) {
 		t.Error("AA bit not set")
 	}
 	if resp.RecursionAvailable {
-		t.Error("RA bit should not be set")
+		t.Error(raMsg)
 	}
 }
 

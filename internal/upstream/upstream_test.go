@@ -18,38 +18,20 @@ import (
 
 func TestQuery_NOERROR(t *testing.T) {
 	t.Parallel()
-	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeSuccess})
-
-	cfg := upstream.Config{
-		Address:     srv.Addr,
-		ServerName:  "fake-dot.test",
-		TLSConfig:   srv.TLSConf,
-		DialTimeout: 2 * time.Second,
-	}
-	client, err := upstream.New(cfg)
-	if err != nil {
-		t.Fatalf("new upstream: %v", err)
-	}
-	defer client.Close()
-
-	msg := new(dns.Msg)
-	msg.SetQuestion("example.com.", dns.TypeA)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	resp, err := client.Query(ctx, msg)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if resp.Rcode != dns.RcodeSuccess {
-		t.Errorf("rcode: got %d, want %d", resp.Rcode, dns.RcodeSuccess)
-	}
+	assertQueryRcode(t, dns.RcodeSuccess, "example.com.", "")
 }
 
 func TestQuery_NXDOMAIN(t *testing.T) {
 	t.Parallel()
-	srv := newFakeDoT(t, FakeDoTOptions{Rcode: dns.RcodeNameError})
+	assertQueryRcode(t, dns.RcodeNameError, "nxdomain.example.com.", " (NXDOMAIN)")
+}
+
+// assertQueryRcode starts a fake DoT server answering with fakeRcode, queries
+// qname (type A) and checks the response rcode. wantSuffix is appended to the
+// rcode failure message.
+func assertQueryRcode(t *testing.T, fakeRcode int, qname, wantSuffix string) {
+	t.Helper()
+	srv := newFakeDoT(t, FakeDoTOptions{Rcode: fakeRcode})
 
 	cfg := upstream.Config{
 		Address:     srv.Addr,
@@ -64,7 +46,7 @@ func TestQuery_NXDOMAIN(t *testing.T) {
 	defer client.Close()
 
 	msg := new(dns.Msg)
-	msg.SetQuestion("nxdomain.example.com.", dns.TypeA)
+	msg.SetQuestion(qname, dns.TypeA)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -73,8 +55,8 @@ func TestQuery_NXDOMAIN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if resp.Rcode != dns.RcodeNameError {
-		t.Errorf("rcode: got %d, want %d (NXDOMAIN)", resp.Rcode, dns.RcodeNameError)
+	if resp.Rcode != fakeRcode {
+		t.Errorf("rcode: got %d, want %d%s", resp.Rcode, fakeRcode, wantSuffix)
 	}
 }
 

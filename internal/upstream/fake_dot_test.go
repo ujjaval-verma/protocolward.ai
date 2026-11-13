@@ -102,15 +102,15 @@ func (c *countingConn) tcpConn() *net.TCPConn {
 
 // newFakeDoT starts a fake DoT server on a random loopback port and registers
 // cleanup with t. Returns the server; inspect .Addr and .TLSConf.
-func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
-	t.Helper()
+func newFakeDoT(tb testing.TB, opts FakeDoTOptions) *FakeDoTServer {
+	tb.Helper()
 
 	serverName := "fake-dot.test"
 	if opts.WrongCert {
 		serverName = "wrong-name.test"
 	}
 
-	tlsCert, pool := generateSelfSignedCert(t, serverName)
+	tlsCert, pool := generateSelfSignedCert(tb, serverName)
 
 	serverTLS := &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
@@ -127,7 +127,7 @@ func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("fake DoT: listen: %v", err)
+		tb.Fatalf("fake DoT: listen: %v", err)
 	}
 
 	s := &FakeDoTServer{
@@ -138,7 +138,7 @@ func newFakeDoT(t testing.TB, opts FakeDoTOptions) *FakeDoTServer {
 		tlsConf: serverTLS,
 	}
 
-	t.Cleanup(func() { ln.Close() })
+	tb.Cleanup(func() { ln.Close() })
 	go s.serve()
 
 	return s
@@ -353,12 +353,12 @@ func (s *FakeDoTServer) handleConn(conn *tls.Conn, raw *countingConn) {
 
 // generateSelfSignedCert creates a self-signed ECDSA cert for serverName.
 // Returns the tls.Certificate and a CertPool that trusts it.
-func generateSelfSignedCert(t testing.TB, serverName string) (tls.Certificate, *x509.CertPool) {
-	t.Helper()
+func generateSelfSignedCert(tb testing.TB, serverName string) (tls.Certificate, *x509.CertPool) {
+	tb.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: gen key: %v", err)
+		tb.Fatalf("generateSelfSignedCert: gen key: %v", err)
 	}
 
 	tmpl := &x509.Certificate{
@@ -370,12 +370,12 @@ func generateSelfSignedCert(t testing.TB, serverName string) (tls.Certificate, *
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: create cert: %v", err)
+		tb.Fatalf("generateSelfSignedCert: create cert: %v", err)
 	}
 
 	x509Cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: parse cert: %v", err)
+		tb.Fatalf("generateSelfSignedCert: parse cert: %v", err)
 	}
 
 	pool := x509.NewCertPool()
@@ -385,13 +385,13 @@ func generateSelfSignedCert(t testing.TB, serverName string) (tls.Certificate, *
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: marshal key: %v", err)
+		tb.Fatalf("generateSelfSignedCert: marshal key: %v", err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: X509KeyPair: %v", err)
+		tb.Fatalf("generateSelfSignedCert: X509KeyPair: %v", err)
 	}
 
 	return tlsCert, pool

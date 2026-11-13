@@ -21,8 +21,33 @@ linters:
     - nilerr
     - errorlint
     - exhaustive
+    # Issue #24 slice 1. gocognit and contextcheck come in later slices.
+    - funlen
+    - dupl
+    - gocritic
+    - noctx
+    - nolintlint
+    - errname
+    - forcetypeassert
+    - thelper
 
 linters-settings:
+  funlen:
+    # 80 body lines. funlen does not count the signature or the closing
+    # brace, so a function may span up to 82 source lines: this does not
+    # exactly encode #20's "nothing over 80 lines". Moving to 78 needs
+    # the production functions on the list below split, and serveRun and
+    # loadOne trimmed too (issue #24). Statements are not limited.
+    # ignore-comments is explicit so a v2 migration cannot change the count.
+    lines: 80
+    statements: -1
+    ignore-comments: false
+  dupl:
+    threshold: 150  # the v1 default, explicit for the v2 migration
+  nolintlint:
+    require-explanation: true
+    require-specific: true
+    allow-unused: false
   revive:
     rules:
       - name: var-naming
@@ -57,3 +82,26 @@ issues:
       linters:
         - gosec
         - errcheck
+    # funlen ratchet (issue #24). These functions were over 80 lines when
+    # funlen was enabled. Each rule pins its file and, by `source:`, the
+    # declaration up to the opening "(": `func`, receiver (variable and
+    # type) and name. Changing parameters or results keeps the exemption;
+    # renaming the function or its receiver drops it and lint fails.
+    # Remove an entry when its function is split; never add one. Any other
+    # function over 80 lines fails lint.
+    - path: (^|/)config/config\.go$
+      source: '^func (\(c Config\) validate|Load)\('
+      linters:
+        - funlen
+    - path: (^|/)dataplane/dataplane\.go$
+      source: '^func \(s \*Server\) (handleQuery|classifyAsync)\('
+      linters:
+        - funlen
+    - path: (^|/)update/verify\.go$
+      source: '^func Verify\('
+      linters:
+        - funlen
+    - path: _test\.go$
+      source: '^func (TestExitHatch|TestServeUntilStopped|TestShutdownServe|TestLoadServePolicy|TestLoadServeConfig|TestLoadHostLists|TestOpenModelClassifier|TestHandleQuery_Decoy_Alerts_And_Sinkholes|TestLoad_ValidationMessages_Locked|TestLoad_ValidationErrors_NameRemediation|FuzzHostlistLoad|FuzzDecoyNew|\(s \*FakeDoTServer\) handleConn|TestShutdown_SecondCallWaitsForOwnerToStopListeners|TestServe_ShutdownWithOnlyUDPServing_ReportsTCPNotStarted|writeVariant|BenchmarkHandleQuery)\('
+      linters:
+        - funlen

@@ -118,7 +118,7 @@ type evalRecord struct {
 // decode error or missing required field (Hostname, Label) is returned
 // with the offending line number so operators can locate the bad row.
 func loadEvalSuite(path string) ([]evalRecord, error) {
-	f, err := os.Open(path) //nolint:gosec // operator-supplied fixture path
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open suite %q: %w", path, err)
 	}

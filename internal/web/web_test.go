@@ -76,7 +76,7 @@ func TestHandler_Healthz_EmptyLastDecision(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := httpGet(t, srv.URL+"/healthz")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestHandler_Healthz_AfterRecord(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := httpGet(t, srv.URL+"/healthz")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestHandler_Healthz_RejectsNonGet(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/healthz", "application/json", nil)
+	resp, err := httpPost(t, srv.URL+"/healthz", "application/json", nil)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestHandler_HealthzContentType(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := httpGet(t, srv.URL+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestHandler_IndexRendersDecisions(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/")
+	resp, err := httpGet(t, srv.URL+"/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestHandler_IndexEmptyState(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/")
+	resp, err := httpGet(t, srv.URL+"/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestHandler_IndexUnknownPath404(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/does-not-exist")
+	resp, err := httpGet(t, srv.URL+"/does-not-exist")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestHandler_IndexPostNotAllowed(t *testing.T) {
 	srv := httptest.NewServer(web.Handler(s))
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/", "text/plain", strings.NewReader(""))
+	resp, err := httpPost(t, srv.URL+"/", "text/plain", strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("POST /: %v", err)
 	}
@@ -321,7 +321,7 @@ func getIndex(t *testing.T, h http.Handler) string {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/")
+	resp, err := httpGet(t, srv.URL+"/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestHandler_Healthz_ClassifyDropped_ReportsSourceStatusStaysOK(t *testing.T
 
 func getHealthz(t *testing.T, base string) map[string]any {
 	t.Helper()
-	resp, err := http.Get(base + "/healthz")
+	resp, err := httpGet(t, base+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -525,7 +525,10 @@ func TestHandler_Healthz_Classifier_DefaultsToNone(t *testing.T) {
 func TestHandler_Healthz_Classifier_ReportsSourceStatusStaysOK(t *testing.T) {
 	var state atomic.Value
 	srv := httptest.NewServer(web.HandlerWithOptions(web.NewStore(), web.Options{
-		Classifier: func() string { return state.Load().(string) },
+		Classifier: func() string {
+			s, _ := state.Load().(string)
+			return s
+		},
 	}))
 	defer srv.Close()
 
@@ -566,4 +569,25 @@ func TestHandler_Healthz_DNSAddr(t *testing.T) {
 			t.Errorf("dns_addr = %v (present %v); want \"\", always present", v, ok)
 		}
 	})
+}
+
+// httpGet issues a GET bound to the test's context (noctx).
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// httpPost issues a POST bound to the test's context (noctx).
+func httpPost(t *testing.T, url, contentType string, body io.Reader) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	return http.DefaultClient.Do(req)
 }

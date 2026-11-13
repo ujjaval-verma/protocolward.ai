@@ -90,7 +90,7 @@ func TestServeCmd_ValidConfig_BootsAndShutsDownOnSIGTERM(t *testing.T) {
 // sync.Once makes the build safe for parallel subprocess tests.
 var (
 	wardBin     string
-	wardBinErr  error
+	errWardBin  error
 	wardBinOnce sync.Once
 	wardBinDir  string // temp dir holding the binary; removed by TestMain
 )
@@ -108,12 +108,12 @@ func TestMain(m *testing.M) {
 // buildWardBin compiles the ward binary into a temp dir (once per test
 // process) and returns its path.
 func buildWardBin() (string, error) {
-	wardBinOnce.Do(func() { wardBin, wardBinErr = compileWardBin() })
-	return wardBin, wardBinErr
+	wardBinOnce.Do(func() { wardBin, errWardBin = compileWardBin() })
+	return wardBin, errWardBin
 }
 
 func compileWardBin() (string, error) {
-	moduleRoot := findModuleRoot(nil)
+	moduleRoot := findModuleRoot()
 	dir, err := os.MkdirTemp("", "ward-test-bin-*")
 	if err != nil {
 		return "", err
@@ -130,15 +130,11 @@ func compileWardBin() (string, error) {
 }
 
 // findModuleRoot walks up from the test binary's working directory until it
-// finds a go.mod, then returns that directory. Falls back to the test's
-// working directory. Pass nil for t to skip t.Fatal (used outside test context).
-func findModuleRoot(t *testing.T) string {
+// finds a go.mod, then returns that directory. If none is found it returns
+// the filesystem root where the walk ended. A getwd failure returns ".".
+func findModuleRoot() string {
 	dir, err := os.Getwd()
 	if err != nil {
-		if t != nil {
-			t.Helper()
-			t.Fatalf("findModuleRoot: getwd: %v", err)
-		}
 		return "."
 	}
 	for {
@@ -486,7 +482,7 @@ func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 
 	// The panel is extracted by its element boundaries, independent of the
 	// order of the flags and decisions sections (k).
-	hr, err := http.Get("http://" + w.dashAddr + "/")
+	hr, err := httpGet(t, "http://"+w.dashAddr+"/")
 	if err != nil {
 		t.Fatalf("GET dashboard: %v\nlog:\n%s", err, w.out.String())
 	}
@@ -565,7 +561,7 @@ func TestServe_Healthz_ReportsDNSAddr_AtLogLevelError(t *testing.T) {
 		t.Fatal("slog default logger enables WARN; want it filtered at log_level: error")
 	}
 
-	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	resp, err := httpGet(t, "http://"+w.dashAddr+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -617,7 +613,7 @@ func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) m
 	var got map[string]any
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if resp, err := http.Get("http://" + dashAddr + "/healthz"); err == nil {
+		if resp, err := httpGet(t, "http://"+dashAddr+"/healthz"); err == nil {
 			var body map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&body)
 			resp.Body.Close()
@@ -1157,7 +1153,7 @@ func TestServe_DashboardReady_LogsBoundAddr(t *testing.T) {
 	if err != nil || port == "0" || port == "" {
 		t.Fatalf("dashboard: ready listen %q must be the bound address with a non-zero port (err=%v)", w.dashAddr, err)
 	}
-	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	resp, err := httpGet(t, "http://"+w.dashAddr+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz on %s: %v\nlog:\n%s", w.dashAddr, err, w.out.String())
 	}
@@ -1308,7 +1304,7 @@ func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
 	}
 	dashAddr := rec.addr()
 	poll := func() (string, bool) {
-		resp, err := http.Get("http://" + dashAddr + "/healthz")
+		resp, err := httpGet(t, "http://"+dashAddr+"/healthz")
 		if err != nil {
 			return "", false
 		}
@@ -1363,4 +1359,14 @@ func TestServeCmd_ListenAddrHelp(t *testing.T) {
 	if f.Usage != want {
 		t.Errorf("--listen-addr help =\n%s\nwant\n%s", f.Usage, want)
 	}
+}
+
+// httpGet issues a GET bound to the test's context (noctx).
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
 }
