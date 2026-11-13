@@ -117,7 +117,7 @@ func TestTracer_BuiltinDetector_FlagsAndStillForwards(t *testing.T) {
 
 	dash := httptest.NewServer(web.HandlerWithFlags(store, flags))
 	defer dash.Close()
-	hr, err := http.Get(dash.URL + "/")
+	hr, err := httpGet(t, dash.URL+"/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -639,4 +639,14 @@ func TestFlags_ClassifierPanic_ValueAndStackBounded(t *testing.T) {
 	if stack == "" || len(stack) > 2048+len("…(truncated)") {
 		t.Errorf("stack len = %d, want 1..2KB(+marker)", len(stack))
 	}
+}
+
+// httpGet issues a GET bound to the test's context (noctx).
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
 }

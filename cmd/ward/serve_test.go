@@ -482,7 +482,7 @@ func TestServe_Model_Builtin_FlagsOnDashboard_StillForwarded(t *testing.T) {
 
 	// The panel is extracted by its element boundaries, independent of the
 	// order of the flags and decisions sections (k).
-	hr, err := http.Get("http://" + w.dashAddr + "/")
+	hr, err := httpGet(t, "http://"+w.dashAddr+"/")
 	if err != nil {
 		t.Fatalf("GET dashboard: %v\nlog:\n%s", err, w.out.String())
 	}
@@ -561,7 +561,7 @@ func TestServe_Healthz_ReportsDNSAddr_AtLogLevelError(t *testing.T) {
 		t.Fatal("slog default logger enables WARN; want it filtered at log_level: error")
 	}
 
-	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	resp, err := httpGet(t, "http://"+w.dashAddr+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -613,7 +613,7 @@ func serveHealthz(t *testing.T, extra string, until func(map[string]any) bool) m
 	var got map[string]any
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if resp, err := http.Get("http://" + dashAddr + "/healthz"); err == nil {
+		if resp, err := httpGet(t, "http://"+dashAddr+"/healthz"); err == nil {
 			var body map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&body)
 			resp.Body.Close()
@@ -1153,7 +1153,7 @@ func TestServe_DashboardReady_LogsBoundAddr(t *testing.T) {
 	if err != nil || port == "0" || port == "" {
 		t.Fatalf("dashboard: ready listen %q must be the bound address with a non-zero port (err=%v)", w.dashAddr, err)
 	}
-	resp, err := http.Get("http://" + w.dashAddr + "/healthz")
+	resp, err := httpGet(t, "http://"+w.dashAddr+"/healthz")
 	if err != nil {
 		t.Fatalf("GET /healthz on %s: %v\nlog:\n%s", w.dashAddr, err, w.out.String())
 	}
@@ -1304,7 +1304,7 @@ func TestServe_Healthz_BuiltinModel_NeverNone(t *testing.T) {
 	}
 	dashAddr := rec.addr()
 	poll := func() (string, bool) {
-		resp, err := http.Get("http://" + dashAddr + "/healthz")
+		resp, err := httpGet(t, "http://"+dashAddr+"/healthz")
 		if err != nil {
 			return "", false
 		}
@@ -1359,4 +1359,14 @@ func TestServeCmd_ListenAddrHelp(t *testing.T) {
 	if f.Usage != want {
 		t.Errorf("--listen-addr help =\n%s\nwant\n%s", f.Usage, want)
 	}
+}
+
+// httpGet issues a GET bound to the test's context (noctx).
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
 }

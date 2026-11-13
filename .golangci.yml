@@ -22,6 +22,7 @@ linters:
     - errorlint
     - exhaustive
     # Issue #24 slice 1. gocognit and contextcheck come in later slices.
+    - noctx
     - nolintlint
     - errname
     - forcetypeassert
