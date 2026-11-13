@@ -35,10 +35,9 @@ linters-settings:
   funlen:
     # 80 body lines. funlen does not count the signature or the closing
     # brace, so a function may span up to 82 source lines: this does not
-    # exactly encode #20's "nothing over 80 lines" (serveRun is 79 body
-    # lines, 81 by #20's count). Ratchet to 78 once the production
-    # functions on the list below are split (issue #24). Statements are
-    # not limited.
+    # exactly encode #20's "nothing over 80 lines". Moving to 78 needs
+    # the production functions on the list below split, and serveRun and
+    # loadOne trimmed too (issue #24). Statements are not limited.
     # ignore-comments is explicit so a v2 migration cannot change the count.
     lines: 80
     statements: -1
