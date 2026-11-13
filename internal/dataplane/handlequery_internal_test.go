@@ -16,14 +16,19 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 
 	"protocolward.ai/ward/internal/config"
+	"protocolward.ai/ward/internal/decoy"
+	"protocolward.ai/ward/internal/hostlist"
 	"protocolward.ai/ward/internal/obs"
 	"protocolward.ai/ward/internal/policy"
+	"protocolward.ai/ward/pkg/model"
+	"protocolward.ai/ward/pkg/schema"
 )
 
 // stubResponseWriter is a minimal dns.ResponseWriter for direct unit-testing
@@ -195,4 +200,205 @@ func TestWriteBlockResponse_WriteFailureLogsFoldedQname(t *testing.T) {
 		}
 	}
 	t.Fatalf("no write-failure line captured: %v", obs.Captured(t))
+}
+
+// foldRecorder is a DecisionRecorder that keeps every call in order.
+type foldRecorder struct{ rows [][3]string }
+
+func (r *foldRecorder) Record(qname, action, matched string) {
+	r.rows = append(r.rows, [3]string{qname, action, matched})
+}
+
+// foldResolver counts upstream calls so a row can tell forwarded from answered
+// locally.
+type foldResolver struct{ calls atomic.Int32 }
+
+func (r *foldResolver) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	r.calls.Add(1)
+	return (&stubResolver{}).Query(ctx, req)
+}
+func (r *foldResolver) Address() string { return "127.0.0.1:9001" }
+
+// foldOnceRow is one end-to-end case for TestHandleQuery_FoldOnce_RealLists.
+type foldOnceRow struct {
+	name                string
+	query               string
+	allow, block, decoy []string
+	wantAction          string // recorder action: block | allow | decoy | forward
+	wantQname           string // recorder qname (folded exactly once)
+	wantMatched         string // recorder matched label
+	wantMsg             string // policy log message; "" when no policy line is emitted
+	wantForwarded       bool
+}
+
+// runFoldOnce builds a Server over real hostlist and decoy sets, sends one
+// query through handleQuery and checks the recorder row, the upstream call
+// count and the policy log line.
+func runFoldOnce(t *testing.T, tc foldOnceRow) {
+	t.Helper()
+	restore := obs.Capture(t)
+	defer restore()
+
+	allow, err := hostlist.FromEntries(tc.allow)
+	if err != nil {
+		t.Fatalf("allow FromEntries: %v", err)
+	}
+	block, err := hostlist.FromEntries(tc.block)
+	if err != nil {
+		t.Fatalf("block FromEntries: %v", err)
+	}
+	decoys, err := decoy.FromEntries(tc.decoy)
+	if err != nil {
+		t.Fatalf("decoy FromEntries: %v", err)
+	}
+	rec, up := &foldRecorder{}, &foldResolver{}
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{up},
+		QueryTimeout:    2 * time.Second,
+		ShutdownTimeout: 2 * time.Second,
+		Engine:          policy.NewEngine(allow, block),
+		Decoys:          decoys,
+		Decisions:       rec,
+		BlockResponse: config.BlockResponseConfig{
+			Mode: config.BlockResponseModeAddress,
+			A:    netip.MustParseAddr("0.0.0.0"),
+			AAAA: netip.MustParseAddr("::"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion(tc.query, dns.TypeA)
+	raddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:12345")
+	srv.handleQuery(&stubResponseWriter{remoteAddr: raddr}, req)
+
+	if want := [][3]string{{tc.wantQname, tc.wantAction, tc.wantMatched}}; len(rec.rows) != 1 || rec.rows[0] != want[0] {
+		t.Errorf("recorder rows = %v, want %v", rec.rows, want)
+	}
+	if got := up.calls.Load() > 0; got != tc.wantForwarded {
+		t.Errorf("forwarded = %v, want %v", got, tc.wantForwarded)
+	}
+	checkFoldOnceLog(t, tc, obs.Captured(t))
+}
+
+// checkFoldOnceLog asserts the policy log line (message, qname, matched and,
+// for a block, the remediation) or its absence.
+func checkFoldOnceLog(t *testing.T, tc foldOnceRow, records []map[string]any) {
+	t.Helper()
+	var got map[string]any
+	for _, r := range records {
+		if msg, _ := r["msg"].(string); strings.HasPrefix(msg, "policy: ") {
+			got = r
+		}
+	}
+	if tc.wantMsg == "" {
+		if got != nil {
+			t.Errorf("unexpected policy line: %v", got)
+		}
+		return
+	}
+	if got == nil || got["msg"] != tc.wantMsg {
+		t.Fatalf("policy line = %v, want msg %q", got, tc.wantMsg)
+	}
+	if got["qname"] != tc.wantQname || got["matched"] != tc.wantMatched {
+		t.Errorf("qname/matched = %v/%v, want %s/%s", got["qname"], got["matched"], tc.wantQname, tc.wantMatched)
+	}
+	if tc.wantAction == "block" {
+		if got["kind"] != "block" || got["list_id"] == nil || got["remediation"] != "add to allowlist: "+tc.wantQname {
+			t.Errorf("block attribution fields wrong: %v", got)
+		}
+	}
+}
+
+// TestHandleQuery_FoldOnce_RealLists pins that the dataplane's single fold is
+// enough: mixed-case, trailing-dot names reach real hostlist and decoy sets
+// folded, so block, allow and decoy entries still match end to end.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestHandleQuery_FoldOnce_RealLists(t *testing.T) {
+	cases := []foldOnceRow{
+		{
+			name: "block", query: "ADS.Example.COM.", block: []string{"example.com"},
+			wantAction: "block", wantQname: "ads.example.com", wantMatched: "example.com",
+			wantMsg: "policy: blocked",
+		},
+		{
+			name: "allow_beats_block", query: "Good.Example.COM.",
+			allow: []string{"good.example.com"}, block: []string{"example.com"},
+			wantAction: "allow", wantQname: "good.example.com", wantMatched: "good.example.com",
+			wantMsg: "policy: allowed", wantForwarded: true,
+		},
+		{
+			name: "decoy_beats_allow", query: "TRAP.Example.COM.",
+			decoy: []string{"trap.example.com"}, allow: []string{"trap.example.com"},
+			wantAction: "decoy", wantQname: "trap.example.com", wantMatched: "trap.example.com",
+			wantMsg: "policy: alert",
+		},
+		{
+			name: "miss", query: "NotHere.Unlisted.ORG.",
+			wantAction: "forward", wantQname: "nothere.unlisted.org", wantForwarded: true,
+		},
+		// The probes of an escaped-dot name all contain a backslash, which
+		// NormalizeName rejects in every entry, so this is a miss both before
+		// and after the matchers stop folding.
+		{
+			name: "escaped_dot", query: "example.com\\..",
+			block: []string{"example.com", "com"}, decoy: []string{"example.com"},
+			wantAction: "forward", wantQname: "example.com\\.", wantForwarded: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { runFoldOnce(t, tc) })
+	}
+}
+
+// maliciousClassifier flags every name, so the async path always reaches
+// DecideWithVerdict and logs a `policy: classified` record.
+type maliciousClassifier struct{}
+
+func (maliciousClassifier) Classify(context.Context, model.Input) (schema.Verdict, error) {
+	return schema.VerdictMalicious, nil
+}
+
+// TestHandleQuery_FoldOnce_AsyncClassifierMixedCase pins that classifyAsync
+// gets the folded name even with no trailing dot to strip. A name that missed
+// the lists is forwarded, so the observable is the record's qname: a case-only
+// regression would hand DecideWithVerdict (and the log) the mixed-case name.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestHandleQuery_FoldOnce_AsyncClassifierMixedCase(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: time.Second,
+		Engine:          policy.NewEngine(nil, nil),
+		Classifier:      maliciousClassifier{},
+		BlockResponse: config.BlockResponseConfig{
+			Mode: config.BlockResponseModeAddress,
+			A:    netip.MustParseAddr("0.0.0.0"),
+			AAAA: netip.MustParseAddr("::"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("ADS.Example.COM", dns.TypeA)
+	raddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:12345")
+	srv.handleQuery(&stubResponseWriter{remoteAddr: raddr}, req)
+	srv.inFlight.Wait()
+
+	for _, r := range obs.Captured(t) {
+		if r["msg"] != "policy: classified" {
+			continue
+		}
+		if r["qname"] != "ads.example.com" || r["matched"] != "(model)" {
+			t.Errorf("classified record = %v, want qname ads.example.com, matched (model)", r)
+		}
+		return
+	}
+	t.Fatal("no `policy: classified` record")
 }

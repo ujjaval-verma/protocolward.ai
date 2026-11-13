@@ -21,7 +21,7 @@ func TestFromEntries_ExactMatchWithInlineID(t *testing.T) {
 	if !ok || matched != "nas-backup.home.arpa" || id != hostlist.InlineSourceID {
 		t.Errorf("Match = (%q, %q, %v); want (%q, \"nas-backup.home.arpa\", true)", id, matched, ok, hostlist.InlineSourceID)
 	}
-	if _, _, ok := set.Match("PRINTER-ADMIN.LAN."); !ok {
+	if _, _, ok := set.Match(hostlist.FoldName("PRINTER-ADMIN.LAN.")); !ok {
 		t.Error("expected case/trailing-dot tolerant hit on printer-admin.lan")
 	}
 	for _, miss := range []string{"scanner.nas-backup.home.arpa", "home.arpa", "admin.lan"} {
