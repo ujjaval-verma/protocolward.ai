@@ -751,7 +751,9 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	// This is the one fold per query. The decoy set, policy.Engine and the list
 	// matchers compare the folded name verbatim and never fold again;
-	// classifyAsync, the recorders and the logs receive the same qname. A name
+	// classifyAsync, the recorders and the `policy:` log lines receive the same
+	// qname. The `query` and upstream-failure log lines log the name as
+	// received, and the block-response write-failure log folds on its own. A name
 	// ending in an escaped dot (`example.com\..`) folds to `example.com\.`; every
 	// probe of it contains `\`, which no list entry can contain because
 	// NormalizeName rejects it, so it misses.
