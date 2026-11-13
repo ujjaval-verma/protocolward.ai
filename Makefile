@@ -154,8 +154,9 @@ test-cover: ## Run tests with coverage report
 	$(Q)$(GO) tool cover -func=$(COVER_OUT) | tail -1
 
 .PHONY: lint
-lint: $(TOOLS_DIR)/golangci-lint ## Run golangci-lint
+lint: $(TOOLS_DIR)/golangci-lint ## Run golangci-lint (host GOOS, then js/wasm for cmd/wardwasm)
 	$(Q)$(TOOLS_DIR)/golangci-lint run $(PKG)
+	$(Q)GOOS=js GOARCH=wasm $(TOOLS_DIR)/golangci-lint run ./cmd/wardwasm/...
 
 .PHONY: fmt
 fmt: $(TOOLS_DIR)/gofumpt ## Format Go code (gofumpt)
