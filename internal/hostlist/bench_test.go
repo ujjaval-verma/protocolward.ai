@@ -123,6 +123,7 @@ func BenchmarkLoadRetained(b *testing.B) {
 }
 
 func benchLoadRetained(b *testing.B, entries int) {
+	b.Helper()
 	path := filepath.Join(b.TempDir(), "retained.hosts")
 	f, err := os.Create(path)
 	if err != nil {

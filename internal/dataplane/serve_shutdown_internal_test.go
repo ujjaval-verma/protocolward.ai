@@ -391,7 +391,12 @@ func TestServe_StoppingChecks(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			ln = l.(*net.TCPListener)
+			tl, ok := l.(*net.TCPListener)
+			if !ok {
+				_ = l.Close()
+				return nil, fmt.Errorf("listener is %T, want *net.TCPListener", l)
+			}
+			ln = tl
 			return l, nil
 		}
 		if err := serveBounded(t, srv); err != nil {

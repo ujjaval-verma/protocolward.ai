@@ -525,7 +525,10 @@ func TestHandler_Healthz_Classifier_DefaultsToNone(t *testing.T) {
 func TestHandler_Healthz_Classifier_ReportsSourceStatusStaysOK(t *testing.T) {
 	var state atomic.Value
 	srv := httptest.NewServer(web.HandlerWithOptions(web.NewStore(), web.Options{
-		Classifier: func() string { return state.Load().(string) },
+		Classifier: func() string {
+			s, _ := state.Load().(string)
+			return s
+		},
 	}))
 	defer srv.Close()
 

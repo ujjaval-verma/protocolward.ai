@@ -90,7 +90,7 @@ func TestServeCmd_ValidConfig_BootsAndShutsDownOnSIGTERM(t *testing.T) {
 // sync.Once makes the build safe for parallel subprocess tests.
 var (
 	wardBin     string
-	wardBinErr  error
+	errWardBin  error
 	wardBinOnce sync.Once
 	wardBinDir  string // temp dir holding the binary; removed by TestMain
 )
@@ -108,12 +108,12 @@ func TestMain(m *testing.M) {
 // buildWardBin compiles the ward binary into a temp dir (once per test
 // process) and returns its path.
 func buildWardBin() (string, error) {
-	wardBinOnce.Do(func() { wardBin, wardBinErr = compileWardBin() })
-	return wardBin, wardBinErr
+	wardBinOnce.Do(func() { wardBin, errWardBin = compileWardBin() })
+	return wardBin, errWardBin
 }
 
 func compileWardBin() (string, error) {
-	moduleRoot := findModuleRoot(nil)
+	moduleRoot := findModuleRoot()
 	dir, err := os.MkdirTemp("", "ward-test-bin-*")
 	if err != nil {
 		return "", err
@@ -131,14 +131,10 @@ func compileWardBin() (string, error) {
 
 // findModuleRoot walks up from the test binary's working directory until it
 // finds a go.mod, then returns that directory. Falls back to the test's
-// working directory. Pass nil for t to skip t.Fatal (used outside test context).
-func findModuleRoot(t *testing.T) string {
+// working directory. A getwd failure returns ".".
+func findModuleRoot() string {
 	dir, err := os.Getwd()
 	if err != nil {
-		if t != nil {
-			t.Helper()
-			t.Fatalf("findModuleRoot: getwd: %v", err)
-		}
 		return "."
 	}
 	for {

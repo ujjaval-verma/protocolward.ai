@@ -168,6 +168,7 @@ func TestNewServeClassifier_LoadedLog(t *testing.T) {
 			name: "builtin",
 			cfg:  &config.ModelConfig{Builtin: "lexical"},
 			check: func(t *testing.T, c any) {
+				t.Helper()
 				if _, ok := c.(*detect.Lexical); !ok {
 					t.Errorf("classifier = %T, want *detect.Lexical", c)
 				}
@@ -179,6 +180,7 @@ func TestNewServeClassifier_LoadedLog(t *testing.T) {
 			cfg:  &config.ModelConfig{Command: []string{"/bin/cat"}},
 			bin:  "/bin/cat",
 			check: func(t *testing.T, c any) {
+				t.Helper()
 				if _, ok := c.(*model.Adapter); !ok {
 					t.Errorf("classifier = %T, want *model.Adapter", c)
 				}
