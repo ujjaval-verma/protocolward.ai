@@ -78,16 +78,20 @@ func TestMatch_LongestSuffixWins(t *testing.T) {
 	}
 }
 
+// TestMatch_CaseInsensitive pins how the dataplane's single fold composes with
+// Match: a mixed-case name folded once with FoldName still hits.
 func TestMatch_CaseInsensitive(t *testing.T) {
 	set := loadSimple(t, "example.com")
-	if _, _, ok := set.Match("ADS.Example.COM"); !ok {
+	if _, _, ok := set.Match(hostlist.FoldName("ADS.Example.COM")); !ok {
 		t.Error("expected case-insensitive hit")
 	}
 }
 
+// TestMatch_TrailingDot pins how the dataplane's single fold composes with
+// Match: a trailing-dot name folded once with FoldName still hits.
 func TestMatch_TrailingDot(t *testing.T) {
 	set := loadSimple(t, "example.com")
-	if _, _, ok := set.Match("ads.example.com."); !ok {
+	if _, _, ok := set.Match(hostlist.FoldName("ads.example.com.")); !ok {
 		t.Error("expected trailing-dot tolerance")
 	}
 }
@@ -141,14 +145,33 @@ func TestMatch_ZeroValueSet(t *testing.T) {
 func TestMatch_ZeroAllocs(t *testing.T) {
 	set := loadSimple(t, "example.com", "ads.tracker.net")
 	for name, q := range map[string]string{
-		"exact":  "example.com",
-		"suffix": "a.b.example.com",
-		"miss":   "nothere.unlisted.org",
-		"dot":    "a.b.example.com.",
+		"exact":        "example.com",
+		"suffix":       "a.b.example.com",
+		"miss":         "nothere.unlisted.org",
+		"dot":          "a.b.example.com.",
+		"mixed_suffix": "A.B.EXAMPLE.COM",
+		"mixed_miss":   "NotHere.Unlisted.ORG",
 	} {
 		if n := testing.AllocsPerRun(100, func() { sinkMatch(set, q) }); n != 0 {
 			t.Errorf("%s: allocs = %v, want 0", name, n)
 		}
+	}
+}
+
+// TestMatch_ComparesFoldedNameVerbatim pins that Match does not fold: the
+// dataplane folds the query name once and Match compares that name byte for
+// byte. Without this pin a second fold could come back unnoticed, because for
+// an already-lowercase name it costs no allocation.
+func TestMatch_ComparesFoldedNameVerbatim(t *testing.T) {
+	set := loadSimple(t, "example.com")
+	for _, raw := range []string{"Example.COM", "example.com."} {
+		if _, matched, ok := set.Match(raw); ok {
+			t.Errorf("Match(%q) hit %q; an unfolded name must miss", raw, matched)
+		}
+	}
+	_, matched, ok := set.Match(hostlist.FoldName("Example.COM."))
+	if !ok || matched != "example.com" {
+		t.Errorf("Match(FoldName(%q)) = (%q, %v), want (\"example.com\", true)", "Example.COM.", matched, ok)
 	}
 }
 
@@ -170,9 +193,9 @@ func TestMatch_OddInputs(t *testing.T) {
 		{"X.Example.COM.", "example.com"},
 	}
 	for _, c := range cases {
-		_, matched, ok := set.Match(c.in)
+		_, matched, ok := set.Match(hostlist.FoldName(c.in))
 		if ok != (c.wantMatched != "") || matched != c.wantMatched {
-			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
+			t.Errorf("Match(FoldName(%q)) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
 		}
 	}
 }
@@ -197,7 +220,7 @@ func TestMatch_ConcurrentRace(t *testing.T) {
 			defer wg.Done()
 			for i := range iterations {
 				c := cases[i%len(cases)]
-				id, matched, ok := set.Match(c.in)
+				id, matched, ok := set.Match(hostlist.FoldName(c.in))
 				if ok != (c.wantMatched != "") || matched != c.wantMatched || (ok && id != "t") {
 					errs <- fmt.Sprintf("Match(%q) = (%q,%q,%v)", c.in, id, matched, ok)
 					return
@@ -212,11 +235,13 @@ func TestMatch_ConcurrentRace(t *testing.T) {
 	}
 }
 
-// TestMatch_FoldTable pins, with literal expected results, how Match folds a
-// raw query string: lowercase and strip exactly one trailing dot. The U+212A
-// (Kelvin sign) row documents that a raw string handed straight to Match folds
-// to "k"; no caller does that today (the DNS path carries non-ASCII as \DDD
-// escapes and the wasm demo rejects it in NormalizeName first).
+// TestMatch_FoldTable pins, with literal expected results, how the dataplane's
+// single fold composes with Match: FoldName lowercases and strips exactly one
+// trailing dot, then Match compares that name verbatim (the rules of FoldName
+// itself are pinned by TestFoldName). The U+212A (Kelvin sign) row documents
+// that a raw string folded this way becomes "k"; no caller does that today
+// (the DNS path carries non-ASCII as \DDD escapes and the wasm demo rejects it
+// in NormalizeName first).
 func TestMatch_FoldTable(t *testing.T) {
 	set := loadSimple(t, "example.com", "ka.com")
 	cases := []struct {
@@ -231,9 +256,9 @@ func TestMatch_FoldTable(t *testing.T) {
 		{"\u212Aa.com", "ka.com"},
 	}
 	for _, c := range cases {
-		_, matched, ok := set.Match(c.in)
+		_, matched, ok := set.Match(hostlist.FoldName(c.in))
 		if ok != (c.wantMatched != "") || matched != c.wantMatched {
-			t.Errorf("Match(%q) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
+			t.Errorf("Match(FoldName(%q)) = (%q, %v), want matched %q", c.in, matched, ok, c.wantMatched)
 		}
 	}
 }
