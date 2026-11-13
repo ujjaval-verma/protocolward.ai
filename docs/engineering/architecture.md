@@ -68,7 +68,7 @@ When the fast path forwards a name, `dataplane.classifyAsync` asks a classifier 
 
 ## Data flow for one query
 
-1. A query arrives at `internal/dataplane`, which folds the name with `hostlist.FoldName` (lowercase, one trailing dot stripped).
+1. A query arrives at `internal/dataplane`, which folds the name with `hostlist.FoldName` (lowercase, one trailing dot stripped). This is the only fold: every later step (decoy set, policy engine, list matchers, recorders, logs) compares or reports the folded name verbatim.
 2. Decoy match (checked first, in the dataplane): emit `policy: alert` with the decoy ID, answer with the configured block response, never forward.
 3. Otherwise the dataplane calls `policy.Engine.Decide(qname)`. Allowlist match: forward upstream and emit `policy: allowed`.
 4. Blocklist match: answer with the configured block response and emit `policy: blocked` with list and rule.

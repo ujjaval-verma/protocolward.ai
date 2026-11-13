@@ -749,11 +749,12 @@ func (s *Server) handleQuery(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	// The decoy set and the list matchers fold again inside Match, as before.
-	// The second fold changes only a name ending in an escaped dot (`\.`, as in
-	// `example.com\..`); every probe of the result ends in `\`, which no list
-	// entry can contain because NormalizeName rejects it, so the outcome is the
-	// same.
+	// This is the one fold per query. The decoy set, policy.Engine and the list
+	// matchers compare the folded name verbatim and never fold again;
+	// classifyAsync, the recorders and the logs receive the same qname. A name
+	// ending in an escaped dot (`example.com\..`) folds to `example.com\.`; every
+	// probe of it contains `\`, which no list entry can contain because
+	// NormalizeName rejects it, so it misses.
 	qname := hostlist.FoldName(q.Name)
 
 	// Decoy short-circuit: fires BEFORE Engine.Decide so a decoy hit cannot
