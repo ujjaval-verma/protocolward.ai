@@ -22,6 +22,7 @@ linters:
     - errorlint
     - exhaustive
     # Issue #24 slice 1. gocognit and contextcheck come in later slices.
+    - dupl
     - noctx
     - nolintlint
     - errname
@@ -29,6 +30,8 @@ linters:
     - thelper
 
 linters-settings:
+  dupl:
+    threshold: 150  # the v1 default, explicit for the v2 migration
   nolintlint:
     require-explanation: true
     require-specific: true
