@@ -1064,22 +1064,9 @@ func (s *Server) forwardUpstream(w dns.ResponseWriter, req *dns.Msg) {
 func (s *Server) classifyAsync(qname, client string) {
 	defer s.leaveFlight()
 	defer func() { <-s.classifySlots }()
-	// DD6: an in-process classifier (model.builtin) has no process boundary,
-	// so contain its panics here. Registered after inFlight.Done so it runs
-	// first (LIFO) and Done still fires. The query was already answered.
-	defer func() {
-		if r := recover(); r != nil {
-			// Bounded: the value is capped at 256 bytes and the stack at
-			// ~2KB so a detector bug cannot flood the log. Reason.Detail is
-			// never read here.
-			slog.Error("policy: classifier panic recovered",
-				"qname", qname,
-				"panic", truncateForLog(fmt.Sprintf("%v", r), maxPanicValueBytes),
-				"stack", truncateForLog(string(debug.Stack()), maxPanicStackBytes),
-				"remediation", "report this as a bug at the project repository — include the qname; the query was answered normally and ward keeps running",
-			)
-		}
-	}()
+	// DD6: registered after inFlight.Done so it runs first (LIFO) and Done
+	// still fires. See recoverClassifyPanic.
+	defer s.recoverClassifyPanic(qname)
 	if s.classifierDead.Load() {
 		return
 	}
@@ -1119,84 +1106,12 @@ func (s *Server) classifyAsync(qname, client string) {
 		verdict, err = s.cfg.Classifier.Classify(ctx, model.Input{Hostname: qname})
 	}
 	if err != nil {
-		if errors.Is(err, detect.ErrInvalidHostname) {
-			// Root queries ("" after the trailing-dot strip), IP literals,
-			// control or non-ASCII bytes, malformed labels: normal DNS
-			// traffic the lexical detector refuses to score. Quiet by
-			// design — never a Warn, never the unavailable latch.
-			slog.Debug("policy: classify skipped",
-				"qname", qname,
-				"reason", "not a scorable hostname",
-			)
-			return
-		}
-		if errors.Is(err, adapter.ErrSkipped) {
-			// The sibling was busy with earlier calls until this call's
-			// timeout ended; nothing was sent to it. A drop, not a failure:
-			// no latch, no per-call Warn.
-			if s.stopCtx.Err() != nil {
-				// Shutdown cancelled it: expected, so counted but silent.
-				s.classifyDropped.Add(1)
-				slog.Debug("policy: classify skipped",
-					"qname", qname,
-					"reason", "server shutting down",
-				)
-				return
-			}
-			s.noteClassifyDropped(qname, "classifier busy past the classify timeout")
-			return
-		}
-		if errors.Is(err, adapter.ErrUnavailable) {
-			if s.classifierDead.CompareAndSwap(false, true) {
-				remediation := "restart ward to reload the adapter — SP10c does not auto-restart the sibling"
-				if errors.Is(err, adapter.ErrNoReply) {
-					remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang, overload, or a reply that is not flushed as one newline-terminated line, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
-				}
-				slog.Error("policy: model unavailable",
-					"qname", qname,
-					"error", err.Error(),
-					"remediation", remediation,
-				)
-			}
-			return
-		}
-		remediation := "investigate adapter logs — the failure is non-fatal but should not recur"
-		if assessment != nil {
-			// Builtin path: no adapter exists. detect.Assess returns
-			// ctx.Err() on timeout or cancellation.
-			remediation = "the built-in detector ran out of time or was cancelled; the query was answered normally — no action needed unless this recurs, then raise ClassifyTimeout or report a bug"
-		}
-		slog.Warn("policy: classify error",
-			"qname", qname,
-			"error", err.Error(),
-			"remediation", remediation,
-		)
+		s.logClassifyError(qname, err, assessment != nil)
 		return
 	}
 
-	// Builtin (Assessor) path: flag-only by construction (ADR-0006
-	// D3). The policy engine is deliberately NOT consulted (DD8):
-	// DecideWithVerdict maps Malicious → ActionBlock, and planned enforcement will start
-	// applying that Decision on the Classify path below. A detector flag
-	// must never become a block without its own ADR. Flag attrs ride on the
-	// single policy: classified line (one event, one line); only non-benign
-	// results are flags.
 	if assessment != nil {
-		var flagAttrs []any
-		if verdict != schema.VerdictBenign {
-			codes := topReasonCodes(assessment.Reasons)
-			if s.cfg.Flags != nil {
-				s.cfg.Flags.RecordFlag(qname, client, assessment.Score, codes)
-			}
-			flagAttrs = []any{
-				"score", assessment.Score,
-				"reasons", codes,
-				"client", client,
-				"enforced", false,
-				"remediation", "flagged, not blocked — add " + qname + " to a blocklist to enforce",
-			}
-		}
-		s.logClassified(qname, verdict, policy.Decision{Action: policy.ActionForward, Kind: policy.KindNone}, flagAttrs...)
+		s.recordAssessment(qname, client, verdict, assessment)
 		return
 	}
 
@@ -1216,6 +1131,112 @@ func (s *Server) classifyAsync(qname, client string) {
 	}
 	d := s.cfg.Engine.DecideWithVerdict(qname, verdict)
 	s.logClassified(qname, verdict, d)
+}
+
+// recoverClassifyPanic is deferred by classifyAsync and calls recover()
+// directly, as a deferred function must for recover to stop the panic.
+//
+// DD6: an in-process classifier (model.builtin) has no process boundary,
+// so contain its panics here. The query was already answered.
+func (s *Server) recoverClassifyPanic(qname string) {
+	if r := recover(); r != nil {
+		// Bounded: the value is capped at 256 bytes and the stack at
+		// ~2KB so a detector bug cannot flood the log. Reason.Detail is
+		// never read here.
+		slog.Error("policy: classifier panic recovered",
+			"qname", qname,
+			"panic", truncateForLog(fmt.Sprintf("%v", r), maxPanicValueBytes),
+			"stack", truncateForLog(string(debug.Stack()), maxPanicStackBytes),
+			"remediation", "report this as a bug at the project repository — include the qname; the query was answered normally and ward keeps running",
+		)
+	}
+}
+
+// logClassifyError logs a failed Classify or Assess call for qname and
+// updates the drop counter or the classifierDead latch where the error
+// calls for it. builtin is true on the Assessor path.
+func (s *Server) logClassifyError(qname string, err error, builtin bool) {
+	if errors.Is(err, detect.ErrInvalidHostname) {
+		// Root queries ("" after the trailing-dot strip), IP literals,
+		// control or non-ASCII bytes, malformed labels: normal DNS
+		// traffic the lexical detector refuses to score. Quiet by
+		// design — never a Warn, never the unavailable latch.
+		slog.Debug("policy: classify skipped",
+			"qname", qname,
+			"reason", "not a scorable hostname",
+		)
+		return
+	}
+	if errors.Is(err, adapter.ErrSkipped) {
+		// The sibling was busy with earlier calls until this call's
+		// timeout ended; nothing was sent to it. A drop, not a failure:
+		// no latch, no per-call Warn.
+		if s.stopCtx.Err() != nil {
+			// Shutdown cancelled it: expected, so counted but silent.
+			s.classifyDropped.Add(1)
+			slog.Debug("policy: classify skipped",
+				"qname", qname,
+				"reason", "server shutting down",
+			)
+			return
+		}
+		s.noteClassifyDropped(qname, "classifier busy past the classify timeout")
+		return
+	}
+	if errors.Is(err, adapter.ErrUnavailable) {
+		if s.classifierDead.CompareAndSwap(false, true) {
+			remediation := "restart ward to reload the adapter — SP10c does not auto-restart the sibling"
+			if errors.Is(err, adapter.ErrNoReply) {
+				remediation = fmt.Sprintf("the model accepted a request but did not reply within %s, so ward stopped it; check the model process for a hang, overload, or a reply that is not flushed as one newline-terminated line, then restart ward — answers are unaffected", adapter.DefaultReplyTimeout)
+			}
+			slog.Error("policy: model unavailable",
+				"qname", qname,
+				"error", err.Error(),
+				"remediation", remediation,
+			)
+		}
+		return
+	}
+	remediation := "investigate adapter logs — the failure is non-fatal but should not recur"
+	if builtin {
+		// Builtin path: no adapter exists. detect.Assess returns
+		// ctx.Err() on timeout or cancellation.
+		remediation = "the built-in detector ran out of time or was cancelled; the query was answered normally — no action needed unless this recurs, then raise ClassifyTimeout or report a bug"
+	}
+	slog.Warn("policy: classify error",
+		"qname", qname,
+		"error", err.Error(),
+		"remediation", remediation,
+	)
+}
+
+// recordAssessment handles a successful Assess result for qname: a
+// non-benign verdict is recorded via Config.Flags, and the single
+// `policy: classified` line is logged.
+//
+// Builtin (Assessor) path: flag-only by construction (ADR-0006
+// D3). The policy engine is deliberately NOT consulted (DD8):
+// DecideWithVerdict maps Malicious → ActionBlock, and planned enforcement will start
+// applying that Decision on the Classify path in classifyAsync. A detector flag
+// must never become a block without its own ADR. Flag attrs ride on the
+// single policy: classified line (one event, one line); only non-benign
+// results are flags.
+func (s *Server) recordAssessment(qname, client string, verdict schema.Verdict, a *schema.Assessment) {
+	var flagAttrs []any
+	if verdict != schema.VerdictBenign {
+		codes := topReasonCodes(a.Reasons)
+		if s.cfg.Flags != nil {
+			s.cfg.Flags.RecordFlag(qname, client, a.Score, codes)
+		}
+		flagAttrs = []any{
+			"score", a.Score,
+			"reasons", codes,
+			"client", client,
+			"enforced", false,
+			"remediation", "flagged, not blocked — add " + qname + " to a blocklist to enforce",
+		}
+	}
+	s.logClassified(qname, verdict, policy.Decision{Action: policy.ActionForward, Kind: policy.KindNone}, flagAttrs...)
 }
 
 // ClassifyDropped returns the number of classifications that did not run
