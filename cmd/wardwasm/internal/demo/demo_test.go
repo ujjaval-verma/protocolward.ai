@@ -66,7 +66,9 @@ func TestDecide_PrecedenceMirrorsDataplane(t *testing.T) {
 		{"decoy_subdomain_is_not_a_decoy", "scanner.nas-backup.home.arpa", demo.Decision{Action: demo.ActionForward, Source: demo.SourceForward}},
 		{"blocklist_exact", "ads.example.com", block(demo.SourceBlocklist, "ads.example.com", false)},
 		{"blocklist_suffix", "x.ads.example.com", block(demo.SourceBlocklist, "ads.example.com", false)},
+		{"blocklist_mixed_case_trailing_dot", "X.ADS.Example.COM.", block(demo.SourceBlocklist, "ads.example.com", false)},
 		{"allowlist_beats_blocklist", "cdn.ads.example.com", demo.Decision{Action: demo.ActionForward, Source: demo.SourceAllowlist, Matched: "cdn.ads.example.com"}},
+		{"allowlist_mixed_case_trailing_dot", "CDN.Ads.Example.COM.", demo.Decision{Action: demo.ActionForward, Source: demo.SourceAllowlist, Matched: "cdn.ads.example.com"}},
 		{"unlisted_forwards", "github.com", demo.Decision{Action: demo.ActionForward, Source: demo.SourceForward}},
 	}
 	for _, tc := range rows {
