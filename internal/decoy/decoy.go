@@ -20,8 +20,9 @@
 // # Hostname rules
 //
 // Every decoy name, from a file line or from FromEntries, is validated and
-// normalized by hostlist.NormalizeName, and Match folds queries with
-// hostlist.FoldName; see those functions for the exact rule set. A file line
+// normalized by hostlist.NormalizeName, and Match expects a query name already
+// folded once with hostlist.FoldName (the dataplane folds each query once);
+// see those functions for the exact rule set. A file line
 // that carries content ward cannot load (a name that fails validation, or a
 // shape other than "<hostname>" or "<ip> <hostname>") is skipped, counted in
 // Stats.SkippedLines and reported with a WARN log (capped per source). Comment
@@ -176,19 +177,19 @@ func FromEntries(names []string) (*Set, error) {
 }
 
 // Match reports whether hostname matches a decoy entry. Returns the
-// decoy_id and the matched (already-normalized) hostname on hit. The query is
-// folded with hostlist.FoldName (case-insensitive, one trailing dot tolerated);
-// it is not validated, so an invalid query simply misses.
+// decoy_id and the matched (already-normalized) hostname on hit. hostname must
+// already be folded once with hostlist.FoldName; Match compares it verbatim
+// and never folds, so an unfolded name (upper case, trailing dot) misses. It
+// is not validated, so an invalid query simply misses. Match never allocates.
 func (s *Set) Match(hostname string) (decoyID, matched string, ok bool) {
-	norm := hostlist.FoldName(hostname)
-	if norm == "" {
+	if hostname == "" {
 		return "", "", false
 	}
-	id, hit := s.entries[norm]
+	id, hit := s.entries[hostname]
 	if !hit {
 		return "", "", false
 	}
-	return id, norm, true
+	return id, hostname, true
 }
 
 func (s *Set) loadOne(src hostlist.Source) (Stats, error) {

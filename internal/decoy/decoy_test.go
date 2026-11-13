@@ -94,14 +94,54 @@ func TestMatch_NormalizesCase(t *testing.T) {
 	}
 }
 
+// TestMatch_TrailingDotStripped pins how the dataplane's single fold composes
+// with Match: a trailing-dot name folded once with FoldName still hits.
 func TestMatch_TrailingDotStripped(t *testing.T) {
 	p := writeFile(t, "tripwires.txt", "0.0.0.0 tripwire.dod.test\n")
 	set, _, err := decoy.New([]hostlist.Source{{ID: "primary", Path: p}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, _, ok := set.Match("tripwire.dod.test."); !ok {
+	if _, _, ok := set.Match(hostlist.FoldName("tripwire.dod.test.")); !ok {
 		t.Error("trailing-dot qname must match")
+	}
+}
+
+// TestMatch_NeverAllocates pins zero allocations for Match on hits and misses,
+// including names that are not folded (Match no longer folds them).
+func TestMatch_NeverAllocates(t *testing.T) {
+	p := writeFile(t, "tripwires.txt", "0.0.0.0 tripwire.dod.test\n")
+	set, _, err := decoy.New([]hostlist.Source{{ID: "primary", Path: p}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, q := range []string{
+		"tripwire.dod.test", "tripwire.dod.test.", "TRIPWIRE.dod.test", "NotHere.Unlisted.ORG",
+	} {
+		if n := testing.AllocsPerRun(100, func() { _, _, _ = set.Match(q) }); n != 0 {
+			t.Errorf("Match(%q) allocs = %v, want 0", q, n)
+		}
+	}
+}
+
+// TestMatch_ComparesFoldedNameVerbatim pins that Match does not fold: the
+// dataplane folds the query name once and Match compares that name byte for
+// byte, so an unfolded name misses. Without this pin a second fold could come
+// back unnoticed, because for a lowercase name it costs no allocation.
+func TestMatch_ComparesFoldedNameVerbatim(t *testing.T) {
+	p := writeFile(t, "tripwires.txt", "0.0.0.0 tripwire.dod.test\n")
+	set, _, err := decoy.New([]hostlist.Source{{ID: "primary", Path: p}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, raw := range []string{"TRIPWIRE.dod.test", "tripwire.dod.test."} {
+		if _, matched, ok := set.Match(raw); ok {
+			t.Errorf("Match(%q) hit %q; an unfolded name must miss", raw, matched)
+		}
+	}
+	_, matched, ok := set.Match(hostlist.FoldName("TRIPWIRE.dod.test."))
+	if !ok || matched != "tripwire.dod.test" {
+		t.Errorf("Match(FoldName(raw)) = (%q, %v), want (\"tripwire.dod.test\", true)", matched, ok)
 	}
 }
 
