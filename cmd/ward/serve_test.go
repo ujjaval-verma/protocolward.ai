@@ -130,8 +130,8 @@ func compileWardBin() (string, error) {
 }
 
 // findModuleRoot walks up from the test binary's working directory until it
-// finds a go.mod, then returns that directory. Falls back to the test's
-// working directory. A getwd failure returns ".".
+// finds a go.mod, then returns that directory. If none is found it returns
+// the filesystem root where the walk ended. A getwd failure returns ".".
 func findModuleRoot() string {
 	dir, err := os.Getwd()
 	if err != nil {
