@@ -177,6 +177,8 @@ func TestLoad_UnknownKey_RejectTable(t *testing.T) {
 		{"null_key_in_merge_section", hdr3 + "timeouts:\n  <<: {~: 3s}\n", "~", 6, "timeouts"},
 		{"null_key_in_merge_top", baseYAML() + "<<: {null: {blocklists: [{id: a, path: b}]}}\n", "null", 10, ""},
 		{"null_key_in_merge_seq", baseYAML() + "<<: [{~: 1}]\n", "~", 10, ""},
+		{"null_key_via_alias", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", ~: x}\n  - *u\n", "~", 3, "upstreams[]"},
+		{"null_key_empty_explicit", hdr3 + "?\n: 1\n", "~", 5, ""},
 		{"key_with_newline", baseYAML() + "\"a\\nb\": 1\n", "a\nb", 10, ""},
 		{"anchor_reused_merge", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - <<: *u\n", "servername", 3, "upstreams[]"},
 		{"anchor_reused_alias", "listen: \"127.0.0.1:5354\"\nupstreams:\n  - &u {address: \"9.9.9.9:853\", server_name: \"dns.quad9.net\", servername: \"x\"}\n  - *u\n", "servername", 3, "upstreams[]"},
