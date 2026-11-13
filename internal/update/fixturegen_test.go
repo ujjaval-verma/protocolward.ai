@@ -73,7 +73,7 @@ func fixtureRoot(tb testing.TB) string {
 }
 
 func detRand(seed int64) io.Reader {
-	return mrand.New(mrand.NewSource(seed)) //nolint:gosec // deterministic by design
+	return mrand.New(mrand.NewSource(seed))
 }
 
 var (

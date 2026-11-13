@@ -21,8 +21,14 @@ linters:
     - nilerr
     - errorlint
     - exhaustive
+    # Issue #24 slice 1. gocognit and contextcheck come in later slices.
+    - nolintlint
 
 linters-settings:
+  nolintlint:
+    require-explanation: true
+    require-specific: true
+    allow-unused: false
   revive:
     rules:
       - name: var-naming

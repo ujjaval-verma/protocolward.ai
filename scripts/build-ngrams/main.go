@@ -186,7 +186,7 @@ type evalLine struct {
 }
 
 func writeEval(path string, benign []string, dga []dgaRecord) error {
-	f, err := os.Create(path) //nolint:gosec // operator-supplied output path
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
