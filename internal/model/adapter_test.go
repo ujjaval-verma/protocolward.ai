@@ -40,18 +40,18 @@ func TestMain(m *testing.M) {
 // runFakeChild reads newline-delimited JSON requests on stdin and emits
 // responses on stdout per the mode. Modes are documented in the spec.
 func runFakeChild(mode string) {
+	if mode == "die-on-start" {
+		os.Exit(0)
+	}
+
 	in := bufio.NewReader(os.Stdin)
 	out := bufio.NewWriter(os.Stdout)
-	defer func() { _ = out.Flush() }()
 
 	emit := func(v string) {
 		_, _ = fmt.Fprintf(out, "{%q:%q}\n", "verdict", v)
 		_ = out.Flush()
 	}
 
-	if mode == "die-on-start" {
-		os.Exit(0)
-	}
 	if path := os.Getenv(fakeChildPIDFileEnv); path != "" {
 		_ = os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
 	}

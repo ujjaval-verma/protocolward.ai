@@ -750,12 +750,13 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 	}
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		if errors.Is(err, dataplane.ErrDrainTimeout) || shutdownCtx.Err() != nil {
+		switch {
+		case errors.Is(err, dataplane.ErrDrainTimeout) || shutdownCtx.Err() != nil:
 			slog.Warn("ward serve: shutdown drain budget elapsed; forcing close",
 				"error", err.Error(),
 				"remediation", "in-flight queries or classifications were still running when timeouts.shutdown ran out; if the error counts the classifications (the drain itself timed out), 0 means a query, not the classifier, was stuck; raise timeouts.shutdown in ward.yaml if this recurs",
 			)
-		} else if errors.Is(err, dataplane.ErrNotStarted) {
+		case errors.Is(err, dataplane.ErrNotStarted):
 			// dataplane.ErrNotStarted, and the drain finished: a listener was not serving
 			// when this Shutdown ran. Three cases reach here: neither listener had started
 			// (Shutdown before Serve activated them); another Shutdown (for example Serve's
@@ -771,7 +772,7 @@ func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error
 				"error", err.Error(),
 				"remediation", "none needed: nothing is left serving",
 			)
-		} else {
+		default:
 			slog.Error("ward serve: shutdown error",
 				"error", err.Error(),
 				"remediation", "check the listener error logged next, if any, and the log above",

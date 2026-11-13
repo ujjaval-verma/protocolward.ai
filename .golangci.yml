@@ -23,6 +23,7 @@ linters:
     - exhaustive
     # Issue #24 slice 1. gocognit and contextcheck come in later slices.
     - dupl
+    - gocritic
     - noctx
     - nolintlint
     - errname
