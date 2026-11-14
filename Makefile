@@ -155,8 +155,10 @@ test-cover: ## Run tests with coverage report
 
 .PHONY: lint
 lint: $(TOOLS_DIR)/golangci-lint ## Run golangci-lint (host GOOS, then js/wasm for cmd/wardwasm)
-	$(Q)$(TOOLS_DIR)/golangci-lint run $(PKG)
-	$(Q)GOOS=js GOARCH=wasm $(TOOLS_DIR)/golangci-lint run ./cmd/wardwasm/...
+	$(Q)rc=0; \
+	$(TOOLS_DIR)/golangci-lint run $(PKG) || rc=1; \
+	GOOS=js GOARCH=wasm $(TOOLS_DIR)/golangci-lint run ./cmd/wardwasm/... || rc=1; \
+	exit $$rc
 
 .PHONY: fmt
 fmt: $(TOOLS_DIR)/gofumpt ## Format Go code (gofumpt)
