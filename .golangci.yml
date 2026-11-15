@@ -115,8 +115,8 @@ issues:
     # when gocognit was enabled. Each rule pins its file and, by
     # `source:`, the declaration up to the opening "(". Remove an entry
     # when its function is split; never add one. Production code has no
-    # entry: any production function over 30 that lint analyses fails lint
-    # (host GOOS only; js/wasm files are not linted yet).
+    # entry: any production function over 30 fails lint. Production code is
+    # linted for the host GOOS and, for cmd/wardwasm, for js/wasm.
     - path: (^|/)cmd/ward/classifier_test\.go$
       source: '^func TestOpenModelClassifier\('
       linters: [gocognit]
