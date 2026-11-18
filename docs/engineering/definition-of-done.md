@@ -12,7 +12,7 @@ The script that runs these bullets is [`scripts/dod.sh`](../../scripts/dod.sh). 
 
 | # | Assertion | Source | Status |
 |---|---|---|---|
-| 1 | `make ci` passes (lint + vet + race tests + testing-doc + SPDX + public-content + third-party-licence gates + workflow lint (actionlint) + build + wasm compile/size gate) | universal preflight | PASS |
+| 1 | `make ci` passes (every gate listed under [Gate 1 in `release.md`](release.md#gate-1--make-ci--make-dod--make-audit-automated-every-tag)) | universal preflight | PASS |
 | 2 | `make audit` passes (`go mod verify` + govulncheck + `goreleaser check`) | universal preflight | PASS |
 | 3 | `ward serve --config testdata/dod/ward.yaml` binds 127.0.0.1:5354 within 5s; emits `policy: engine ready` | sub-project 2 + 5 | PASS |
 | 4 | DNS: blocked hostname returns the configured block_response AND emits `policy: blocked` log line with matched qname (invariant 7) | sub-project 2 | PASS |
@@ -43,7 +43,7 @@ All 15 functional bullets PASS at SP10d ship; bullet 16 (SHIP) requires `make do
 2. Replace the `record TODO` body with the real assertion.
 3. Update this doc's status column in the same commit.
 4. Run `make dod` locally — the new bullet should be PASS.
-5. Run `make ci`, then push; the pre-push hook re-runs most of it (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, govulncheck, the public-content, SPDX, testing-doc, third-party licence and wasm size gates). Neither includes `make dod`, by design: dod is a separate, opt-in gate.
+5. Run `make ci`, then push; the pre-push hook re-runs most of it, plus `go mod tidy -diff`, `go mod verify` and govulncheck (the hook runs the Makefile's `pre-push` target, which lists every pre-push gate; `make pre-push` runs exactly what the hook runs). Neither includes `make dod`, by design: dod is a separate, opt-in gate.
 
 ## Rewrite-per-version contract
 
