@@ -100,6 +100,35 @@ if [ "$rc" -ne 0 ] || [ "$out" != "$ok2" ]; then
   fail "host-only-import: want exit 0 and exactly '$ok2'; got rc=$rc:"$'\n'"$out"
 fi
 
+# Toolchain knobs: the verdict must not depend on the caller's GOFLAGS/GOEXPERIMENT/GOAMD64/GOARM64.
+# Each decoy builds for js/wasm but for neither host only when the knob is at its default, so it must be flagged.
+# An exported variable is overridden by the script (exit 1). A value in the go env file cannot be
+# overridden without dropping the user's other settings, so GOFLAGS/GOEXPERIMENT there fail closed (exit 2);
+# GOAMD64/GOARM64 in the file are pinned by the script (exit 1).
+knob() { # knob <name> <relfile> <constraint> <envassign> <fileassign> <want-rc> <want-regex>
+  local name="$1" rel="$2" cons="$3" ev="$4" fv="$5" wrc="$6" wre="$7" d rc=0 out
+  d="$T/case-knob-$name"
+  cp -R "$base" "$d"
+  put "$d" "$rel" "//go:build $cons" '' 'package p'
+  if [ -n "$ev" ]; then
+    out="$(env "$ev" "$BASH" "$here/check-js-scope.sh" -C "$d" "$scope" 2>&1)" || rc=$?
+  else
+    printf '%s\n' "$fv" > "$T/goenv-$name"
+    out="$(GOENV="$T/goenv-$name" "$BASH" "$here/check-js-scope.sh" -C "$d" "$scope" 2>&1)" || rc=$?
+  fi
+  [ "$rc" -eq "$wrc" ] || fail "knob-$name: want exit $wrc, got $rc:"$'\n'"$out"
+  grep -qE "$wre" <<<"$out" || fail "knob-$name: output does not match '$wre':"$'\n'"$out"
+}
+flagged='internal/p/z.go: compiled for js/wasm but for neither lint host'
+knob flags-env internal/p/z.go 'js || foo' GOFLAGS=-tags=foo '' 1 "$flagged"
+knob flags-file internal/p/z.go 'js || foo' '' GOFLAGS=-tags=foo 2 'check-js-scope: GOFLAGS is set in the go env file'
+knob exp-env internal/p/z.go 'js || goexperiment.jsonv2' GOEXPERIMENT=jsonv2 '' 1 "$flagged"
+knob exp-file internal/p/z.go 'js || goexperiment.jsonv2' '' GOEXPERIMENT=jsonv2 2 'check-js-scope: GOEXPERIMENT is set in the go env file'
+knob amd64-env internal/p/z.go 'js || amd64.v3' GOAMD64=v3 '' 1 "$flagged"
+knob amd64-file internal/p/z.go 'js || amd64.v3' '' GOAMD64=v3 1 "$flagged"
+knob arm64-env internal/p/z.go 'js || arm64.v9.0' GOARM64=v9.0 '' 1 "$flagged"
+knob arm64-file internal/p/z.go 'js || arm64.v9.0' '' GOARM64=v9.0 1 "$flagged"
+
 # Errors fail closed (exit 2).
 rc=0
 out="$(run -C "$base" 2>&1)" || rc=$?

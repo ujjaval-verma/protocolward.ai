@@ -4,8 +4,11 @@
 # Usage: check-js-scope.sh [-C module-dir] pattern...   (patterns: the js/wasm lint scope, WASM_PKG in the Makefile)
 # Exit: 0 clean, 1 violation(s), 2 usage or toolchain error.
 set -euo pipefail
-export GOWORK=off GOFLAGS= CGO_ENABLED=0 LC_ALL=C
-unset GOEXPERIMENT GOAMD64 GOARM64
+# cmd/go falls back to the go env file (go env -w) when a variable is empty or unset, so clearing GOFLAGS and
+# GOEXPERIMENT only beats the caller's environment. GOAMD64/GOARM64 are pinned to their defaults (non-empty,
+# so they beat the file too); a GOFLAGS/GOEXPERIMENT in the file is rejected below.
+export GOWORK=off GOFLAGS= CGO_ENABLED=0 LC_ALL=C GOAMD64=v1 GOARM64=v8.0
+unset GOEXPERIMENT
 GO="${GO:-go}"
 
 dir="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +21,14 @@ if [ $# -lt 1 ]; then
   echo "usage: check-js-scope.sh [-C module-dir] pattern..." >&2
   exit 2
 fi
+
+for knob in GOFLAGS GOEXPERIMENT; do
+  val="$("$GO" env "$knob")" || { echo "check-js-scope: $GO env $knob failed" >&2; exit 2; }
+  if [ -n "$val" ]; then
+    echo "check-js-scope: $knob is set in the go env file ($("$GO" env GOENV)) and would change which files are compiled; unset it with: go env -u $knob" >&2
+    exit 2
+  fi
+done
 
 cd "$dir"
 gomod="$("$GO" env GOMOD)"
