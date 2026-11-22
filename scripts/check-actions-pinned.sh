@@ -39,6 +39,7 @@ re_qkey='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[?]([[:space:]]|$)'   
 re_alias='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[*][^][:space:],{}]+[[:space:]]*:'   # *name in a key position
 re_esc='(^[[:space:]]*(-[[:space:]]+)*|[{,[?][[:space:]]*)([!&][^[:space:]]*[[:space:]]+)*"[^"]*\\[^"]*"[[:space:]]*:'   # escaped double-quoted key in a key position, tag/anchor allowed
 re_utail='^[^][:space:],{}]*([[:space:]]+#.*|[[:space:]]*)$'   # unquoted uses: value: one token without flow indicators, then only whitespace or a # comment
+re_dqesc='^"[^"]*\\'                                       # double-quoted uses: value with a backslash before its first closing quote
 bad=0
 uses=0
 files=0
@@ -92,6 +93,10 @@ while IFS= read -r -d '' f; do
     t="${BASH_REMATCH[4]%$'\r'}"
     if [[ $t != \"* && $t != \'* && ! $t =~ $re_utail ]]; then
       printf 'check-actions-pinned: %s:%s: text after the uses: value (flow collection or a second key on the line); write one uses: per line, followed only by a # comment\n' "$f" "$n" >&2
+      bad=1
+    fi
+    if [[ $t =~ $re_dqesc ]]; then
+      printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted uses: value; write the value without escapes\n' "$f" "$n" >&2
       bad=1
     fi
     [[ $line =~ $re_key ]] || continue

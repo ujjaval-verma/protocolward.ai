@@ -110,6 +110,7 @@ bad  "        uses: owner/repo@$sha }"                                 'text aft
 put  '  tail-job3:'
 good "      - uses: owner/repo@$sha  # v1"
 bad  '        uses: ./x},{"uses":actions/checkout@v4}]'                'text after the uses: value'
+bad  '        uses: "./x\" # "}, {"uses": "actions/checkout@v4"}]'     'escape sequence in a double-quoted uses: value'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
 git -C "$T" add -A
 out="$(scan "$T" 2>&1)" && fail "expected failure on forms tree"
