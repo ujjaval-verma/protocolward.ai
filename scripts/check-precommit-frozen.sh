@@ -3,7 +3,8 @@
 # Every external hook rev must be a full 40-hex commit SHA followed by a "# frozen: v<tag>" comment
 # (what `pre-commit autoupdate --freeze` writes and what Dependabot's updater keeps; ADR-0002 §1).
 # Plain bash line scanner, no Python or pre-commit needed. Local and meta repos need no rev.
-# YAML forms it cannot read fail closed (ADR-0002 §2, threat model of the issue #52 note).
+# It fails closed on the block-style forms it reads; it does not catch a deliberately obscured spelling that ends the
+# repos block early (see the accepted residuals in ADR-0002 §2, threat model of the issue #52 note).
 # Usage: scripts/check-precommit-frozen.sh [repo-dir]   (default: this repo)
 # Plain bash 3.2-compatible: regexes live in variables, no mapfile, no associative arrays.
 set -euo pipefail
