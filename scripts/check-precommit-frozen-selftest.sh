@@ -29,15 +29,20 @@ out=""
 newrepo() { rn=$((rn + 1)); repo="$R/r$rn"; mkdir -p "$repo"; git -C "$repo" init -q; }
 run() { rc=0; out="$(scan "$@" 2>&1)" || rc=$?; }
 reported() { grep -F "check-precommit-frozen: $cfg:$1: " <<<"$out" | grep -qF -- "$2"; }   # <line> <reason>
+lines_reported() {   # sorted unique line numbers the scanner reported, space separated
+  sed -n "s/^check-precommit-frozen: $cfg:\([0-9][0-9]*\): .*/\1/p" <<<"$out" | sort -un | tr '\n' ' '
+}
 mk() { printf '%s\n' "$@" > "$repo/$cfg"; }
-bad_case() {   # <label> <line> <reason> <config lines...>
-  local label=$1 line=$2 why=$3
+bad_case() {   # <label> <line> <reason> <config lines...>   (WANT overrides the exact set of reported lines)
+  local label=$1 line=$2 why=$3 want="${WANT:-$2} " got
   shift 3
   newrepo
   mk "$@"
   run "$repo"
   [[ $rc -eq 1 ]] || fail "$label: expected exit 1, got $rc: $out"
   reported "$line" "$why" || fail "$label: $cfg:$line not reported with '$why': $out"
+  got="$(lines_reported)"
+  [[ $got == "$want" ]] || fail "$label: reported lines '$got', expected exactly '$want': $out"
 }
 good_case() {   # <label> <config lines...>
   local label=$1
@@ -141,6 +146,9 @@ while IFS='|' read -r ln why; do
   [[ -n $ln ]] || continue
   reported "$ln" "$why" || fail "forms file: $cfg:$ln not reported with '$why': $out"
 done <<<"$badl"
+want="$(printf '%s' "$badl" | cut -d'|' -f1 | sort -un | tr '\n' ' ')"
+got="$(lines_reported)"
+[[ $got == "$want" ]] || fail "forms file: reported lines '$got', expected exactly '$want': $out"
 for ln in $goodl; do
   if grep -qF "check-precommit-frozen: $cfg:$ln: " <<<"$out"; then fail "forms file: good line $ln flagged: $out"; fi
 done
@@ -220,7 +228,7 @@ bad_case 'second block keyed "repos":' 4 "$unsup" \
 bad_case 'second block keyed !!str repos:' 4 "$unsup" \
   'repos:' '  - repo: https://h/a' "    rev: $sha  # frozen: v1" \
   '!!str repos:' '  - repo: https://h/b' '    rev: v4.6.0'
-bad_case 'second block keyed ? repos' 4 "$unsup" \
+WANT='4 5' bad_case 'second block keyed ? repos' 4 "$unsup" \
   'repos:' '  - repo: https://h/a' "    rev: $sha  # frozen: v1" \
   '? repos' ':' '  - repo: https://h/b' '    rev: v4.6.0'
 reported 5 "$unsup" || fail "second block keyed ? repos: the : line 5 not reported: $out"
