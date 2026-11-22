@@ -34,6 +34,9 @@ re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
 re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
 re_any="(^|[^[:alnum:]_.-])[\"']?uses[\"']?[[:space:]]*:"   # the issue's pattern with a left word boundary (decision-2 item 1)
 re_cmt='^[[:space:]]*#'                                     # full-line comment
+re_qkey='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[?]([[:space:]]|$)'   # explicit ? key, block or flow
+re_alias='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[*][^][:space:],{}]+[[:space:]]*:'   # *name in a key position
+re_esc='(^[[:space:]]*(-[[:space:]]+)*|[{,[?][[:space:]]*)([!&][^[:space:]]*[[:space:]]+)*"[^"]*\\[^"]*"[[:space:]]*:'   # escaped double-quoted key in a key position, tag/anchor allowed
 bad=0
 uses=0
 files=0
@@ -67,6 +70,15 @@ while IFS= read -r -d '' f; do
       if [[ $l =~ $re_cmt ]]; then :
       elif [[ $l =~ $re_any ]]; then
         printf 'check-actions-pinned: %s:%s: uses: not in block form (flow mapping, quoted key, nested sequence, or uses: in other text such as a script or a trailing comment); write it on its own line as uses: owner/repo@<40 hex>, or reword the text if it is not a uses: key\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_qkey ]]; then
+        printf 'check-actions-pinned: %s:%s: explicit ? mapping key; write keys in block form (key: value)\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_alias ]]; then
+        printf 'check-actions-pinned: %s:%s: alias used as a mapping key; write the key out\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_esc ]]; then
+        printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted mapping key; write the key without escapes\n' "$f" "$n" >&2
         bad=1
       fi
       continue
