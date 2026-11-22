@@ -101,6 +101,15 @@ put  'x-step2: &t'
 bad  '  uses: actions/checkout@v4'                                    'not pinned to a full 40-hex'
 put  'z-job:'
 good '      - <<: *t'
+put  '  tail-job:'
+put  '    steps: [ {name: a,'
+bad  "        uses: owner/repo@$sha }, {uses: actions/checkout@v4} ]"  'text after the uses: value'
+put  '  tail-job2:'
+put  '      - {name: a,'
+bad  "        uses: owner/repo@$sha }"                                 'text after the uses: value'
+put  '  tail-job3:'
+good "      - uses: owner/repo@$sha  # v1"
+bad  '        uses: ./x},{"uses":actions/checkout@v4}]'                'text after the uses: value'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
 git -C "$T" add -A
 out="$(scan "$T" 2>&1)" && fail "expected failure on forms tree"
