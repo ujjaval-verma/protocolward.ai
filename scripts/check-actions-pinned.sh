@@ -4,6 +4,7 @@
 # GitHub only enforces that at job setup, after the push. This gate catches it before.
 # Usage: scripts/check-actions-pinned.sh [repo-dir]   (default: this repo)
 # Plain bash 3.2-compatible: regexes live in variables, no mapfile, no associative arrays.
+# YAML forms this line scanner cannot read fail closed (ADR-0002 §2).
 set -euo pipefail
 export LC_ALL=C   # byte semantics: an invalid UTF-8 byte must not make a regex skip a uses: line
 dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -32,6 +33,13 @@ re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
 re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
 re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
+re_any="(^|[^[:alnum:]_.-])[\"']?uses[\"']?[[:space:]]*:"   # the issue's pattern with a left word boundary (decision-2 item 1)
+re_cmt='^[[:space:]]*#'                                     # full-line comment
+re_qkey='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[?]([[:space:]]|$)'   # explicit ? key, block or flow
+re_alias='(^[[:space:]]*(-[[:space:]]+)*|[{,[][[:space:]]*)[*][^][:space:],{}]+[[:space:]]*:'   # *name in a key position
+re_esc='(^[[:space:]]*(-[[:space:]]+)*|[{,[?][[:space:]]*)([!&][^[:space:]]*[[:space:]]+)*"[^"]*\\[^"]*"[[:space:]]*:'   # escaped double-quoted key in a key position, tag/anchor allowed
+re_utail='^[^][:space:],{}]*([[:space:]]+#.*|[[:space:]]*)$'   # unquoted uses: value: one token without flow indicators, then only whitespace or a # comment
+re_dqesc='^"[^"]*\\'                                       # double-quoted uses: value with a backslash before its first closing quote
 bad=0
 uses=0
 files=0
@@ -59,6 +67,37 @@ while IFS= read -r -d '' f; do
         fi
         pend=""
       fi
+    fi
+    l="${line%$'\r'}"
+    if [[ $l == *$'\r'* || $l == *$'\xc2\x85'* || $l == *$'\xe2\x80\xa8'* || $l == *$'\xe2\x80\xa9'* ]]; then
+      printf 'check-actions-pinned: %s:%s: line break other than LF (bare CR, U+0085, U+2028 or U+2029); use LF line endings\n' "$f" "$n" >&2
+      bad=1
+    fi
+    if [[ ! $line =~ $re_key ]]; then
+      if [[ $l =~ $re_cmt ]]; then :
+      elif [[ $l =~ $re_any ]]; then
+        printf 'check-actions-pinned: %s:%s: uses: not in block form (flow mapping, quoted key, nested sequence, or uses: in other text such as a script or a trailing comment); write it on its own line as uses: owner/repo@<40 hex>, or reword the text if it is not a uses: key\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_qkey ]]; then
+        printf 'check-actions-pinned: %s:%s: explicit ? mapping key; write keys in block form (key: value); if this line is script or text inside a block scalar, reword it so it does not start with ?, * or & followed by a key\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_alias ]]; then
+        printf 'check-actions-pinned: %s:%s: alias used as a mapping key; write the key out; if this line is script or text inside a block scalar, reword it so it does not start with ?, * or & followed by a key\n' "$f" "$n" >&2
+        bad=1
+      elif [[ $l =~ $re_esc ]]; then
+        printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted mapping key; write the key without escapes; if this line is script or text inside a block scalar, reword it so it does not start with a double-quoted string with a backslash followed by a colon\n' "$f" "$n" >&2
+        bad=1
+      fi
+      continue
+    fi
+    t="${BASH_REMATCH[4]%$'\r'}"
+    if [[ $t != \"* && $t != \'* && ! $t =~ $re_utail ]]; then
+      printf 'check-actions-pinned: %s:%s: text after the uses: value (flow collection or a second key on the line); write one uses: per line, followed only by a # comment\n' "$f" "$n" >&2
+      bad=1
+    fi
+    if [[ $t =~ $re_dqesc ]]; then
+      printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted uses: value; write the value without escapes\n' "$f" "$n" >&2
+      bad=1
     fi
     [[ $line =~ $re_key ]] || continue
     uses=$((uses + 1))
