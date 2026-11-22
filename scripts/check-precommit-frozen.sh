@@ -13,13 +13,13 @@ if [[ "${CHECK_PRECOMMIT_FROZEN_DEBUG:-}" == 1 ]]; then
   echo "check-precommit-frozen: debug: bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" >&2
 fi
 root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || {
-  echo "check-precommit-frozen: not a git work tree: $dir" >&2
+  echo "check-precommit-frozen: not a git work tree: $dir (pass a repository directory)" >&2
   exit 1
 }
 cfg=.pre-commit-config.yaml
 path="$root/$cfg"
 if [[ ! -f $path ]]; then
-  echo "check-precommit-frozen: $path: not found" >&2
+  echo "check-precommit-frozen: $path: not found (restore .pre-commit-config.yaml)" >&2
   exit 1
 fi
 
