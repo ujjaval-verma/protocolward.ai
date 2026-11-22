@@ -4,6 +4,7 @@
 # GitHub only enforces that at job setup, after the push. This gate catches it before.
 # Usage: scripts/check-actions-pinned.sh [repo-dir]   (default: this repo)
 # Plain bash 3.2-compatible: regexes live in variables, no mapfile, no associative arrays.
+# YAML forms this line scanner cannot read fail closed (ADR-0002 §2).
 set -euo pipefail
 export LC_ALL=C   # byte semantics: an invalid UTF-8 byte must not make a regex skip a uses: line
 dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -66,6 +67,10 @@ while IFS= read -r -d '' f; do
       fi
     fi
     l="${line%$'\r'}"
+    if [[ $l == *$'\r'* || $l == *$'\xc2\x85'* || $l == *$'\xe2\x80\xa8'* || $l == *$'\xe2\x80\xa9'* ]]; then
+      printf 'check-actions-pinned: %s:%s: line break other than LF (bare CR, U+0085, U+2028 or U+2029); use LF line endings\n' "$f" "$n" >&2
+      bad=1
+    fi
     if [[ ! $line =~ $re_key ]]; then
       if [[ $l =~ $re_cmt ]]; then :
       elif [[ $l =~ $re_any ]]; then

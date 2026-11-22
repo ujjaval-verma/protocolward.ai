@@ -92,6 +92,15 @@ good '          echo "**Status:** ok"'
 good '          : "${X:?msg}"'
 good '      - name: "a\tb"'
 good '      - !!str "a\tb"'
+put  '  last-job:'
+printf '      - name: a\015      - uses: actions/checkout@v4\n' >> "$forms"; fl=$((fl + 1)); badl="$badl$fl|line break other than LF"$'\n'
+printf '      - name: a\342\200\250- uses: x@v4\n' >> "$forms"; fl=$((fl + 1)); badl="$badl$fl|line break other than LF"$'\n'
+printf '      - name: a\302\205- uses: x@v4\n' >> "$forms"; fl=$((fl + 1)); badl="$badl$fl|line break other than LF"$'\n'
+printf '      - name: a\342\200\251- uses: x@v4\n' >> "$forms"; fl=$((fl + 1)); badl="$badl$fl|line break other than LF"$'\n'
+put  'x-step2: &t'
+bad  '  uses: actions/checkout@v4'                                    'not pinned to a full 40-hex'
+put  'z-job:'
+good '      - <<: *t'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
 git -C "$T" add -A
 out="$(scan "$T" 2>&1)" && fail "expected failure on forms tree"
