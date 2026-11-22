@@ -35,6 +35,8 @@ FUZZ_PARALLEL_FLAG  = $(if $(FUZZ_PARALLEL),-parallel=$(FUZZ_PARALLEL))
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
+# js/wasm lint and vet scope; scripts/check-js-scope.sh fails if a js-only file sits outside it
+WASM_PKG := ./cmd/wardwasm/...
 
 # Project-local tool binaries take precedence over system installs.
 export PATH := $(CURDIR)/$(TOOLS_DIR):$(PATH)
@@ -157,7 +159,7 @@ test-cover: ## Run tests with coverage report
 lint: $(TOOLS_DIR)/golangci-lint ## Run golangci-lint (host GOOS, then js/wasm for cmd/wardwasm)
 	$(Q)rc=0; \
 	$(TOOLS_DIR)/golangci-lint run $(PKG) || rc=1; \
-	GOOS=js GOARCH=wasm $(TOOLS_DIR)/golangci-lint run ./cmd/wardwasm/... || rc=1; \
+	GOOS=js GOARCH=wasm $(TOOLS_DIR)/golangci-lint run $(WASM_PKG) || rc=1; \
 	exit $$rc
 
 .PHONY: fmt
@@ -217,8 +219,13 @@ check-tool-deps: ## Verify lint/fmt/vuln/check-workflows/check/ci/pre-push/audit
 	$(Q)scripts/check-tool-deps-selftest.sh
 	$(Q)scripts/check-tool-deps.sh
 
+.PHONY: check-js-scope
+check-js-scope: ## Fail if a Go file compiled only for js/wasm (neither linux/amd64 nor darwin/arm64) is outside WASM_PKG, the js/wasm lint + wasm-check scope
+	$(Q)GO=$(GO) scripts/check-js-scope-selftest.sh
+	$(Q)GO=$(GO) scripts/check-js-scope.sh $(WASM_PKG)
+
 .PHONY: check
-check: lint vet vet-32bit test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps ## Lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate — the "is everything OK" gate
+check: lint vet vet-32bit test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps check-js-scope ## Lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate + js-scope gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
@@ -274,7 +281,7 @@ wasm: wasm-check ## Build dist/wasm/ward.wasm + wasm_exec.js; fails if ward.wasm
 
 .PHONY: wasm-check
 wasm-check: ## Compile + vet cmd/wardwasm for js/wasm (no artifacts; ./... skips js-only files)
-	$(Q)GOOS=js GOARCH=wasm $(GO) vet -trimpath ./cmd/wardwasm/...
+	$(Q)GOOS=js GOARCH=wasm $(GO) vet -trimpath $(WASM_PKG)
 	$(Q)GOOS=js GOARCH=wasm $(GO) build -trimpath -o /dev/null ./cmd/wardwasm
 
 .PHONY: wasm-smoke
