@@ -93,7 +93,8 @@ fi
 # next_nc <line>: sets NC to the next non-blank, non-comment line after <line>, or 0.
 NC=0
 next_nc() {
-  local k=$(($1 + 1))
+  local from=$1 k
+  k=$((from + 1))
   while (( k <= n )); do
     if (( ! B[k] )); then NC=$k; return; fi
     k=$((k + 1))
@@ -124,14 +125,14 @@ trim() {   # sets T to the text without surrounding whitespace
 
 # check_rev <line> <value> <key column>
 check_rev() {
-  local v="$2" tok tail
+  local ln=$1 v="$2" kcol=$3 tok tail
   v="${v%"${v##*[![:space:]]}"}"
   if [[ -z $v || $v == '#'* ]]; then
-    next_nc "$1"
-    if (( NC > 0 && IND[NC] > $3 )); then
-      report "$1" "rev: value continues on the next line"
+    next_nc "$ln"
+    if (( NC > 0 && IND[NC] > kcol )); then
+      report "$ln" "rev: value continues on the next line"
     else
-      report "$1" "rev (empty): not a full 40-hex lowercase commit SHA"
+      report "$ln" "rev (empty): not a full 40-hex lowercase commit SHA"
     fi
     return
   fi
@@ -140,11 +141,11 @@ check_rev() {
       tok="${BASH_REMATCH[1]}"
       tail="${v:${#BASH_REMATCH[0]}}"
       if [[ ! $tail =~ $re_tail ]]; then
-        report "$1" "rev: unexpected text after the closing quote"
+        report "$ln" "rev: unexpected text after the closing quote"
         return
       fi
     else
-      report "$1" "rev: unterminated quote"
+      report "$ln" "rev: unterminated quote"
       return
     fi
   else
@@ -152,9 +153,9 @@ check_rev() {
     tail="${v:${#tok}}"
   fi
   if [[ ! $tok =~ $re_hex ]]; then
-    report "$1" "rev ${tok:-(empty)}: not a full 40-hex lowercase commit SHA"
+    report "$ln" "rev ${tok:-(empty)}: not a full 40-hex lowercase commit SHA"
   elif [[ ! $tail =~ $re_frozen ]]; then
-    report "$1" "rev $tok: missing \"# frozen: v<tag>\" comment"
+    report "$ln" "rev $tok: missing \"# frozen: v<tag>\" comment"
   fi
 }
 

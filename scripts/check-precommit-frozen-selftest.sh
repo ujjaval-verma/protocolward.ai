@@ -58,8 +58,8 @@ goodl=""   # line numbers that must not be reported
 put()  { printf '%s\n' "$1" >> "$forms"; fl=$((fl + 1)); }
 bad()  { put "$1"; badl="$badl$fl|$2"$'\n'; }
 good() { put "$1"; goodl="$goodl$fl "; }
-revbad() { good '  - repo: https://h/x'; bad "    rev: $1" "$2"; }   # <rev value> <reason>
-revok()  { good '  - repo: https://h/x'; good "    rev: $1"; }      # <rev value>
+revbad() { local v=$1 why=$2; good '  - repo: https://h/x'; bad "    rev: $v" "$why"; }   # <rev value> <reason>
+revok()  { local v=$1; good '  - repo: https://h/x'; good "    rev: $v"; }                    # <rev value>
 notsha='not a full 40-hex lowercase commit SHA'
 nofrozen='missing "# frozen: v<tag>" comment'
 put  'repos:'
