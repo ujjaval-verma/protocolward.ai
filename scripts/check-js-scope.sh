@@ -30,8 +30,8 @@ for knob in GOFLAGS GOEXPERIMENT; do
   fi
 done
 
-cd "$dir"
-gomod="$("$GO" env GOMOD)"
+cd "$dir" 2>/dev/null || { echo "check-js-scope: cannot cd to $dir" >&2; exit 2; }
+gomod="$("$GO" env GOMOD)" || { echo "check-js-scope: $GO env GOMOD failed" >&2; exit 2; }
 if [ -z "$gomod" ] || [ "$gomod" = "/dev/null" ]; then
   echo "check-js-scope: no Go module found in $dir" >&2
   exit 2
