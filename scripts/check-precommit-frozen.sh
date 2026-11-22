@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail if an external pre-commit hook repo in .pre-commit-config.yaml is not frozen to a commit SHA.
 # Every external hook rev must be a full 40-hex commit SHA followed by a "# frozen: v<tag>" comment
-# (what `pre-commit autoupdate --freeze` writes and what Dependabot's updater keeps; ADR-0002 §1).
+# (what `pre-commit autoupdate --freeze` writes for repos with v-prefixed tags, and what Dependabot's updater keeps; ADR-0002 §1).
 # Plain bash line scanner, no Python or pre-commit needed. Local and meta repos need no rev.
 # It fails closed on the block-style forms it reads; it does not catch a deliberately obscured spelling that ends the
 # repos block early (see the accepted residuals in ADR-0002 §2, threat model of the issue #52 note).
