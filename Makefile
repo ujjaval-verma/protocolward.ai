@@ -210,6 +210,11 @@ check-actions-pinned: ## Fail on a GitHub Actions uses: not pinned to a full com
 	$(Q)scripts/check-actions-pinned-selftest.sh
 	$(Q)scripts/check-actions-pinned.sh
 
+.PHONY: check-precommit-frozen
+check-precommit-frozen: ## Fail on an external pre-commit hook rev not frozen to a full commit SHA (ADR-0002)
+	$(Q)scripts/check-precommit-frozen-selftest.sh
+	$(Q)scripts/check-precommit-frozen.sh
+
 .PHONY: check-workflows
 check-workflows: $(TOOLS_DIR)/actionlint ## Lint .github/workflows with the pinned actionlint (shellcheck/pyflakes off for reproducible results)
 	$(Q)$(TOOLS_DIR)/actionlint -shellcheck= -pyflakes=
@@ -225,7 +230,7 @@ check-js-scope: ## Fail if a Go file compiled only for js/wasm (neither linux/am
 	$(Q)GO=$(GO) scripts/check-js-scope.sh $(WASM_PKG)
 
 .PHONY: check
-check: lint vet vet-32bit test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-workflows check-tool-deps check-js-scope ## Lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow-lint + tool-deps gate + js-scope gate — the "is everything OK" gate
+check: lint vet vet-32bit test check-testing-doc check-spdx check-public check-licenses check-actions-pinned check-precommit-frozen check-workflows check-tool-deps check-js-scope ## Lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + pre-commit-rev-pin + workflow-lint + tool-deps gate + js-scope gate — the "is everything OK" gate
 
 .PHONY: ci
 ci: check build wasm-check wasm ## Full local gate before push: check + build + js/wasm compile + 5 MB size gate (also run by the release workflow)
@@ -234,7 +239,7 @@ ci: check build wasm-check wasm ## Full local gate before push: check + build + 
 # gate runs concurrently through the same targets `make check`/`make ci` use, and -k
 # lets the rest finish when one fails, so Make names each failing gate.
 .PHONY: pre-push
-pre-push: lint vet test wasm tidy-check mod-verify vuln check-public check-spdx check-testing-doc check-licenses check-actions-pinned ## Every pre-push gate (run by the hook with -k -j8)
+pre-push: lint vet test wasm tidy-check mod-verify vuln check-public check-spdx check-testing-doc check-licenses check-actions-pinned check-precommit-frozen ## Every pre-push gate (run by the hook with -k -j8)
 	@printf "$(C_OK)pre-push gates passed$(C_OFF)\n"
 
 ## === Audit ===
