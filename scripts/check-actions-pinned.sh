@@ -79,13 +79,13 @@ while IFS= read -r -d '' f; do
         printf 'check-actions-pinned: %s:%s: uses: not in block form (flow mapping, quoted key, nested sequence, or uses: in other text such as a script or a trailing comment); write it on its own line as uses: owner/repo@<40 hex>, or reword the text if it is not a uses: key\n' "$f" "$n" >&2
         bad=1
       elif [[ $l =~ $re_qkey ]]; then
-        printf 'check-actions-pinned: %s:%s: explicit ? mapping key; write keys in block form (key: value)\n' "$f" "$n" >&2
+        printf 'check-actions-pinned: %s:%s: explicit ? mapping key; write keys in block form (key: value); if this line is script or text inside a block scalar, reword it so it does not start with ?, * or & followed by a key\n' "$f" "$n" >&2
         bad=1
       elif [[ $l =~ $re_alias ]]; then
-        printf 'check-actions-pinned: %s:%s: alias used as a mapping key; write the key out\n' "$f" "$n" >&2
+        printf 'check-actions-pinned: %s:%s: alias used as a mapping key; write the key out; if this line is script or text inside a block scalar, reword it so it does not start with ?, * or & followed by a key\n' "$f" "$n" >&2
         bad=1
       elif [[ $l =~ $re_esc ]]; then
-        printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted mapping key; write the key without escapes\n' "$f" "$n" >&2
+        printf 'check-actions-pinned: %s:%s: escape sequence in a double-quoted mapping key; write the key without escapes; if this line is script or text inside a block scalar, reword it so it does not start with a double-quoted string with a backslash followed by a colon\n' "$f" "$n" >&2
         bad=1
       fi
       continue
