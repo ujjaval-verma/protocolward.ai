@@ -5,7 +5,8 @@
 default_stages: [pre-commit]
 
 # Hook revs are frozen to commit SHAs (the tag stays in the "frozen" comment). Dependabot
-# (.github/dependabot.yml) proposes updates.
+# (.github/dependabot.yml) proposes updates. The frozen form is enforced by
+# check-precommit-frozen (issue #74; ADR-0002).
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 2c9f875913ee60ca25ce70243dc24d5b6415598c  # frozen: v4.6.0
@@ -58,11 +59,13 @@ repos:
       # When the hook fails, search its output for `make: *** [` to find the failing
       # gate, then rerun `make <gate>` alone.
       # Invariant gates (issue #10): check-public, check-spdx, check-testing-doc,
-      # check-licenses and check-actions-pinned are the same Make targets
+      # check-licenses, check-actions-pinned and check-precommit-frozen are the same Make targets
       # `make check`/`make ci` run, so the hook and the manual gate cannot drift;
       # they scan the whole tree, not the files being pushed.
       # Issue #42: check-actions-pinned refuses a workflow uses: not pinned to a full
       # commit SHA before the push (GitHub only rejects it at job setup).
+      # Issue #74: check-precommit-frozen refuses an external hook rev in this file that is
+      # not a full commit SHA with a "# frozen: v<tag>" comment (no server-side check exists).
       # `make lint` uses the pinned .tools/ golangci-lint, built with the repo's
       # own Go toolchain (the upstream pre-commit golang env cannot read its export data).
       - id: pre-push-gates

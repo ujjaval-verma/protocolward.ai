@@ -34,7 +34,7 @@ Claude Code and similar agents load this file automatically. It holds the rules 
 ```
 make bootstrap  # one-time: all pinned tools into .tools/ + pre-commit and pre-push hooks (other targets build only the tools they run)
 make help       # all targets, by section
-make check      # lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + workflow lint (actionlint) + tool-deps gate + js-scope gate
+make check      # lint + vet + 32-bit vet + test + testing-doc + spdx + public-content + third-party-licence + action-pin + pre-commit-rev-pin + workflow lint (actionlint) + tool-deps gate + js-scope gate
 make ci         # check + build + wasm compile/size gate (run before pushing; there is no PR CI)
 make test       # tests with race detector
 make bench      # hot-path benchmarks (-benchmem)
@@ -61,7 +61,7 @@ Targets are quiet by default; pass `V=1` for full commands.
 
 See `docs/engineering/decisions/ADR-0002-security-posture.md`. In short:
 
-- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 30 s cold (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence, Actions SHA-pin (`check-actions-pinned`) and wasm size gates).
+- **No PR CI during the public beta.** Local hooks are the enforcement: pre-commit ≤ 5 s, pre-push ≤ 30 s cold (`go mod tidy -diff`, lint, vet, the full `go test -race` suite, `go mod verify`, `govulncheck`, the public-content, SPDX, testing-doc, third-party licence, Actions SHA-pin (`check-actions-pinned`), pre-commit rev-pin (`check-precommit-frozen`) and wasm size gates).
 - **`git push --no-verify` is a policy violation.** If you bypass, run `make ci && make audit` by hand and roll back if either fails.
 - **JS/TS: pnpm only**, Node 24 LTS, `engine-strict=true`, `onlyBuiltDependencies: []`.
 
