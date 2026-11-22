@@ -32,6 +32,8 @@ re_dq='^"([^"]*)"'
 re_sq="^'([^']*)'"
 re_docker='^docker://[^@[:space:]]+@sha256:[0-9a-f]{64}$'
 re_sha='^[^@[:space:]]+@[0-9a-f]{40}$'
+re_any="(^|[^[:alnum:]_.-])[\"']?uses[\"']?[[:space:]]*:"   # the issue's pattern with a left word boundary (decision-2 item 1)
+re_cmt='^[[:space:]]*#'                                     # full-line comment
 bad=0
 uses=0
 files=0
@@ -59,6 +61,15 @@ while IFS= read -r -d '' f; do
         fi
         pend=""
       fi
+    fi
+    l="${line%$'\r'}"
+    if [[ ! $line =~ $re_key ]]; then
+      if [[ $l =~ $re_cmt ]]; then :
+      elif [[ $l =~ $re_any ]]; then
+        printf 'check-actions-pinned: %s:%s: uses: not in block form (flow mapping, quoted key, nested sequence, or uses: in other text such as a script or a trailing comment); write it on its own line as uses: owner/repo@<40 hex>, or reword the text if it is not a uses: key\n' "$f" "$n" >&2
+        bad=1
+      fi
+      continue
     fi
     [[ $line =~ $re_key ]] || continue
     uses=$((uses + 1))

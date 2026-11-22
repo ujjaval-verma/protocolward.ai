@@ -65,6 +65,19 @@ good '    uses: ./.github/workflows/reuse.yml'
 put  '  next-job:'   # keeps the steps below from reading as a continuation of the job-level uses:
 good "      - uses: docker://alpine@sha256:$dig"
 bad  '      - uses: docker://alpine:3.20'                              'not pinned by @sha256:'
+put  '  other-job:'
+bad  '      - {uses: actions/checkout@v4}'                             'not in block form'
+bad  "      - {name: a, uses: \"owner/repo@$sha\"}"                   'not in block form'
+bad  "      - \"uses\": owner/repo@$sha"                              'not in block form'
+bad  "      - 'uses' : actions/checkout@v4"                           'not in block form'
+bad  "      - - uses: owner/repo@$sha"                                'not in block form'
+bad  '      - run: echo uses: x'                                      'not in block form'
+bad  '      - name: x  # uses: y'                                     'not in block form'
+bad  'step-anchor: &s {uses: actions/checkout@v4}'                    'not in block form'
+put  '  other-job2:'
+good '      statuses: write'
+good '      - name: Report causes: x'
+good '      - with: { ref: main }'
 printf '      - uses: owner/repo@%s  # v1\r\n' "$sha" >> "$forms"; fl=$((fl + 1)); goodl="$goodl$fl "
 git -C "$T" add -A
 out="$(scan "$T" 2>&1)" && fail "expected failure on forms tree"
