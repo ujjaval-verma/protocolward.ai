@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# Self-test for check-js-scope.sh: a green baseline, 21 one-file violation cases (js form and darwin form), a js-or-darwin file covered by the js/wasm lint scope,
+# Self-test for check-js-scope.sh: a green baseline, 21 one-file violation cases (js form and darwin form), a js-or-darwin file covered by the js/wasm lint scope, the known cgo-off darwin residual (passes),
 # a two-violation case, the scope argument, -C to a subdirectory, 12 toolchain-knob cases and the exit-2 cases.
 # The check always runs under "$BASH" (the interpreter running this file), never via its shebang,
 # so a bash 3.2 run really exercises the check under bash 3.2.
@@ -131,6 +131,13 @@ d="$T/case-js-or-darwin-in-scope"
 cp -R "$base" "$d"
 put "$d" cmd/wardwasm/s.go '//go:build js || darwin' '' 'package main'
 expect_ok js-or-darwin-in-scope 'check-js-scope: OK (3 Go file(s) not built for linux/amd64, all in the js/wasm lint scope)' -C "$d" "$scope"
+
+# Known residual, recorded in ADR-0002 (issue #123): darwin/arm64 is listed with cgo on, so a cgo-off darwin file is not checked.
+# This case is expected to flip to a violation when a darwin lint pass is added.
+d="$T/case-residual-darwin-nocgo"
+cp -R "$base" "$d"
+put "$d" internal/p/z.go '//go:build darwin && !cgo' '' 'package p'
+expect_ok residual-darwin-nocgo "$ok2" -C "$d" "$scope"
 
 # Two violations of different forms in one run: both reported, sorted, one hint, nothing on stdout.
 d="$T/case-multi"
