@@ -35,7 +35,7 @@ FUZZ_PARALLEL_FLAG  = $(if $(FUZZ_PARALLEL),-parallel=$(FUZZ_PARALLEL))
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
-# js/wasm lint and vet scope; scripts/check-js-scope.sh fails if a js-only file sits outside it
+# js/wasm lint and vet scope; scripts/check-js-scope.sh fails if a Go file not built for linux/amd64 (the CI lint host) is not a js/wasm file in it
 WASM_PKG := ./cmd/wardwasm/...
 
 # Project-local tool binaries take precedence over system installs.
@@ -225,7 +225,7 @@ check-tool-deps: ## Verify lint/fmt/vuln/check-workflows/check/ci/pre-push/audit
 	$(Q)scripts/check-tool-deps.sh
 
 .PHONY: check-js-scope
-check-js-scope: ## Fail if a Go file compiled only for js/wasm (neither linux/amd64 nor darwin/arm64) is outside WASM_PKG, the js/wasm lint + wasm-check scope
+check-js-scope: ## Fail if a Go file compiled for js/wasm or darwin/arm64 but not linux/amd64 (the CI lint host) is outside what CI lints: js/wasm files in WASM_PKG, the js/wasm lint + wasm-check scope
 	$(Q)GO=$(GO) scripts/check-js-scope-selftest.sh
 	$(Q)GO=$(GO) scripts/check-js-scope.sh $(WASM_PKG)
 
