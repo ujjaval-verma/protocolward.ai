@@ -358,7 +358,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Finding #2: Double-Serve guard — second Serve() call returns a typed error.
+// Finding #2: Double-Serve guard — second Serve call returns a typed error.
 // ───────────────────────────────────────────────────────────────────────────
 
 // Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
@@ -392,7 +392,7 @@ func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 	// Second Serve must return ErrAlreadyServing immediately.
 	serveErr := srv.Serve(context.Background())
 	if serveErr == nil {
-		t.Fatal("expected error from second Serve() call, got nil")
+		t.Fatal("expected error from second Serve call, got nil")
 	}
 	if !errors.Is(serveErr, dataplane.ErrAlreadyServing) {
 		t.Errorf("expected ErrAlreadyServing, got: %v", serveErr)
