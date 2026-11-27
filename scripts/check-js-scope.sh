@@ -84,9 +84,9 @@ while IFS= read -r f; do
     pkg="${d#"$root"}"
     pkg="${pkg#/}"
     [ -n "$pkg" ] || pkg="."
-    echo "check-js-scope: $rel: compiled for $plats but not for linux/amd64, the CI lint host; package $pkg is outside the js/wasm lint scope ($scopetxt)" >> "$T/viol"
+    echo "check-js-scope: $rel: compiled for $plats but not for linux/amd64 with cgo off, the CI lint reference; package $pkg is outside the js/wasm lint scope ($scopetxt)" >> "$T/viol"
   else
-    echo "check-js-scope: $rel: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; only a macOS lint is known to see it" >> "$T/viol"
+    echo "check-js-scope: $rel: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; no CI lint pass is known to see it" >> "$T/viol"
   fi
 done < "$T/notref"
 

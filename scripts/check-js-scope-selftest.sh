@@ -90,9 +90,9 @@ violation() {
   [ "$rc" -eq 1 ] || fail "$name: want exit 1, got $rc:"$'\n'"stdout: $so"$'\n'"stderr: $se"
   [ -z "$so" ] || fail "$name: want empty stdout, got '$so'"
   if [ "$plats" = - ]; then
-    want="check-js-scope: $rel: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; only a macOS lint is known to see it"
+    want="check-js-scope: $rel: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; no CI lint pass is known to see it"
   else
-    want="check-js-scope: $rel: compiled for $plats but not for linux/amd64, the CI lint host; package $pkg is outside the js/wasm lint scope ($scope)"
+    want="check-js-scope: $rel: compiled for $plats but not for linux/amd64 with cgo off, the CI lint reference; package $pkg is outside the js/wasm lint scope ($scope)"
   fi
   [ "$(grep -cF ': compiled for ' <<<"$out")" -eq 1 ] || fail "$name: want exactly one violation line:"$'\n'"$out"
   grep -qxF "$want" <<<"$out" || fail "$name: missing line '$want':"$'\n'"$out"
@@ -140,8 +140,8 @@ put "$d" internal/p/m_darwin.go 'package p'
 run -C "$d" "$scope"
 [ "$rc" -eq 1 ] || fail "multi: want exit 1, got $rc:"$'\n'"stdout: $so"$'\n'"stderr: $se"
 [ -z "$so" ] || fail "multi: want empty stdout, got '$so'"
-want1="check-js-scope: internal/p/a.go: compiled for js/wasm but not for linux/amd64, the CI lint host; package internal/p is outside the js/wasm lint scope ($scope)"
-want2='check-js-scope: internal/p/m_darwin.go: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; only a macOS lint is known to see it'
+want1="check-js-scope: internal/p/a.go: compiled for js/wasm but not for linux/amd64 with cgo off, the CI lint reference; package internal/p is outside the js/wasm lint scope ($scope)"
+want2='check-js-scope: internal/p/m_darwin.go: compiled for darwin/arm64 but not for linux/amd64 with cgo off, the CI lint reference, nor for js/wasm; no CI lint pass is known to see it'
 [ "$se" = "$want1"$'\n'"$want2"$'\n'"$hint" ] || fail "multi: want the two violation lines in order, then the hint; got:"$'\n'"$se"
 
 # Scope comes from the arguments.
