@@ -746,11 +746,6 @@ func TestAbort_CancelledCtx_StillDrains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.enterFlight() // a handler that finishes 50 ms in, well inside the budget
-	time.AfterFunc(50*time.Millisecond, srv.leaveFlight)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -759,7 +754,14 @@ func TestAbort_CancelledCtx_StillDrains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Timer and stopwatch start together, after the binds, so bind latency
+	// cannot eat into the 50 ms handler window.
 	start := time.Now()
+	srv.enterFlight() // a handler that finishes 50 ms in, well inside the budget
+	time.AfterFunc(50*time.Millisecond, srv.leaveFlight)
 	srv.abort(ctx, pc, ln)
 	if took := time.Since(start); took < 40*time.Millisecond {
 		t.Errorf("abort returned after %v; want it to wait for the in-flight handler (~50ms)", took)
