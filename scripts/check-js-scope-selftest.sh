@@ -196,7 +196,7 @@ knob cgo-ref-file internal/p/z.go 'cgo' '' CGO_ENABLED=1 1 "$flaggedmac"
 # Errors fail closed (exit 2), with the reason on stderr and nothing on stdout.
 expect_2 no-pattern 'usage: check-js-scope.sh' -C "$base"
 expect_2 no-dir-arg 'usage: check-js-scope.sh' -C
-expect_2 missing-dir 'go list failed (GOOS=js GOARCH=wasm)' -C "$base" ./nope/...
+expect_2 missing-dir 'go list failed (GOOS=js GOARCH=wasm CGO_ENABLED=0)' -C "$base" ./nope/...
 expect_2 no-module 'no Go module found' -C "$T/nomod" "$scope"
 expect_2 missing-C-dir 'cannot cd to' -C "$T/does-not-exist" "$scope"
 GO=/nonexistent/go expect_2 missing-go '/nonexistent/go env' -C "$base" "$scope"

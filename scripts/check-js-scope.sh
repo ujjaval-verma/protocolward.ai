@@ -51,7 +51,7 @@ list() { # list <out> <goos> <goarch> <cgo> <args...>
   local out="$1" os="$2" arch="$3" cgo="$4"
   shift 4
   if ! CGO_ENABLED="$cgo" GOOS="$os" GOARCH="$arch" "$GO" list "$@" > "$out.raw"; then
-    echo "check-js-scope: go list failed (GOOS=$os GOARCH=$arch)" >&2
+    echo "check-js-scope: go list failed (GOOS=$os GOARCH=$arch CGO_ENABLED=$cgo)" >&2
     exit 2
   fi
   sort -u "$out.raw" > "$out"
