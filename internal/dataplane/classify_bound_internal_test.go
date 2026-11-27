@@ -730,3 +730,43 @@ func TestShutdown_IdleServer_CancelledCtx_NoDrainTimeout(t *testing.T) {
 		}
 	}
 }
+
+// abort's drain is bounded by ShutdownTimeout alone: a cancelled Serve ctx
+// does not cut it short.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestAbort_CancelledCtx_StillDrains(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.enterFlight() // a handler that finishes 50 ms in, well inside the budget
+	time.AfterFunc(50*time.Millisecond, srv.leaveFlight)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	srv.abort(ctx, pc, ln)
+	if took := time.Since(start); took < 40*time.Millisecond {
+		t.Errorf("abort returned after %v; want it to wait for the in-flight handler (~50ms)", took)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "dataplane: shutdown drain incomplete" {
+			t.Errorf("drain cut short by the cancelled ctx: %v", r)
+		}
+	}
+}

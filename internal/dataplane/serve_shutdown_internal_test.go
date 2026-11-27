@@ -673,3 +673,37 @@ func TestShutdown_SecondCallWaitsForOwnerToStopListeners(t *testing.T) {
 		}
 	})
 }
+
+// Serve's ctx carries values only: cancelling it does not stop Serve.
+// Shutdown is the only stop.
+func TestServe_CancelledCtx_KeepsServing(t *testing.T) {
+	t.Parallel()
+	srv := newServeTestServer(t, "127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(ctx) }()
+	select {
+	case <-srv.Listening():
+	case err := <-errCh:
+		t.Fatalf("Serve returned %v before listening", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve not listening within 5s")
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("Serve returned %v with a cancelled ctx; want it to keep serving until Shutdown", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Serve = %v after Shutdown, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s of Shutdown")
+	}
+}
