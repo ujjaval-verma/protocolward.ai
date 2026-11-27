@@ -357,6 +357,7 @@ type fakeDash struct {
 	shutdowns int
 	deadline  time.Duration // time left on the last Shutdown context
 	hasDL     bool
+	ctxErr    error // Err() of the last Shutdown context
 }
 
 func newFakeDash(rec *hatchRecorder) *fakeDash { return &fakeDash{rec: rec} }
@@ -372,6 +373,7 @@ func (d *fakeDash) Shutdown(ctx context.Context) error {
 	d.shutdowns++
 	dl, ok := ctx.Deadline()
 	d.deadline, d.hasDL = time.Until(dl), ok
+	d.ctxErr = ctx.Err()
 	return d.shutdownErr
 }
 
@@ -798,6 +800,62 @@ func TestServeUntilStopped(t *testing.T) {
 			t.Errorf("events = %q, want %q", got, closeThenExit)
 		}
 	})
+}
+
+// The serve ctx is already cancelled when shutdownServe runs (the first
+// signal). The shutdown steps must not inherit that cancellation: the
+// dashboard gets its 1 s window and the dataplane drain its full budget.
+func TestServeUntilStopped_ShutdownOutlivesCancelledCtx(t *testing.T) {
+	buf := captureSlog(t)
+	srv := newTestDataplane(t, "127.0.0.1:0")
+	sig, rec := newFakeSignals(), &hatchRecorder{}
+	hatch := newExitHatch(sig.notify, rec.exit)
+	dash := newFakeDash(rec)
+	cfg := config.Config{Listen: "127.0.0.1:0", Timeouts: config.Timeouts{Shutdown: 2 * time.Second}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- serveUntilStopped(ctx, srv, dash, hatch, cfg, false) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.Addr() == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("dataplane not serving within 5s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+		hatch.disarm()
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveUntilStopped did not return within 5s")
+	}
+	if err != nil {
+		t.Fatalf("serveUntilStopped = %v, want nil", err)
+	}
+
+	dash.mu.Lock()
+	calls, ctxErr, dl, hasDL := dash.shutdowns, dash.ctxErr, dash.deadline, dash.hasDL
+	dash.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("dashboard Shutdown calls = %d, want 1", calls)
+	}
+	if ctxErr != nil {
+		t.Errorf("dashboard Shutdown ctx.Err() = %v, want nil (the serve ctx's cancellation leaked in)", ctxErr)
+	}
+	if !hasDL || dl <= 0 || dl > time.Second {
+		t.Errorf("dashboard Shutdown deadline = %v (set=%v), want in (0, 1s]", dl, hasDL)
+	}
+	lines := logLines(t, buf)
+	if i := logIndex(lines, "ward serve: shutdown drain budget elapsed; forcing close"); i >= 0 {
+		t.Errorf("drain budget elapsed with a cancelled serve ctx: %v", lines[i])
+	}
+	if logIndex(lines, msgStopped) < 0 {
+		t.Errorf("no %q line\nlog:\n%s", msgStopped, buf.String())
+	}
 }
 
 // A second signal that arrives while serveRun is reaping the model child
