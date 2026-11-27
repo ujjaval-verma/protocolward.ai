@@ -493,7 +493,7 @@ func TestShutdownServe(t *testing.T) {
 		start := time.Now()
 		go func() {
 			defer close(done)
-			shutdownServe(srv, dash, serveErr, budget, listenAddr, fromFlag)
+			shutdownServe(context.Background(), srv, dash, serveErr, budget, listenAddr, fromFlag)
 		}()
 		select {
 		case <-done:
