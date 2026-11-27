@@ -629,7 +629,7 @@ func abortWarn(t *testing.T, srv *Server) []map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.abort(pc, ln)
+	srv.abort(context.Background(), pc, ln)
 	var out []map[string]any
 	for _, r := range obs.Captured(t) {
 		if r["msg"] == "dataplane: shutdown drain incomplete" {

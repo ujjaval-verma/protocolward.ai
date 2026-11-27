@@ -510,7 +510,7 @@ func (s *Server) bind() (net.PacketConn, net.Listener, error) {
 //
 // A second concurrent or sequential call to Serve on the same *Server
 // returns ErrAlreadyServing immediately without blocking.
-func (s *Server) Serve() error {
+func (s *Server) Serve(ctx context.Context) error {
 	// CompareAndSwap false→true: only the first caller proceeds.
 	if !s.serveStarted.CompareAndSwap(false, true) {
 		return ErrAlreadyServing
@@ -571,7 +571,7 @@ func (s *Server) Serve() error {
 			continue
 		}
 		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
-		s.abort(pc, ln)
+		s.abort(ctx, pc, ln)
 	}
 	return first
 }
@@ -581,12 +581,12 @@ func (s *Server) Serve() error {
 // serving even when an earlier Shutdown call, not this one, owns the
 // listeners. Shutdown then drains in-flight queries, including classifyAsync
 // goroutines, before Serve returns.
-func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
+func (s *Server) abort(ctx context.Context, pc net.PacketConn, ln net.Listener) {
 	_ = pc.Close()
 	_ = ln.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	drainCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
-	if err := s.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+	if err := s.Shutdown(drainCtx); errors.Is(err, ErrDrainTimeout) {
 		// Other Shutdown errors stay discarded: the listener error is what
 		// Serve returns. The stuck work may be a query handler rather than
 		// a classification, so the remediation does not blame the classifier.

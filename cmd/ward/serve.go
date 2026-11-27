@@ -677,7 +677,7 @@ func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServ
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- srv.Serve()
+		serveErr <- srv.Serve(ctx)
 	}()
 
 	// ── Step 7: Wait for signal or context cancel ─────────────────────────────

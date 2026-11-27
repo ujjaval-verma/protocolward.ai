@@ -22,7 +22,7 @@ func TestServe_ShutdownRightAfterServe_ReturnsWithin1s(t *testing.T) {
 		d := time.Duration(i%4) * time.Millisecond
 		srv := newBindTestServer(t, "127.0.0.1:0")
 		errCh := make(chan error, 1)
-		go func() { errCh <- srv.Serve() }()
+		go func() { errCh <- srv.Serve(context.Background()) }()
 		if d > 0 {
 			time.Sleep(d)
 		}

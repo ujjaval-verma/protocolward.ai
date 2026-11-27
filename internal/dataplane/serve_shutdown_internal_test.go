@@ -150,7 +150,7 @@ func TestShutdown_SecondCallDuringDrain_KeepsReplySocket(t *testing.T) {
 func serveBounded(t *testing.T, srv *Server) error {
 	t.Helper()
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	select {
 	case err := <-errCh:
 		return err
@@ -256,7 +256,7 @@ func TestServe_ShutdownWithOnlyUDPServing_ReportsTCPNotStarted(t *testing.T) {
 	}
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve() }()
+	go func() { serveErr <- srv.Serve(context.Background()) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -467,7 +467,7 @@ func TestShutdown_TCPActivatesInNotStartedWindow_ServeReturnsWithin1s(t *testing
 	}
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.Serve() }()
+	go func() { serveErr <- srv.Serve(context.Background()) }()
 
 	var h held
 	select {
@@ -649,7 +649,7 @@ func TestShutdown_SecondCallWaitsForOwnerToStopListeners(t *testing.T) {
 		}
 
 		serveErr := make(chan error, 1)
-		go func() { serveErr <- srv.Serve() }()
+		go func() { serveErr <- srv.Serve(context.Background()) }()
 		select {
 		case <-held:
 		case <-time.After(4 * time.Second):

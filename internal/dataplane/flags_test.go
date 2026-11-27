@@ -78,7 +78,7 @@ func TestTracer_BuiltinDetector_FlagsAndStillForwards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func runForwardWithFlagsEngine(t *testing.T, engine *policy.Engine, classifier d
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)

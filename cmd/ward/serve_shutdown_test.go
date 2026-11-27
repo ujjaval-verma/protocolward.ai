@@ -535,7 +535,7 @@ func TestShutdownServe(t *testing.T) {
 		buf := captureSlog(t)
 		srv := newTestDataplane(t, "127.0.0.1:0")
 		serveErr := make(chan error, 1)
-		go func() { serveErr <- srv.Serve() }()
+		go func() { serveErr <- srv.Serve(context.Background()) }()
 		select {
 		case <-srv.Listening():
 		case err := <-serveErr:
@@ -605,7 +605,7 @@ func TestShutdownServe(t *testing.T) {
 			t.Cleanup(func() { _ = held.Close() })
 			addr := held.LocalAddr().String()
 			srv := newTestDataplane(t, addr)
-			serveRet := srv.Serve()
+			serveRet := srv.Serve(context.Background())
 			if serveRet == nil {
 				t.Fatalf("fromFlag=%v: Serve on a held port returned nil, want a bind error", fromFlag)
 			}
@@ -717,7 +717,7 @@ func TestServeUntilStopped(t *testing.T) {
 				t.Fatal(err)
 			}
 			addr := held.LocalAddr().String()
-			bindErr := newTestDataplane(t, addr).Serve()
+			bindErr := newTestDataplane(t, addr).Serve(context.Background())
 			if bindErr == nil {
 				_ = held.Close()
 				t.Fatal("Serve on a held port returned nil, want a bind error")
