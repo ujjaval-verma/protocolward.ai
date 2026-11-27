@@ -35,7 +35,7 @@ FUZZ_PARALLEL_FLAG  = $(if $(FUZZ_PARALLEL),-parallel=$(FUZZ_PARALLEL))
 COVER_OUT   := coverage.out
 WASM_DIR       := $(DIST_DIR)/wasm
 WASM_MAX_BYTES := 5000000
-# js/wasm lint and vet scope; scripts/check-js-scope.sh fails if a Go file not built for linux/amd64 (the CI lint host) is not a js/wasm file in it
+# js/wasm lint and vet scope; scripts/check-js-scope.sh fails if a Go file compiled for js/wasm or darwin/arm64 but not linux/amd64 (the CI lint host) is not a js/wasm file in it
 WASM_PKG := ./cmd/wardwasm/...
 
 # Project-local tool binaries take precedence over system installs.
