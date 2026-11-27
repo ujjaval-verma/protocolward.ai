@@ -303,12 +303,12 @@ func resolveConfigPath(flag string) (string, *serveError) {
 // fails to start (startFailed is then true and ward runs fast-path-only).
 // closeFn is never nil; it reaps the model child, if any. The switch itself is
 // openModelClassifier, shared with ward eval.
-func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
+func newServeClassifier(ctx context.Context, cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
 	if cfg.Model == nil {
 		// No model: stanza — fast-path-only.
 		return nil, func() {}, false
 	}
-	c, closeFn, err := openModelClassifier(cfg.Model, slog.Default())
+	c, closeFn, err := openModelClassifier(ctx, cfg.Model, slog.Default())
 	if err != nil {
 		// Continue with nil classifier — ward runs fast-path-only.
 		// Single canonical `policy: model unavailable` slog line so
@@ -624,7 +624,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	flagLog := web.NewFlagLog()
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
-	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
+	classifier, closeClassifier, modelStartFailed := newServeClassifier(ctx, cfg)
 	hatch := newExitHatch(opts.notifySignals, opts.exit)
 	defer hatch.disarm()
 	// Deferred so every return path reaps the child after any srv.Shutdown has drained classifyAsync (Risk #2).

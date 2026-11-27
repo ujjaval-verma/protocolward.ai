@@ -24,7 +24,8 @@ import (
 // model.New's error unwrapped; the caller decides whether that is fatal and
 // how to report it. m and logger must be non-nil: the callers handle a
 // missing stanza (eval: exit 2; serve: fast-path-only). closeFn is never nil.
-func openModelClassifier(m *config.ModelConfig, logger *slog.Logger) (c pmodel.Classifier, closeFn func(), err error) {
+// ctx's values reach the adapter; its cancellation does not.
+func openModelClassifier(ctx context.Context, m *config.ModelConfig, logger *slog.Logger) (c pmodel.Classifier, closeFn func(), err error) {
 	if m.Builtin == config.ModelBuiltinLexical {
 		// In-process detector: no sibling, nothing to close, no
 		// ErrUnavailable latch. Flag-only (ADR-0006).
@@ -34,13 +35,13 @@ func openModelClassifier(m *config.ModelConfig, logger *slog.Logger) (c pmodel.C
 		)
 		return detect.New(), func() {}, nil
 	}
-	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass
-	// context.Background(), not the caller's context (serveCtx in ward
-	// serve): the adapter's lifetime is owned by Close; ctx cancellation in
-	// exec.CommandContext SIGKILLs the child, bypassing the stdin-EOF
-	// graceful path. In ward serve, SIGTERM → srv.Shutdown drains in-flight
-	// Classify calls → closeFn reaps the child.
-	ad, err := model.New(context.Background(), model.Config{
+	// Per SP10b Ralph F1 + the adapter's `New` docstring: pass a
+	// non-cancellable context. The adapter's lifetime is owned by Close; a
+	// cancellable ctx (the serve ctx in ward serve) would let
+	// exec.CommandContext SIGKILL the child, bypassing the stdin-EOF graceful
+	// path, so ctx's cancellation is detached here. In ward serve, SIGTERM →
+	// srv.Shutdown drains in-flight Classify calls → closeFn reaps the child.
+	ad, err := model.New(context.WithoutCancel(ctx), model.Config{
 		Command: m.Command,
 		Env:     m.Env,
 	})

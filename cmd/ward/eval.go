@@ -262,9 +262,9 @@ func evalRunWith(out io.Writer, opts evalOpts, clf pmodel.Classifier) error {
 // 2. Cleanup closes the adapter (if any); safe to call before the adapter is
 // constructed.
 //
-// The builtin/command switch, and the context.Background() rationale for the
-// adapter's lifetime, live in openModelClassifier. Eval passes it a discard
-// logger because it prints no log lines.
+// The builtin/command switch, and the adapter-lifetime rationale, live in
+// openModelClassifier. Eval passes it a discard logger because it prints no
+// log lines.
 func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
 	cfgPath, se := resolveConfigPath(configPath)
 	if se != nil {
@@ -281,7 +281,7 @@ func buildClassifier(configPath string) (pmodel.Classifier, func(), error) {
 		printStartupError("eval error", msg, rem)
 		return nil, func() {}, &serveError{Code: 2, Message: msg, Remediation: rem}
 	}
-	c, closeFn, err := openModelClassifier(cfg.Model, slog.New(slog.DiscardHandler))
+	c, closeFn, err := openModelClassifier(context.Background(), cfg.Model, slog.New(slog.DiscardHandler))
 	if err != nil {
 		msg := fmt.Sprintf("harness error: model adapter spawn: %v", err)
 		rem := "verify model.command in ward.yaml points at an executable that speaks the SP10b wire format"
