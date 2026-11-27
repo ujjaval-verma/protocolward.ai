@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Self-test for check-js-scope.sh: a green baseline, 21 one-file violation cases (js form and darwin form), a js-or-darwin file covered by the js/wasm lint scope, the known cgo-off darwin residual (passes),
-# a two-violation case, the scope argument, -C to a subdirectory, 12 toolchain-knob cases and the exit-2 cases.
+# a host package importing a package excluded under js/wasm, a two-violation case, the scope argument, -C to a subdirectory, 12 toolchain-knob cases and the exit-2 cases.
 # The check always runs under "$BASH" (the interpreter running this file), never via its shebang,
 # so a bash 3.2 run really exercises the check under bash 3.2.
 set -euo pipefail
