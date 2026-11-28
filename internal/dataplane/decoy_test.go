@@ -63,7 +63,7 @@ func TestHandleQuery_Decoy_Alerts_And_Sinkholes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestHandleQuery_DecoyBeatsAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestHandleQuery_DecoyMiss_FallsThroughToEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	defer srv.Shutdown(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
@@ -284,7 +284,7 @@ func TestHandleQuery_MixedCaseTrailingDot_FoldsQname(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer: %v", err)
 		}
-		go srv.Serve()
+		go srv.Serve(context.Background())
 		defer srv.Shutdown(context.Background())
 
 		addr, err := waitForAddr(srv, 2*time.Second)
@@ -342,7 +342,7 @@ func TestHandleQuery_DecisionRecorder_DecoyHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	defer srv.Shutdown(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
@@ -390,7 +390,7 @@ func TestHandleQuery_DecisionRecorder_ForwardPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	defer srv.Shutdown(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
@@ -437,7 +437,7 @@ func TestHandleQuery_DecisionRecorder_BlockHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	defer srv.Shutdown(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
@@ -481,7 +481,7 @@ func TestHandleQuery_DecisionRecorder_AllowHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	defer srv.Shutdown(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)

@@ -21,7 +21,7 @@ linters:
     - nilerr
     - errorlint
     - exhaustive
-    # Issue #24 slice 1. contextcheck comes in a later slice.
+    # Issue #24 slice 1.
     - funlen
     - dupl
     - gocritic
@@ -32,6 +32,8 @@ linters:
     - thelper
     # Issue #24 slice 2.
     - gocognit
+    # Issue #24 slice 3.
+    - contextcheck
 
 linters-settings:
   gocognit:

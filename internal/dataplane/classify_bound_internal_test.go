@@ -629,7 +629,7 @@ func abortWarn(t *testing.T, srv *Server) []map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.abort(pc, ln)
+	srv.abort(context.Background(), pc, ln)
 	var out []map[string]any
 	for _, r := range obs.Captured(t) {
 		if r["msg"] == "dataplane: shutdown drain incomplete" {
@@ -727,6 +727,48 @@ func TestShutdown_IdleServer_CancelledCtx_NoDrainTimeout(t *testing.T) {
 		cancel()
 		if err := srv.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
 			t.Fatalf("iteration %d: idle Shutdown = %v; nothing was in flight", i, err)
+		}
+	}
+}
+
+// abort's drain is bounded by ShutdownTimeout alone: a cancelled Serve ctx
+// does not cut it short.
+// Serial: swaps slog.Default through obs.Capture to assert on log records.
+func TestAbort_CancelledCtx_StillDrains(t *testing.T) {
+	restore := obs.Capture(t)
+	defer restore()
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Resolvers:       []Resolver{&stubResolver{}},
+		QueryTimeout:    time.Second,
+		ShutdownTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Timer and stopwatch start together, after the binds, so bind latency
+	// cannot eat into the 50 ms handler window.
+	start := time.Now()
+	srv.enterFlight() // a handler that finishes 50 ms in, well inside the budget
+	time.AfterFunc(50*time.Millisecond, srv.leaveFlight)
+	srv.abort(ctx, pc, ln)
+	if took := time.Since(start); took < 40*time.Millisecond {
+		t.Errorf("abort returned after %v; want it to wait for the in-flight handler (~50ms)", took)
+	}
+	for _, r := range obs.Captured(t) {
+		if r["msg"] == "dataplane: shutdown drain incomplete" {
+			t.Errorf("drain cut short by the cancelled ctx: %v", r)
 		}
 	}
 }

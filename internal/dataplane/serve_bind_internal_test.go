@@ -3,6 +3,7 @@
 package dataplane
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -36,7 +37,7 @@ func newServeTestServer(t *testing.T, listenAddr string) *Server {
 func startServe(t *testing.T, srv *Server) (string, <-chan error) {
 	t.Helper()
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	select {
 	case <-srv.addrCh:
 	case err := <-errCh:
@@ -278,7 +279,7 @@ func TestServe_TCPPortTaken_ReturnsBindErrorAndReleasesUDP(t *testing.T) {
 	udp, tcpCalls := tcpTaken(t, srv)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	err := waitServeErr(t, errCh)
 
 	if !errors.Is(err, syscall.EADDRINUSE) {
@@ -313,7 +314,7 @@ func TestServe_BindFailure_NoListeningLine(t *testing.T) {
 	tcpTaken(t, srv)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	if err := waitServeErr(t, errCh); err == nil {
 		t.Fatal("Serve returned nil; want a bind error")
 	}

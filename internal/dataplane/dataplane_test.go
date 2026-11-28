@@ -107,7 +107,7 @@ func TestServer_BindsAndForwardsQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -176,7 +176,7 @@ func TestServer_RoundRobinSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -232,7 +232,7 @@ func TestServer_FirstUpstreamFail_RetrySucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -285,7 +285,7 @@ func TestServer_AllUpstreamsFail_ReturnsSERVFAIL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -344,7 +344,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	if _, err := waitForAddr(srv, 2*time.Second); err != nil {
 		t.Fatal(err)
@@ -358,7 +358,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Finding #2: Double-Serve guard — second Serve() call returns a typed error.
+// Finding #2: Double-Serve guard — second Serve call returns a typed error.
 // ───────────────────────────────────────────────────────────────────────────
 
 // Serial: swaps slog.Default through obs.Capture (only to keep its logs quiet).
@@ -378,7 +378,7 @@ func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 	}
 
 	// Start first Serve in background.
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -390,9 +390,9 @@ func TestServer_DoubleServe_ReturnsError(t *testing.T) {
 	}
 
 	// Second Serve must return ErrAlreadyServing immediately.
-	serveErr := srv.Serve()
+	serveErr := srv.Serve(context.Background())
 	if serveErr == nil {
-		t.Fatal("expected error from second Serve() call, got nil")
+		t.Fatal("expected error from second Serve call, got nil")
 	}
 	if !errors.Is(serveErr, dataplane.ErrAlreadyServing) {
 		t.Errorf("expected ErrAlreadyServing, got: %v", serveErr)
@@ -424,7 +424,7 @@ func TestServer_SingleResolver_NoRetryOnFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -493,7 +493,7 @@ func TestServer_AllUpstreamsFail_TwoResolvers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -563,7 +563,7 @@ func TestServer_GracefulShutdown_DrainInFlightQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go dpSrv.Serve()
+	go dpSrv.Serve(context.Background())
 
 	addr, err := waitForAddr(dpSrv, 2*time.Second)
 	if err != nil {
@@ -656,7 +656,7 @@ func startPolicyServer(t *testing.T, cfg dataplane.Config) string {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -854,7 +854,7 @@ func TestHandleQuery_AttributionLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -970,7 +970,7 @@ func TestServer_ZeroQuestion_WireReturnsFORMERR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -1026,7 +1026,7 @@ func TestServer_HandlerPanic_RecoversToServfail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1097,7 +1097,7 @@ func TestHandleQuery_AllowBeatsBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1306,7 +1306,7 @@ func TestHandleQuery_AllowOnly_NoBlock_Forwards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1400,7 +1400,7 @@ func TestServer_AttributionLog_Allow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1462,7 +1462,7 @@ func TestServer_AttributionLog_Block(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1545,7 +1545,7 @@ func runForwardWithClassifier(t *testing.T, classifier dataplane.SlowPathClassif
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
@@ -1635,7 +1635,7 @@ func TestSlowPath_NilClassifier_NoFork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -1678,7 +1678,7 @@ func TestSlowPath_ErrUnavailable_LatchOnce_Concurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -1746,7 +1746,7 @@ func TestSlowPath_OtherError_LogsWarn_NoLatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -1808,7 +1808,7 @@ func TestSlowPath_WithEngine_DecideWithVerdictAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)

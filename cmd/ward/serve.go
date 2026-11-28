@@ -303,12 +303,12 @@ func resolveConfigPath(flag string) (string, *serveError) {
 // fails to start (startFailed is then true and ward runs fast-path-only).
 // closeFn is never nil; it reaps the model child, if any. The switch itself is
 // openModelClassifier, shared with ward eval.
-func newServeClassifier(cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
+func newServeClassifier(ctx context.Context, cfg config.Config) (c dataplane.SlowPathClassifier, closeFn func(), startFailed bool) {
 	if cfg.Model == nil {
 		// No model: stanza — fast-path-only.
 		return nil, func() {}, false
 	}
-	c, closeFn, err := openModelClassifier(cfg.Model, slog.Default())
+	c, closeFn, err := openModelClassifier(ctx, cfg.Model, slog.Default())
 	if err != nil {
 		// Continue with nil classifier — ward runs fast-path-only.
 		// Single canonical `policy: model unavailable` slog line so
@@ -624,7 +624,7 @@ func serveRun(ctx context.Context, opts serveOpts) error {
 	flagLog := web.NewFlagLog()
 
 	// ── Step 4e: Construct slow-path adapter (if cfg.Model present) ──────────
-	classifier, closeClassifier, modelStartFailed := newServeClassifier(cfg)
+	classifier, closeClassifier, modelStartFailed := newServeClassifier(ctx, cfg)
 	hatch := newExitHatch(opts.notifySignals, opts.exit)
 	defer hatch.disarm()
 	// Deferred so every return path reaps the child after any srv.Shutdown has drained classifyAsync (Risk #2).
@@ -677,7 +677,7 @@ func serveUntilStopped(ctx context.Context, srv *dataplane.Server, dash dashServ
 	// ── Step 6: Start serving (unblocks when shutdown completes) ─────────────
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- srv.Serve()
+		serveErr <- srv.Serve(ctx)
 	}()
 
 	// ── Step 7: Wait for signal or context cancel ─────────────────────────────
@@ -720,7 +720,7 @@ wait:
 		"shutdown_budget", cfg.Timeouts.Shutdown.String(),
 	)
 
-	shutdownServe(srv, dash, serveErr, cfg.Timeouts.Shutdown, cfg.Listen, fromFlag)
+	shutdownServe(ctx, srv, dash, serveErr, cfg.Timeouts.Shutdown, cfg.Listen, fromFlag)
 	return nil
 }
 
@@ -735,15 +735,19 @@ type dashServer interface {
 // A non-nil error from Serve (a listener error or failed bind that raced the
 // shutdown signal) is logged at Error with the same remediation the early-exit
 // path prints, if Serve returns it within the 500 ms wait.
-func shutdownServe(srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration, listenAddr string, fromFlag bool) {
+func shutdownServe(ctx context.Context, srv *dataplane.Server, dash dashServer, serveErr <-chan error, budget time.Duration, listenAddr string, fromFlag bool) {
+	// ctx is already cancelled here (the first signal). The shutdown steps keep
+	// its values but not its cancellation: budget and the 1 s dashboard window bound them.
+	base := context.WithoutCancel(ctx)
+
 	// ── Step 8: Graceful shutdown ─────────────────────────────────────────────
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), budget)
+	shutdownCtx, shutdownCancel := context.WithTimeout(base, budget)
 	defer shutdownCancel()
 
 	// Shut the dashboard down first — it's bounded by ReadHeaderTimeout and
 	// has no long-running handlers; do this before the DNS drain so a stuck
 	// healthz probe can't block the listener close.
-	dashShutdownCtx, dashCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	dashShutdownCtx, dashCancel := context.WithTimeout(base, 1*time.Second)
 	defer dashCancel()
 	if err := dash.Shutdown(dashShutdownCtx); err != nil {
 		slog.Warn("dashboard: shutdown error", "error", err.Error())

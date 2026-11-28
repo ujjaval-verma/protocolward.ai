@@ -56,7 +56,7 @@ var ErrListenerStopped = errors.New("stopped")
 // the listeners, the drain did not start and the message has no count.
 var ErrDrainTimeout = errors.New("dataplane: shutdown drain budget elapsed")
 
-// ErrAlreadyServing is returned by a second call to Serve() on the same
+// ErrAlreadyServing is returned by a second call to Serve on the same
 // *Server. Remediation: create a new Server instance via NewServer if you
 // need a fresh listener (invariant #8: every error names a remediation).
 var ErrAlreadyServing = errors.New("dataplane: Serve already called on this Server — remediation: create a new Server via NewServer for each listener lifecycle")
@@ -510,7 +510,11 @@ func (s *Server) bind() (net.PacketConn, net.Listener, error) {
 //
 // A second concurrent or sequential call to Serve on the same *Server
 // returns ErrAlreadyServing immediately without blocking.
-func (s *Server) Serve() error {
+//
+// ctx carries values into the drain Serve runs after a listener error. Its
+// cancellation does not stop Serve and does not cut that drain short:
+// Shutdown stops Serve, and Config.ShutdownTimeout bounds the drain.
+func (s *Server) Serve(ctx context.Context) error {
 	// CompareAndSwap false→true: only the first caller proceeds.
 	if !s.serveStarted.CompareAndSwap(false, true) {
 		return ErrAlreadyServing
@@ -571,7 +575,7 @@ func (s *Server) Serve() error {
 			continue
 		}
 		first = fmt.Errorf("dataplane: %s listener on %s %w: %w", r.transport, local, ErrListenerStopped, r.err)
-		s.abort(pc, ln)
+		s.abort(ctx, pc, ln)
 	}
 	return first
 }
@@ -580,13 +584,14 @@ func (s *Server) Serve() error {
 // sockets first, so a peer that has not reached its serve loop cannot start
 // serving even when an earlier Shutdown call, not this one, owns the
 // listeners. Shutdown then drains in-flight queries, including classifyAsync
-// goroutines, before Serve returns.
-func (s *Server) abort(pc net.PacketConn, ln net.Listener) {
+// goroutines, before Serve returns. The drain keeps ctx's values but not its
+// cancellation: Config.ShutdownTimeout alone bounds it.
+func (s *Server) abort(ctx context.Context, pc net.PacketConn, ln net.Listener) {
 	_ = pc.Close()
 	_ = ln.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.ShutdownTimeout)
 	defer cancel()
-	if err := s.Shutdown(ctx); errors.Is(err, ErrDrainTimeout) {
+	if err := s.Shutdown(drainCtx); errors.Is(err, ErrDrainTimeout) {
 		// Other Shutdown errors stay discarded: the listener error is what
 		// Serve returns. The stuck work may be a query handler rather than
 		// a classification, so the remediation does not blame the classifier.

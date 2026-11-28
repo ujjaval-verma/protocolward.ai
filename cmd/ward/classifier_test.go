@@ -87,7 +87,7 @@ func slogRecords(t *testing.T, s string) []map[string]any {
 func TestNewServeClassifier_NoModel_FastPathOnly(t *testing.T) {
 	logs := captureSlog(t)
 	stderr := captureStderr(t)
-	c, closeFn, startFailed := newServeClassifier(config.Config{})
+	c, closeFn, startFailed := newServeClassifier(context.Background(), config.Config{})
 	if c != nil {
 		t.Errorf("classifier = %T, want nil", c)
 	}
@@ -109,7 +109,7 @@ func TestNewServeClassifier_NoModel_FastPathOnly(t *testing.T) {
 func TestNewServeClassifier_SpawnFailure_StartFailed(t *testing.T) {
 	logs := captureSlog(t)
 	stderr := captureStderr(t)
-	c, closeFn, startFailed := newServeClassifier(config.Config{
+	c, closeFn, startFailed := newServeClassifier(context.Background(), config.Config{
 		Model: &config.ModelConfig{Command: []string{"/nonexistent/ward-test-model"}},
 	})
 	if c != nil {
@@ -195,7 +195,7 @@ func TestNewServeClassifier_LoadedLog(t *testing.T) {
 			}
 			logs := captureSlog(t)
 			stderr := captureStderr(t)
-			c, closeFn, startFailed := newServeClassifier(config.Config{Model: tc.cfg})
+			c, closeFn, startFailed := newServeClassifier(context.Background(), config.Config{Model: tc.cfg})
 			if startFailed {
 				t.Error("startFailed = true, want false")
 			}
@@ -218,7 +218,7 @@ func TestNewServeClassifier_CloseErrorLogsDebug(t *testing.T) {
 	requireBin(t, "/bin/sh")
 	logs := captureSlog(t)
 	stderr := captureStderr(t)
-	c, closeFn, startFailed := newServeClassifier(config.Config{
+	c, closeFn, startFailed := newServeClassifier(context.Background(), config.Config{
 		Model: &config.ModelConfig{Command: []string{"/bin/sh", "-c", "exit 3"}},
 	})
 	t.Cleanup(closeFn) // reap the child if an assertion below fails; Close is idempotent
@@ -420,7 +420,7 @@ func TestOpenModelClassifier(t *testing.T) {
 			if tc.discard {
 				logger = slog.New(slog.DiscardHandler)
 			}
-			c, closeFn, err := openModelClassifier(tc.m, logger)
+			c, closeFn, err := openModelClassifier(context.Background(), tc.m, logger)
 			if closeFn == nil {
 				t.Fatal("closeFn = nil, want non-nil")
 			}
@@ -486,5 +486,24 @@ func TestOpenModelClassifier(t *testing.T) {
 				t.Errorf("default slog output = %q, want empty: nothing may bypass logger", got)
 			}
 		})
+	}
+}
+
+// The serve ctx's cancellation must not reach the adapter: a cancelled ctx
+// neither fails the spawn nor lets exec.CommandContext kill the child.
+func TestOpenModelClassifier_CancelledCtx_KeepsChild(t *testing.T) {
+	requireBin(t, "/bin/cat")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c, closeFn, err := openModelClassifier(ctx, &config.ModelConfig{Command: []string{"/bin/cat"}}, slog.New(slog.DiscardHandler))
+	if closeFn == nil {
+		t.Fatal("closeFn = nil, want non-nil")
+	}
+	t.Cleanup(closeFn)
+	if err != nil {
+		t.Fatalf("err = %v, want nil with a cancelled ctx", err)
+	}
+	if _, ok := c.(*model.Adapter); !ok {
+		t.Errorf("classifier = %T, want *model.Adapter", c)
 	}
 }

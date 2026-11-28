@@ -36,7 +36,7 @@ func TestServe_ShutdownAfterReady_ReturnsNil(t *testing.T) {
 	t.Parallel()
 	srv := newBindTestServer(t, "127.0.0.1:0")
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	if _, err := waitForAddr(srv, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestServe_ShutdownAfterReady_ReturnsNil(t *testing.T) {
 func serveWithin(t *testing.T, srv *dataplane.Server, d time.Duration) error {
 	t.Helper()
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- srv.Serve(context.Background()) }()
 	select {
 	case err := <-errCh:
 		return err
@@ -109,7 +109,7 @@ func TestServe_LogsListeningOnceBothListenersServe(t *testing.T) {
 	restore := obs.Capture(t)
 	defer restore()
 	srv := newBindTestServer(t, "127.0.0.1:0")
-	go func() { _ = srv.Serve() }()
+	go func() { _ = srv.Serve(context.Background()) }()
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestServer_Listening(t *testing.T) {
 			t.Fatal("Listening closed before Serve")
 		default:
 		}
-		go func() { _ = srv.Serve() }()
+		go func() { _ = srv.Serve(context.Background()) }()
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()

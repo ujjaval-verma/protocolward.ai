@@ -292,7 +292,7 @@ func runLoggedQuery(t *testing.T, resolvers []dataplane.Resolver, qname string) 
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go srv.Serve(context.Background())
 	addr, err := waitForAddr(srv, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
